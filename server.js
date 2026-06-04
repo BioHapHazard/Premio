@@ -2734,6 +2734,23 @@ app.post('/api/transfers/delete', async (req, res) => {
   }
 });
 
+// Serve static frontend assets in production
+const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+  // Catch-all route to redirect non-API routes to React's index.html
+  app.get('*', (req, res, next) => {
+    // Exclude /api routes from catch-all to prevent loops
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendDistPath, 'index.html'));
+  });
+  console.log(`ℹ️  Serving static frontend assets from: ${frontendDistPath}`);
+} else {
+  console.log('⚠️  Frontend static assets directory not found. Serving API routes only.');
+}
+
 // Start listening
 app.listen(PORT, () => {
   console.log(`🟢 Premio Express server running on http://localhost:${PORT}`);

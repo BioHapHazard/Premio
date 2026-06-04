@@ -1,20 +1,25 @@
 FROM node:18-alpine
 
-# Create app directory
-WORKDIR /usr/src/app
+# Set working directory inside container
+WORKDIR /app
 
-# Install app dependencies
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
+# Copy root dependency configuration
 COPY package*.json ./
 
-# Install packages with clean production flag
-RUN npm ci --only=production
+# Install backend dependencies
+RUN npm install
 
-# Bundle app source code
+# Copy backend server code
 COPY server.js ./
 
-# Expose server port
+# Copy the frontend folder (src, public, config, etc.)
+COPY frontend ./frontend
+
+# Install frontend dependencies and compile static React assets to frontend/dist
+RUN cd frontend && npm install && npm run build
+
+# Expose port 3001
 EXPOSE 3001
 
-# Command to run server
-CMD [ "node", "server.js" ]
+# Run the Express server in production
+CMD ["node", "server.js"]
