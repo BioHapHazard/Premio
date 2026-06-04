@@ -5,9 +5,7 @@ colorFrom: purple
 colorTo: indigo
 sdk: docker
 app_port: 3001
-license: other
-license_name: CC BY-NC 4.0
-license_link: LICENSE
+license: mit
 pinned: false
 ---
 
@@ -257,10 +255,5 @@ Premio keeps your library shelves and continues dashboards completely stateless 
 
 ## ⚖️ License
 
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license. 
+This project is licensed under the **MIT License**. See the [LICENSE](file:///Users/shilgenfeld/Desktop/Premiumize%20Cache%20Search/LICENSE) file for the full legal text.
 
-* **Attribution**: You must give appropriate credit to **BioHapHazard** and provide a link to the original repository.
-* **Non-Commercial**: You may not use this software or its derivative works for commercial purposes or financial gain.
-* **Free Sharing**: Anyone is free to share, copy, and redistribute the material in any medium or format.
-
-See the [LICENSE](file:///Users/shilgenfeld/Desktop/Premiumize%20Cache%20Search/LICENSE) file for the full legal text.
