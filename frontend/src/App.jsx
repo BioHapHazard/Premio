@@ -222,6 +222,8 @@ export default function App() {
   const [pendingPlaylistFiles, setPendingPlaylistFiles] = useState([]);
   const [pendingPlaylistName, setPendingPlaylistName] = useState('');
   const [hasAviOrMkvInPending, setHasAviOrMkvInPending] = useState(false);
+  const [pendingItemId, setPendingItemId] = useState(null);
+  const [pendingItemType, setPendingItemType] = useState(''); // 'file', 'folder', or 'torrent'
 
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
@@ -503,6 +505,8 @@ export default function App() {
 
       setPendingPlaylistFiles(fetchedFiles);
       setPendingPlaylistName(startFolderName);
+      setPendingItemId(startFolderId);
+      setPendingItemType('folder');
       const hasUnplayable = fetchedFiles.some(f => {
         const ext = f.name.split('.').pop().toLowerCase();
         return ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
@@ -679,7 +683,7 @@ export default function App() {
     const ext = file.name.split('.').pop().toLowerCase();
     
     // A. Video streaming
-    if (['mkv', 'mp4', 'avi'].includes(ext)) {
+    if (['mkv', 'mp4', 'avi', 'mov', 'webm'].includes(ext)) {
       // Find any subtitle files in the current cloud contents to make them available in the player
       const subtitleFiles = cloudContents
         .filter(c => c.type === 'file' && ['srt', 'vtt', 'ass'].includes(c.name.split('.').pop().toLowerCase()))
@@ -693,17 +697,30 @@ export default function App() {
         name: file.name,
         link: file.stream_link || file.link,
         size: file.size || 0,
-        type: 'video'
+        type: 'video',
+        id: file.id
       };
 
-      startStreaming({
-        title: file.name,
-        link: file.stream_link || file.link,
-        size: file.size || 0,
-        category: 'Movies',
-        isCloudFile: true,
-        files: [videoFile, ...subtitleFiles]
-      });
+      const files = [videoFile, ...subtitleFiles];
+      const isUnplayable = ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
+
+      if (isUnplayable) {
+        setPendingPlaylistFiles(files);
+        setPendingPlaylistName(file.name);
+        setPendingItemId(file.id);
+        setPendingItemType('file');
+        setHasAviOrMkvInPending(true);
+        setShowPlaylistChoiceModal(true);
+      } else {
+        startStreaming({
+          title: file.name,
+          link: file.stream_link || file.link,
+          size: file.size || 0,
+          category: 'Movies',
+          isCloudFile: true,
+          files: files
+        });
+      }
     } 
     // B. Audio/Music streaming
     else if (['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma', 'm4b'].includes(ext)) {
@@ -1739,17 +1756,30 @@ export default function App() {
         name: torrent.title || torrent.name || 'Cloud Video',
         link: downloadSource,
         size: torrent.size || 0,
-        type: 'video'
+        type: 'video',
+        id: torrent.id || null
       }];
       
       setPlayerFiles(files);
       
       const videos = files.filter(f => f.type === 'video');
-      if (videos.length > 0) {
-        setSelectedVideoFile(videos[0]);
-      } else {
-        setSelectedVideoFile(files[0]);
+      const selectedVideo = videos.length > 0 ? videos[0] : files[0];
+      
+      const ext = selectedVideo.name.split('.').pop().toLowerCase();
+      const isUnplayable = ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
+      
+      if (isUnplayable && !torrent.forceBrowser) {
+        setPendingPlaylistFiles(files);
+        setPendingPlaylistName(torrent.title || torrent.name || selectedVideo.name);
+        setPendingItemId(selectedVideo.id || torrent.id || null);
+        setPendingItemType(selectedVideo.id || torrent.id ? 'file' : 'torrent');
+        setHasAviOrMkvInPending(true);
+        setPlayerLoading(false);
+        setShowPlaylistChoiceModal(true);
+        return;
       }
+
+      setSelectedVideoFile(selectedVideo);
       
       // Auto-select subtitle if available
       const subtitles = files.filter(f => f.type === 'subtitle');
@@ -1793,10 +1823,25 @@ export default function App() {
             const matched = videos.find(v => v.name === resumeFileName);
             if (matched) selectedVideo = matched;
           }
-          setSelectedVideoFile(selectedVideo);
         } else {
           throw new Error('No streamable video files found in this release.');
         }
+
+        const ext = selectedVideo.name.split('.').pop().toLowerCase();
+        const isUnplayable = ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
+        
+        if (isUnplayable && !torrent.forceBrowser) {
+          setPendingPlaylistFiles(files);
+          setPendingPlaylistName(torrent.title || torrent.name || selectedVideo.name);
+          setPendingItemId(null);
+          setPendingItemType('torrent');
+          setHasAviOrMkvInPending(true);
+          setPlayerLoading(false);
+          setShowPlaylistChoiceModal(true);
+          return;
+        }
+
+        setSelectedVideoFile(selectedVideo);
 
         // Auto-select the matching subtitle track for the active video file
         const subtitles = files.filter(f => f.type === 'subtitle');
@@ -6019,62 +6064,118 @@ export default function App() {
       {/* 🎬 Playlist Choice Modal */}
       {showPlaylistChoiceModal && (
         <div className="modal-overlay legal-modal-overlay fade-in">
-          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '500px', width: '90%' }}>
+          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '520px', width: '90%' }}>
             <div className="modal-header">
               <h2 style={{ background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>🎬 Choose Playback Mode</h2>
             </div>
             
             <div className="modal-body" style={{ fontSize: '0.95rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '12px', lineHeight: '1.4' }}>
               <p>
-                We found <strong>{pendingPlaylistFiles.length} videos</strong> inside <strong>&quot;{pendingPlaylistName}&quot;</strong>.
+                {pendingPlaylistFiles.length > 1 ? (
+                  <>We found <strong>{pendingPlaylistFiles.length} videos</strong> inside <strong>&quot;{pendingPlaylistName}&quot;</strong>.</>
+                ) : (
+                  <>You are streaming <strong>&quot;{pendingPlaylistName}&quot;</strong>.</>
+                )}
               </p>
               
               {hasAviOrMkvInPending && (
-                <div style={{ background: 'rgba(239, 68, 68, 0.08)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #ef4444', fontSize: '0.8rem', color: '#fca5a5', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <span style={{ fontWeight: 'bold' }}>⚠️ Browser Codec Warning:</span>
+                <div style={{ background: 'rgba(239, 68, 68, 0.08)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #ef4444', fontSize: '0.82rem', color: '#fca5a5', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}>⚠️ Browser Codec Compatibility Warning:</span>
                   <span>
-                    Some files are in <strong>.avi</strong> or <strong>.mkv</strong> formats. Modern web browsers (Chrome, Safari, Edge) cannot play these formats natively. Since Premiumize retired their public video transcoding API, these will show a black screen or fail to play in the browser.
+                    This video is in <strong>.avi</strong> or <strong>.mkv</strong> format (or contains codecs like DivX/XviD). Modern web browsers (Chrome, Safari, Edge) do not natively support these formats and will display a black screen or fail to load.
+                  </span>
+                  <span style={{ fontSize: '0.78rem', opacity: 0.9, marginTop: '2px' }}>
+                    💡 Premiumize retired their public transcoding API, but their official website still transcodes files automatically when played in their web player.
                   </span>
                 </div>
               )}
 
               <p>
-                How would you like to play this playlist?
+                How would you like to play this {pendingPlaylistFiles.length > 1 ? 'playlist' : 'video'}?
               </p>
             </div>
             
-            <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
-              <button 
-                type="button" 
-                className="action-btn"
-                onClick={() => handleLaunchBrowserPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
-                style={{ 
-                  width: '100%', 
-                  background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)',
-                  padding: '12px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer'
-                }}
-              >
-                🌐 Play in Web Browser (HTML5)
-              </button>
+            <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
               
+              {/* Option 1: Download M3U Playlist/File (Recommended for VLC) */}
               <button 
                 type="button" 
                 className="action-btn success"
                 onClick={() => downloadM3UPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
                 style={{ 
                   width: '100%', 
-                  background: 'linear-gradient(135deg, #22c55e 0%, #15803d 100%)',
+                  background: 'linear-gradient(135deg, #10b981 0%, #047857 100%)',
                   padding: '12px',
                   fontWeight: 'bold',
                   border: 'none',
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  color: '#ffffff'
                 }}
               >
-                📥 Download M3U Playlist (Recommended for VLC)
+                📥 {pendingPlaylistFiles.length > 1 ? 'Download M3U Playlist (Recommended for VLC)' : 'Download M3U Stream File (Recommended for VLC)'}
               </button>
 
+              {/* Option 2: Stream on Premiumize.me website (if ID is available) */}
+              {pendingItemId && (
+                <a 
+                  href={pendingItemType === 'file' ? `https://www.premiumize.me/file?id=${pendingItemId}` : `https://www.premiumize.me/files?folder_id=${pendingItemId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="action-btn"
+                  onClick={() => setShowPlaylistChoiceModal(false)}
+                  style={{ 
+                    width: '100%', 
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #b45309 100%)',
+                    padding: '12px',
+                    fontWeight: 'bold',
+                    border: 'none',
+                    cursor: 'pointer',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(245, 158, 11, 0.2)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    color: '#ffffff',
+                    textDecoration: 'none',
+                    textAlign: 'center',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  🚀 {pendingItemType === 'file' ? 'Play on Premiumize.me Web Player' : 'Open Folder on Premiumize.me Website'}
+                </a>
+              )}
+              
+              {/* Option 3: Try in browser anyway */}
+              <button 
+                type="button" 
+                className="action-btn"
+                onClick={() => handleLaunchBrowserPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
+                style={{ 
+                  width: '100%', 
+                  background: 'linear-gradient(135deg, #4f46e5 0%, #312e81 100%)',
+                  padding: '12px',
+                  fontWeight: 'bold',
+                  border: 'none',
+                  cursor: 'pointer',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  color: '#ffffff'
+                }}
+              >
+                🌐 Try Playing in Web Browser (HTML5)
+              </button>
+
+              {/* Close/Cancel Button */}
               <button 
                 type="button" 
                 className="action-btn text-only"
@@ -6085,10 +6186,11 @@ export default function App() {
                   color: 'var(--text-muted)',
                   background: 'none',
                   border: 'none',
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  marginTop: '4px'
                 }}
               >
-                Cancel
+                ✕ Cancel
               </button>
             </div>
           </div>
