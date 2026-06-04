@@ -1,0 +1,22 @@
+# fly.toml app configuration file for Premio
+#
+# This file configures the Fly.io deployment for Premio.
+# You can deploy using: fly launch (to initialize) or fly deploy (to update).
+
+app = "premio"
+primary_region = "lax"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
