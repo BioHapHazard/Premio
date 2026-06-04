@@ -549,7 +549,11 @@ export default function App() {
     setShowPlaylistChoiceModal(false);
     let m3uContent = '#EXTM3U\n';
     files.forEach(file => {
-      m3uContent += `#EXTINF:-1,${file.name}\n${file.link}\n`;
+      m3uContent += `#EXTINF:-1,${file.name}\n`;
+      // Inject VLC caching (5000ms = 5s buffer) and auto-reconnect option for network stability
+      m3uContent += `#EXTVLCOPT:network-caching=5000\n`;
+      m3uContent += `#EXTVLCOPT:http-reconnect=true\n`;
+      m3uContent += `${file.link}\n`;
     });
     
     const blob = new Blob([m3uContent], { type: 'audio/x-mpegurl' });
