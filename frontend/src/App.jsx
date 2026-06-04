@@ -497,8 +497,6 @@ export default function App() {
         return;
       }
 
-      setPlayerLoading(true);
-      
       const virtualTorrent = {
         title: startFolderName,
         category: 'TV', // Set to 'TV' to activate sequential autoplay!
@@ -508,16 +506,7 @@ export default function App() {
         files: fetchedFiles
       };
       
-      setActivePlayerTorrent(virtualTorrent);
-      setActiveRetroTorrent(null);
-      setSelectedRetroRomFile(null);
-      setPlayerFiles(fetchedFiles);
-      setSelectedSubtitleFile(null);
-      setSubtitleTrackUrl(null);
-      setResumeTime(0);
-      
-      // Select the first video file
-      setSelectedVideoFile(fetchedFiles[0]);
+      await startStreaming(virtualTorrent);
       triggerToast(`🍿 Loaded ${fetchedFiles.length} videos. Enjoy!`, 'success');
     } catch (err) {
       console.error('❌ Play All Failed:', err);
