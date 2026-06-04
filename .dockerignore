@@ -1,0 +1,76 @@
+# flyctl launch added from .gitignore
+# Logs
+**/logs
+**/*.log
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+**/lerna-debug.log*
+
+# Diagnostic database files
+**/.pnp
+**/.pnp.js
+
+# Coverage directory used by tools
+**/coverage
+**/.nyc_output
+
+# Dependency directories
+**/**/node_modules
+**/jspm_packages
+**/web_modules
+**/**/.npm-local-cache
+**/**/.npm
+**/**/.npm-cache
+
+# Jackett binaries & local downloads
+**/Jackett
+**/Jackett.Binaries.macOSARM64.tar.gz
+
+# Decrypter extraction & Emulator saves
+**/temp_archives
+**/Game Saves
+
+# Build outputs
+**/**/dist
+**/**/build
+**/out
+**/.next
+
+# Local configuration files (CRITICAL: Do NOT expose private API keys)
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+**/.env*.local
+
+# IDEs and editors
+**/.idea
+**/.vscode
+**/*.suo
+**/*.ntvs*
+**/*.njsproj
+**/*.sln
+**/*.sw?
+**/.classpath
+**/.project
+**/.settings
+
+# OS files
+**/**/.DS_Store
+**/.DS_Store?
+**/._*
+**/.Spotlight-V100
+**/.Trashes
+**/ehthumbs.db
+**/Thumbs.db
+
+# AI Agents and LLM workspace states
+**/.gemini
+**/.antigravity
+**/.cline
+**/.cursorrules
+**/.aiproj
+fly.toml

@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
 
+// Configuration constants
+const PM_SIGNUP_URL = "https://www.premiumize.me";
+
 // Category Definitions
 const CATEGORIES = ['Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
 
@@ -211,6 +214,8 @@ export default function App() {
   const [showLegalDisclaimer, setShowLegalDisclaimer] = useState(() => {
     return localStorage.getItem('premio_legal_acknowledged') !== 'true';
   });
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(1);
 
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
@@ -1403,6 +1408,12 @@ export default function App() {
 
     const activeSearchMode = forcedMode || searchMode;
 
+    if (!userPmKey) {
+      triggerToast('⚠️ Premiumize API Key is missing. Showing simulated mock results. Configure in Settings.', 'warning');
+    } else if (activeSearchMode === 'torrent' && !userJackettUrl) {
+      triggerToast('⚠️ Jackett URL is missing. Showing simulated mock torrents. Configure in Settings.', 'warning');
+    }
+
     // STRICT PRIVACY COMPLIANCE RULE:
     // Do NOT save search queries to history if they are in the Adult category.
     if (category !== 'Adult') {
@@ -1433,6 +1444,12 @@ export default function App() {
 
   // Trigger Download to Premiumize (With fallback to .torrent file URL)
   const triggerDownload = async (torrent) => {
+    if (!userPmKey) {
+      triggerToast('⚠️ Premiumize API Key is required to download files. Please configure it in onboarding/settings.', 'error');
+      setShowOnboarding(true);
+      setOnboardingStep(1);
+      return;
+    }
     const downloadSource = torrent.magnet || torrent.torrentFile;
     if (!downloadSource) {
       triggerToast('No download link or magnet available for this item.', 'error');
@@ -1571,6 +1588,12 @@ export default function App() {
 
   // Trigger Instant Stream Playback
   const startStreaming = async (torrent, seekTimeSec = 0, resumeFileName = null) => {
+    if (!userPmKey) {
+      triggerToast('⚠️ Premiumize API Key is required to stream files. Please configure it in onboarding/settings.', 'error');
+      setShowOnboarding(true);
+      setOnboardingStep(1);
+      return;
+    }
     const downloadSource = torrent.magnet || torrent.torrentFile || torrent.link;
     if (!downloadSource) {
       triggerToast('No streamable link available for this item.', 'error');
@@ -2555,7 +2578,29 @@ export default function App() {
         {/* Settings Expander Card */}
         {showSettings && (
           <section className="settings-card glass-panel fade-in" id="settings-panel">
-            <h2>⚙️ Control Panel</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0 }}>⚙️ Control Panel</h2>
+              <button 
+                type="button" 
+                className="action-btn" 
+                style={{ 
+                  fontSize: '0.8rem', 
+                  padding: '6px 12px',
+                  background: 'rgba(255, 255, 255, 0.05)', 
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: '8px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  setShowSettings(false);
+                  setShowOnboarding(true);
+                  setOnboardingStep(1);
+                }}
+              >
+                💡 Run Setup Guide / Onboarding
+              </button>
+            </div>
             <div className="settings-grid">
               
               {/* Premiumize API Key Input */}
@@ -2825,6 +2870,60 @@ export default function App() {
         {/* 🔍 tab: Torrent Searcher */}
         {activeTab === 'search' && (
           <>
+            {/* Warning Banner when keys are missing */}
+            {(!userPmKey || !userJackettUrl) && (
+              <div 
+                className="mock-mode-warning-banner glass-panel fade-in" 
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  padding: '12px 18px',
+                  borderRadius: '12px',
+                  marginBottom: '16px',
+                  background: 'rgba(239, 68, 68, 0.05)',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  fontSize: '0.85rem',
+                  lineHeight: '1.4',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                  <div style={{ color: 'var(--text-muted)' }}>
+                    {!userPmKey && !userJackettUrl ? (
+                      <>
+                        <strong>Setup Required:</strong> Premiumize API Key and Jackett URL are not configured. The app is running in <strong>Developer Mock Mode</strong> returning simulated results.
+                      </>
+                    ) : !userPmKey ? (
+                      <>
+                        <strong>Premiumize Key Missing:</strong> A Premiumize API key is required to check file cache status and stream media.
+                      </>
+                    ) : (
+                      <>
+                        <strong>Jackett Server Unconfigured:</strong> Jackett configuration is missing. Torrent search results are simulated.
+                      </>
+                    )}
+                  </div>
+                </div>
+                <button 
+                  type="button" 
+                  className="action-btn"
+                  onClick={() => {
+                    setShowOnboarding(true);
+                    setOnboardingStep(1);
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '0.75rem',
+                    whiteSpace: 'nowrap',
+                    background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)'
+                  }}
+                >
+                  Configure Now ➔
+                </button>
+              </div>
+            )}
             <section 
               className={`search-card glass-panel ${isDragging ? 'dragging-active' : ''}`}
               onDragOver={handleDragOver}
@@ -5535,10 +5634,221 @@ export default function App() {
                   }
                   setShowLegalDisclaimer(false);
                   triggerToast('⚖️ Terms of Service acknowledged.', 'success');
+                  if (localStorage.getItem('premio_onboarding_completed') !== 'true') {
+                    setShowOnboarding(true);
+                    setOnboardingStep(1);
+                  }
                 }}
               >
                 I Agree & Accept
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 💡 Onboarding Wizard Modal */}
+      {showOnboarding && (
+        <div className="modal-overlay legal-modal-overlay fade-in">
+          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>🚀 Setup Guide (Step {onboardingStep} of 3)</h2>
+              <button 
+                type="button" 
+                className="close-btn" 
+                onClick={() => {
+                  setShowOnboarding(false);
+                  localStorage.setItem('premio_onboarding_completed', 'true');
+                  triggerToast('Setup Guide completed. You can rerun it from Settings.', 'info');
+                }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {onboardingStep === 1 && (
+                <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <h3 style={{ color: '#fff', margin: 0 }}>🔌 Connect your Premiumize Account</h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
+                    Premio is completely client-side and serverless. To check file cache status, create downloads, and stream files, you must connect your Premiumize.me account.
+                  </p>
+                  
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid var(--color-primary)', fontSize: '0.8rem' }}>
+                    <strong>Don&apos;t have a Premiumize account?</strong><br />
+                    <a href={PM_SIGNUP_URL} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline', display: 'inline-block', marginTop: '4px', fontWeight: 'bold' }}>
+                      Click here to visit Premiumize.me & Sign Up ➔
+                    </a>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--text-primary)' }}>Premiumize API Key (Required)</label>
+                    <input 
+                      type="password"
+                      value={userPmKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUserPmKey(val);
+                        localStorage.setItem('premio_user_pm_key', val);
+                      }}
+                      placeholder="Paste your Premiumize API Key..."
+                      style={{
+                        padding: '10px 14px',
+                        background: 'rgba(0,0,0,0.2)',
+                        border: '1px solid var(--glass-border)',
+                        borderRadius: '8px',
+                        color: '#fff',
+                        fontSize: '0.85rem',
+                        outline: 'none'
+                      }}
+                    />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      You can find your API key by logging into your account page at <a href="https://www.premiumize.me/account" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>premiumize.me/account</a> (click &quot;Show API Key&quot;).
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {onboardingStep === 2 && (
+                <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <h3 style={{ color: '#fff', margin: 0 }}>🔍 Configure Jackett (Optional)</h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
+                    To search public torrent indexes, connect Premio to a local or remote Jackett or Prowlarr instance. If you only plan to stream cached direct files or use Usenet, you can skip this step.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>Jackett Server URL</label>
+                      <input 
+                        type="text"
+                        value={userJackettUrl}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setUserJackettUrl(val);
+                          localStorage.setItem('premio_user_jackett_url', val);
+                        }}
+                        placeholder="http://localhost:9117"
+                        style={{
+                          padding: '8px 12px',
+                          background: 'rgba(0,0,0,0.2)',
+                          border: '1px solid var(--glass-border)',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          fontSize: '0.85rem',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>Jackett API Key</label>
+                      <input 
+                        type="password"
+                        value={userJackettKey}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setUserJackettKey(val);
+                          localStorage.setItem('premio_user_jackett_key', val);
+                        }}
+                        placeholder="Paste your Jackett API Key..."
+                        style={{
+                          padding: '8px 12px',
+                          background: 'rgba(0,0,0,0.2)',
+                          border: '1px solid var(--glass-border)',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          fontSize: '0.85rem',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
+                    💡 Set up trackers (e.g. LimeTorrents, EZTV) inside your Jackett dashboard so search queries return cached media.
+                  </p>
+                </div>
+              )}
+
+              {onboardingStep === 3 && (
+                <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <h3 style={{ color: '#fff', margin: 0 }}>🎬 Fetch Metadata & TMDb (Optional)</h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
+                    Optionally configure a free TMDb v3 API key to load posters, backdrops, cast info, and ratings directly in your browser.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>TMDb v3 API Key</label>
+                    <input 
+                      type="text"
+                      value={userTmdbKey}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUserTmdbKey(val);
+                        localStorage.setItem('premio_user_tmdb_key', val);
+                      }}
+                      placeholder="Enter TMDb API Key..."
+                      style={{
+                        padding: '8px 12px',
+                        background: 'rgba(0,0,0,0.2)',
+                        border: '1px solid var(--glass-border)',
+                        borderRadius: '8px',
+                        color: '#fff',
+                        fontSize: '0.85rem',
+                        outline: 'none'
+                      }}
+                    />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Register a free account on <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>themoviedb.org</a> to generate your v3 key.
+                    </span>
+                  </div>
+
+                  <div style={{ background: 'rgba(74, 222, 128, 0.05)', borderLeft: '3px solid #4ade80', padding: '10px', borderRadius: '6px', fontSize: '0.8rem', color: '#4ade80', marginTop: '10px' }}>
+                    🎉 Setup Complete! You can edit these keys or add Usenet indexers inside the Control Panel at any time.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer" style={{ marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button 
+                type="button"
+                className="action-btn"
+                onClick={() => setOnboardingStep(prev => Math.max(1, prev - 1))}
+                disabled={onboardingStep === 1}
+                style={{ opacity: onboardingStep === 1 ? 0.4 : 1 }}
+              >
+                ◀ Back
+              </button>
+              
+              {onboardingStep < 3 ? (
+                <button 
+                  type="button"
+                  className="action-btn"
+                  onClick={() => {
+                    if (onboardingStep === 1 && !userPmKey.trim()) {
+                      triggerToast('💡 Note: You skipped adding a Premiumize key. The app will run in Developer Mock Mode.', 'warning');
+                    }
+                    setOnboardingStep(prev => prev + 1);
+                  }}
+                >
+                  Next Step ▶
+                </button>
+              ) : (
+                <button 
+                  type="button"
+                  className="action-btn success"
+                  style={{ background: 'linear-gradient(135deg, #22c55e 0%, #15803d 100%)' }}
+                  onClick={() => {
+                    setShowOnboarding(false);
+                    localStorage.setItem('premio_onboarding_completed', 'true');
+                    triggerToast('🎉 Onboarding completed! You are ready to search.', 'success');
+                  }}
+                >
+                  🚀 Finish & Start Searching
+                </button>
+              )}
             </div>
           </div>
         </div>
