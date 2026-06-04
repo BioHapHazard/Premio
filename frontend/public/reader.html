@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Premio EBook Reader</title>
+  
+  <!-- JSZip for in-memory EPUB decompression -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  
+  <!-- Outfit Google Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --color-primary: #8b5cf6;
+      --color-primary-glow: rgba(139, 92, 246, 0.4);
+      --color-bg: #0d0f14;
+      --color-card: rgba(22, 28, 45, 0.6);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --text-primary: #f8fafc;
+      --text-muted: #94a3b8;
+      --color-sidebar: #131722;
+      --color-item-hover: rgba(255, 255, 255, 0.03);
+    }
+
+    body.theme-light {
+      --color-bg: #f8fafc;
+      --color-card: rgba(255, 255, 255, 0.85);
+      --glass-border: rgba(0, 0, 0, 0.08);
+      --text-primary: #0f172a;
+      --text-muted: #475569;
+      --color-sidebar: #f1f5f9;
+      --color-item-hover: rgba(0, 0, 0, 0.02);
+    }
+
+    body.theme-sepia {
+      --color-bg: #f4ecd8;
+      --color-card: rgba(250, 243, 226, 0.9);
+      --glass-border: rgba(94, 60, 28, 0.1);
+      --text-primary: #4f341a;
+      --text-muted: #7c5c3e;
+      --color-sidebar: #eae0c8;
+      --color-item-hover: rgba(94, 60, 28, 0.03);
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--color-bg);
+      color: var(--text-primary);
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    /* Core Layout grid */
+    .reader-layout {
+      display: flex;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    /* Sidebar Navigation panel */
+    .sidebar {
+      width: 280px;
+      height: 100%;
+      background: var(--color-sidebar);
+      border-right: 1px solid var(--glass-border);
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      transition: all 0.3s ease;
+      flex-shrink: 0;
+      z-index: 100;
+    }
+
+    .sidebar.collapsed {
+      margin-left: -280px;
+    }
+
+    .sidebar-header {
+      padding: 1.5rem;
+      border-bottom: 1px solid var(--glass-border);
+    }
+
+    .sidebar-header h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--color-primary);
+    }
+
+    .sidebar-header p {
+      margin: 0.5rem 0 0;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .toc-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    /* Custom scrollbars */
+    .toc-list::-webkit-scrollbar,
+    .main-content::-webkit-scrollbar {
+      width: 6px;
+    }
+    .toc-list::-webkit-scrollbar-track,
+    .main-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .toc-list::-webkit-scrollbar-thumb {
+      background: rgba(139, 92, 246, 0.15);
+      border-radius: 3px;
+    }
+    .main-content::-webkit-scrollbar-thumb {
+      background: rgba(139, 92, 246, 0.3);
+      border-radius: 3px;
+    }
+
+    .toc-item {
+      width: 100%;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 0.6rem 0.85rem;
+      color: var(--text-primary);
+      text-align: left;
+      font-size: 0.85rem;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      box-sizing: border-box;
+      transition: all 0.2s ease;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .toc-item:hover {
+      background: var(--color-item-hover);
+      color: var(--color-primary);
+    }
+
+    .toc-item.active {
+      background: var(--color-primary-glow);
+      border-color: rgba(139, 92, 246, 0.3);
+      color: #fff;
+    }
+
+    .sidebar-footer {
+      padding: 1.25rem 1.5rem;
+      border-top: 1px solid var(--glass-border);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 0.5rem;
+    }
+
+    body.theme-light .progress-bar-container {
+      background: rgba(0,0,0,0.05);
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--color-primary);
+      box-shadow: 0 0 8px var(--color-primary-glow);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    #page-indicator {
+      margin: 0;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-align: center;
+    }
+
+    /* Main Area styling */
+    .main-content {
+      flex: 1;
+      height: 100%;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      background-color: var(--color-bg);
+      transition: background-color 0.3s ease;
+    }
+
+    /* Floating Header controls */
+    .controls-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--glass-border);
+      background: rgba(13, 15, 23, 0.4);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    body.theme-light .controls-header {
+      background: rgba(248, 250, 252, 0.85);
+    }
+
+    body.theme-sepia .controls-header {
+      background: rgba(244, 236, 216, 0.85);
+    }
+
+    .toc-toggle {
+      background: transparent;
+      border: 1px solid var(--glass-border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      padding: 0.4rem 0.85rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .toc-toggle:hover {
+      background: var(--color-primary-glow);
+      border-color: var(--color-primary);
+    }
+
+    .reading-controls {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .control-btn {
+      background: transparent;
+      border: 1px solid var(--glass-border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      width: 32px;
+      height: 32px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .control-btn:hover {
+      background: var(--color-primary-glow);
+      border-color: var(--color-primary);
+    }
+
+    .font-size-text {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      min-width: 45px;
+      text-align: center;
+    }
+
+    .theme-picker {
+      display: flex;
+      gap: 0.4rem;
+      border: 1px solid var(--glass-border);
+      padding: 0.25rem;
+      border-radius: 8px;
+      background: rgba(0,0,0,0.1);
+    }
+
+    .theme-btn {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .theme-btn.active {
+      transform: scale(1.15);
+      box-shadow: 0 0 8px rgba(0,0,0,0.5);
+    }
+
+    /* Reading Canvas */
+    .chapter-canvas {
+      flex: 1;
+      padding: 3rem 4rem;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
+      line-height: 1.75;
+      font-size: 1.1rem;
+      color: var(--text-primary);
+      text-align: justify;
+    }
+
+    .chapter-canvas h1,
+    .chapter-canvas h2,
+    .chapter-canvas h3 {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 800;
+      color: var(--color-primary);
+      line-height: 1.3;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    .chapter-canvas p {
+      margin-top: 0;
+      margin-bottom: 1.25rem;
+      text-indent: 1.5em;
+    }
+
+    .chapter-canvas p:first-of-type {
+      text-indent: 0;
+    }
+
+    .chapter-canvas img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 2rem auto;
+      border-radius: 8px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+
+    /* Navigation Paddles */
+    .nav-paddles {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto 4rem;
+      padding: 0 4rem;
+      box-sizing: border-box;
+    }
+
+    .paddle-btn {
+      background: var(--color-card);
+      border: 1px solid var(--glass-border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      padding: 0.65rem 1.25rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: all 0.2s ease;
+    }
+
+    .paddle-btn:hover {
+      background: var(--color-primary);
+      border-color: var(--color-primary);
+      color: #fff;
+      box-shadow: 0 0 15px var(--color-primary-glow);
+    }
+
+    /* Loading and Error Overlays */
+    .overlay-panel {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--color-bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      transition: opacity 0.4s ease;
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+
+    .spinner {
+      border: 4px solid rgba(139, 92, 246, 0.1);
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border-left-color: var(--color-primary);
+      box-shadow: 0 0 15px var(--color-primary-glow);
+      animation: spin 1s linear infinite;
+      margin-bottom: 1.5rem;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .overlay-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      background: linear-gradient(135deg, #fff 30%, var(--color-primary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .overlay-subtitle {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Loading State Screen -->
+  <div class="overlay-panel" id="loading-panel">
+    <div class="spinner" id="spinner"></div>
+    <div class="overlay-title" id="loading-title">Book System Offline</div>
+    <div class="overlay-subtitle" id="loading-text">Initializing digital reader...</div>
+  </div>
+
+  <!-- Unified Reader Layout -->
+  <div class="reader-layout">
+    
+    <!-- Sidebar for Table of Contents -->
+    <aside class="sidebar" id="sidebar-menu">
+      <div class="sidebar-header">
+        <h2>📚 Table of Contents</h2>
+        <p id="book-title">EBook Reader</p>
+      </div>
+      <div class="toc-list" id="toc-container">
+        <!-- Rendered TOC items will be injected here -->
+      </div>
+      <div class="sidebar-footer">
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="progress-fill" style="width: 0%;"></div>
+        </div>
+        <p id="page-indicator">Chapter 0 of 0</p>
+      </div>
+    </aside>
+
+    <!-- Main Content Reader View -->
+    <main class="main-content" id="main-content-view">
+      
+      <!-- Sticky Controls Topbar -->
+      <header class="controls-header">
+        <button class="toc-toggle" id="toggle-sidebar-btn">☰ Sidebar</button>
+        
+        <div class="reading-controls">
+          <button class="control-btn" id="btn-font-dec">A-</button>
+          <span class="font-size-text" id="font-size-indicator">100%</span>
+          <button class="control-btn" id="btn-font-inc">A+</button>
+          
+          <div class="theme-picker">
+            <button class="theme-btn active" id="theme-dark" style="background:#0d0f14;" title="Dark Theme"></button>
+            <button class="theme-btn" id="theme-light" style="background:#f8fafc;" title="Light Theme"></button>
+            <button class="theme-btn" id="theme-sepia" style="background:#f4ecd8;" title="Sepia Theme"></button>
+          </div>
+
+          <button class="control-btn" id="btn-fullscreen" title="Toggle Fullscreen" style="width: auto; padding: 0 0.5rem; font-size: 0.75rem; font-weight: 600;">⛶ Fullscreen</button>
+        </div>
+      </header>
+
+      <!-- Chapter XHTML Canvas -->
+      <article class="chapter-canvas" id="chapter-view">
+        <!-- XHTML page contents injected dynamically -->
+      </article>
+
+      <!-- Bottom Chapter Navigation paddles -->
+      <div class="nav-paddles" id="nav-paddles-container">
+        <button class="paddle-btn" id="btn-prev-chap">◀ Prev Chapter</button>
+        <button class="paddle-btn" id="btn-next-chap">Next Chapter ▶</button>
+      </div>
+
+    </main>
+
+  </div>
+
+  <script type="text/javascript">
+    const params = new URLSearchParams(window.location.search);
+    const rawRomUrl = params.get('rom');
+    const paramSystem = params.get('system') || 'epub';
+    const startChapterIndex = parseInt(params.get('chapter')) || 0;
+    const startScrollTop = parseFloat(params.get('scroll')) || 0;
+
+    let ebookZip = null;
+    let chapters = [];
+    let currentChapterIndex = 0;
+    let currentFontSize = 100; // Percent
+
+    // Stack-based relative path resolver for nested epub images/stylesheets
+    function cleanRelativePath(path) {
+      const parts = path.split("/");
+      const stack = [];
+      for (let part of parts) {
+        if (part === "." || part === "") continue;
+        if (part === "..") {
+          stack.pop();
+        } else {
+          stack.push(part);
+        }
+      }
+      return stack.join("/");
+    }
+
+    // Hide Loading Panel helper
+    function hideLoadingPanel() {
+      const panel = document.getElementById('loading-panel');
+      if (panel) {
+        panel.style.opacity = 0;
+        setTimeout(() => panel.style.display = 'none', 400);
+      }
+    }
+
+    // Render XHTML Chapter contents with inner assets resolved
+    async function loadChapter(index) {
+      if (index < 0 || index >= chapters.length) return;
+      currentChapterIndex = index;
+
+      const loadingText = document.getElementById('loading-text');
+      const panel = document.getElementById('loading-panel');
+      if (panel) {
+        panel.style.display = 'flex';
+        panel.style.opacity = 1;
+      }
+      if (loadingText) loadingText.innerText = `Loading chapter: ${chapters[index].title}...`;
+
+      try {
+        const chapter = chapters[index];
+        const rawText = chapter.rawText;
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(rawText, "text/html");
+
+        // Resolve all relative image tags inside the chapter in-memory using JSZip blobs
+        const docDir = chapter.path.substring(0, chapter.path.lastIndexOf("/")) || "";
+        const imgTags = doc.querySelectorAll("img, image");
+        
+        for (let img of imgTags) {
+          // epub might use 'src' or svg 'href' / 'xlink:href'
+          let src = img.getAttribute("src") || img.getAttribute("href") || img.getAttribute("xlink:href");
+          if (src && !src.startsWith("http") && !src.startsWith("data:")) {
+            const absoluteImgPath = cleanRelativePath(docDir ? `${docDir}/${src}` : src);
+            const imgFile = ebookZip.file(absoluteImgPath);
+            if (imgFile) {
+              const imgBytes = await imgFile.async("blob");
+              const imgUrl = URL.createObjectURL(imgBytes);
+              if (img.tagName.toLowerCase() === 'img') {
+                img.setAttribute("src", imgUrl);
+              } else {
+                img.setAttribute("href", imgUrl);
+                img.setAttribute("xlink:href", imgUrl);
+              }
+            }
+          }
+        }
+
+        // Extract body element markup or root element
+        const bodyContent = doc.body ? doc.body.innerHTML : doc.documentElement.innerHTML;
+        
+        // Inject into main viewer panel using a secure, scoped Shadow DOM container
+        // to prevent EPUB internal styles from leaking out and corrupting parent sidebar and controls!
+        const canvas = document.getElementById('chapter-view');
+        let shadow = canvas.shadowRoot;
+        if (!shadow) {
+          shadow = canvas.attachShadow({ mode: 'open' });
+        }
+
+        shadow.innerHTML = `
+          <style>
+            :host {
+              display: block;
+              width: 100%;
+              line-height: 1.75;
+              font-size: inherit;
+              color: var(--text-primary);
+              text-align: justify;
+              font-family: 'Outfit', sans-serif;
+            }
+            body, html {
+              background: transparent !important;
+              color: var(--text-primary) !important;
+            }
+            p {
+              margin-top: 0;
+              margin-bottom: 1.25rem;
+              text-indent: 1.5em;
+              color: var(--text-primary) !important;
+            }
+            p:first-of-type {
+              text-indent: 0;
+            }
+            img {
+              max-width: 100%;
+              height: auto;
+              display: block;
+              margin: 2rem auto;
+              border-radius: 8px;
+              box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            }
+            h1, h2, h3, h4, h5, h6 {
+              font-family: 'Outfit', sans-serif;
+              font-weight: 800;
+              color: var(--color-primary) !important;
+              line-height: 1.3;
+              margin-top: 2rem;
+              margin-bottom: 1rem;
+            }
+            /* Preserve epub internal links styling in the active theme */
+            a {
+              color: var(--color-primary) !important;
+              text-decoration: underline;
+            }
+          </style>
+          <div class="epub-body-content">
+            ${bodyContent}
+          </div>
+        `;
+
+        // Restore scroll position on initial load, otherwise reset to top
+        if (index === startChapterIndex && startScrollTop > 0) {
+          console.log(`📖 Scrolling ebook to bookmarked spot: ${startScrollTop}px`);
+          // Use setTimeout to ensure container layout and images are fully drawn
+          setTimeout(() => {
+            document.getElementById('main-content-view').scrollTop = startScrollTop;
+          }, 350);
+        } else {
+          document.getElementById('main-content-view').scrollTop = 0;
+        }
+
+        // Highlight selected chapter pill in TOC sidebar
+        const tocItems = document.querySelectorAll('.toc-item');
+        tocItems.forEach((item, idx) => {
+          if (idx === index) {
+            item.classList.add('active');
+            item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          } else {
+            item.classList.remove('active');
+          }
+        });
+
+        // Update progress controls
+        const progressFill = document.getElementById('progress-fill');
+        const pageIndicator = document.getElementById('page-indicator');
+        const total = chapters.length;
+        const current = index + 1;
+        const percent = total > 0 ? (current / total) * 100 : 0;
+
+        if (progressFill) progressFill.style.width = `${percent}%`;
+        if (pageIndicator) pageIndicator.innerText = `Chapter ${current} of ${total}`;
+
+        // Auto-save: Emit progress messages to parent React viewport
+        if (window.parent) {
+          window.parent.postMessage({
+            type: 'ebook-progress',
+            chapterIndex: index,
+            chapterTitle: chapter.title,
+            totalChapters: total,
+            bookTitle: document.getElementById('book-title').innerText,
+            scrollTop: (index === startChapterIndex) ? startScrollTop : 0,
+            scrollPercent: 0
+          }, '*');
+        }
+
+        hideLoadingPanel();
+      } catch (err) {
+        console.error('Failed to load chapter:', err);
+        const canvas = document.getElementById('chapter-view');
+        canvas.innerHTML = `<div style="padding: 2rem; color: #ef4444;">⚠️ Error: Failed to render chapter contents. ${err.message}</div>`;
+        hideLoadingPanel();
+      }
+    }
+
+    // Main EBook Reader entrypoint hook
+    window.addEventListener('DOMContentLoaded', async () => {
+      const loadingTitle = document.getElementById('loading-title');
+      const loadingText = document.getElementById('loading-text');
+      const spinner = document.getElementById('spinner');
+
+      if (!rawRomUrl) {
+        if (loadingTitle) loadingTitle.innerText = 'Reader Error';
+        if (loadingText) loadingText.innerText = 'No EBook file streaming URL provided in parameters.';
+        if (spinner) spinner.style.display = 'none';
+        return;
+      }
+
+      const fileUrl = decodeURIComponent(rawRomUrl);
+      const isPdf = fileUrl.toLowerCase().split('?')[0].endsWith('.pdf') || paramSystem === 'pdf';
+
+      // --- Case A: Render PDF directly using native Chrome engine ---
+      if (isPdf) {
+        console.log(`📖 Embedding native PDF reader for link: ${fileUrl}`);
+        hideLoadingPanel();
+        
+        // Hide sidebar controls as PDF contains its own paging layout
+        const sidebar = document.getElementById('sidebar-menu');
+        const topbar = document.querySelector('.controls-header');
+        const bottomBar = document.getElementById('nav-paddles-container');
+        if (sidebar) sidebar.style.display = 'none';
+        if (topbar) topbar.style.display = 'none';
+        if (bottomBar) bottomBar.style.display = 'none';
+        
+        // Embed PDF inside iframe filling the window
+        document.body.innerHTML = `
+          <iframe src="${fileUrl}" style="width: 100%; height: 100%; border: none; margin: 0; padding: 0;" allowfullscreen></iframe>
+        `;
+        return;
+      }
+
+      // --- Case B: Client-side EPUB parser in-memory decompressor ---
+      console.log(`📚 Downloading EPUB package in-memory: ${fileUrl}`);
+      if (loadingTitle) loadingTitle.innerText = 'Loading EBook';
+      if (loadingText) loadingText.innerText = 'Fetching ebook zip package...';
+
+      try {
+        const res = await fetch(fileUrl);
+        if (!res.ok) throw new Error(`CDN replied with status: ${res.status}`);
+
+        const arrayBuffer = await res.arrayBuffer();
+        if (loadingText) loadingText.innerText = 'Parsing EPUB container manifest...';
+
+        const zip = await JSZip.loadAsync(arrayBuffer);
+        ebookZip = zip;
+
+        // A. Read META-INF/container.xml to find the root OPF file path
+        const containerXmlText = await zip.file("META-INF/container.xml").async("text");
+        const parser = new DOMParser();
+        const containerDoc = parser.parseFromString(containerXmlText, "text/xml");
+        const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+
+        console.log(`OPF package manifest located at: ${opfPath}`);
+
+        // B. Read OPF file contents to parse the manifest resources and spine reading order
+        const opfText = await zip.file(opfPath).async("text");
+        const opfDoc = parser.parseFromString(opfText, "text/xml");
+
+        // B1. Parse Title metadata
+        const titleTag = opfDoc.querySelector("title");
+        if (titleTag) {
+          document.getElementById('book-title').innerText = titleTag.textContent.trim();
+        }
+
+        // B2. Map all manifest item resource references
+        const items = opfDoc.querySelectorAll("manifest item");
+        const manifestMap = {};
+        items.forEach(el => {
+          manifestMap[el.getAttribute("id")] = el.getAttribute("href");
+        });
+
+        // B3. Extract spine reading items sequence order
+        const spineItemrefs = opfDoc.querySelectorAll("spine itemref");
+        const spineIds = Array.from(spineItemrefs).map(el => el.getAttribute("idref"));
+
+        // B4. Resolve spine file paths inside zip package
+        const opfDir = opfPath.substring(0, opfPath.lastIndexOf("/")) || "";
+        const spinePaths = spineIds.map(id => {
+          const href = manifestMap[id];
+          return opfDir ? cleanRelativePath(`${opfDir}/${href}`) : cleanRelativePath(href);
+        });
+
+        console.log(`Resolved ${spinePaths.length} reading chapters inside the spine.`);
+
+        // C. Extract chapter titles and raw text segments
+        if (loadingText) loadingText.innerText = 'Compiling chapters index...';
+
+        for (let i = 0; i < spinePaths.length; i++) {
+          const path = spinePaths[i];
+          const fileNode = zip.file(path);
+          if (!fileNode) continue;
+
+          const text = await fileNode.async("text");
+          const chapterDoc = parser.parseFromString(text, "text/html");
+          
+          let chapterTitle = `Chapter ${i + 1}`;
+          
+          // Attempt to extract title from headers h1/h2 or title tag
+          const header = chapterDoc.querySelector("h1, h2, h3");
+          const htmlTitle = chapterDoc.querySelector("title");
+          if (header) {
+            chapterTitle = header.textContent.trim();
+          } else if (htmlTitle) {
+            chapterTitle = htmlTitle.textContent.trim();
+          }
+
+          if (chapterTitle.length > 40) {
+            chapterTitle = chapterTitle.substring(0, 40) + "...";
+          }
+
+          chapters.push({
+            index: i,
+            path: path,
+            title: chapterTitle,
+            rawText: text
+          });
+        }
+
+        if (chapters.length === 0) {
+          throw new Error('EBook manifest spine is empty or contains no compatible text nodes.');
+        }
+
+        // D. Populate Table of Contents Sidebar links
+        const tocContainer = document.getElementById('toc-container');
+        tocContainer.innerHTML = '';
+
+        chapters.forEach((chap, idx) => {
+          const pill = document.createElement('button');
+          pill.className = 'toc-item';
+          pill.innerText = chap.title;
+          pill.onclick = () => loadChapter(idx);
+          tocContainer.appendChild(pill);
+        });
+
+        // E. Load first chapter or resumed chapter automatically
+        await loadChapter(startChapterIndex);
+
+      } catch (err) {
+        console.error('EPUB parser failure:', err);
+        if (loadingTitle) loadingTitle.innerText = 'Load Failure';
+        if (loadingText) loadingText.innerText = `Could not decompress EBook package: ${err.message}`;
+        if (spinner) spinner.style.display = 'none';
+      }
+    });
+
+    // --- Wire Layout controls event handlers ---
+
+    // A. Track scroll position dynamically and auto-save
+    const mainView = document.getElementById('main-content-view');
+    let scrollTimeout = null;
+    mainView.addEventListener('scroll', () => {
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        const total = chapters.length;
+        const current = currentChapterIndex + 1;
+        const totalScrollable = mainView.scrollHeight - mainView.clientHeight;
+        const scrollPercent = totalScrollable > 0 ? (mainView.scrollTop / totalScrollable) : 0;
+
+        if (window.parent && chapters[currentChapterIndex]) {
+          window.parent.postMessage({
+            type: 'ebook-progress',
+            chapterIndex: currentChapterIndex,
+            chapterTitle: chapters[currentChapterIndex].title,
+            totalChapters: total,
+            bookTitle: document.getElementById('book-title').innerText,
+            scrollTop: mainView.scrollTop,
+            scrollPercent: scrollPercent
+          }, '*');
+        }
+      }, 300); // 300ms debounce
+    });
+
+    // 1. Sidebar menu collapse toggle
+    document.getElementById('toggle-sidebar-btn').onclick = () => {
+      const sidebar = document.getElementById('sidebar-menu');
+      sidebar.classList.toggle('collapsed');
+    };
+
+    // 2. Font sizing adjustments
+    document.getElementById('btn-font-inc').onclick = () => {
+      if (currentFontSize < 180) {
+        currentFontSize += 10;
+        document.getElementById('chapter-view').style.fontSize = `${currentFontSize / 100}rem`;
+        document.getElementById('font-size-indicator').innerText = `${currentFontSize}%`;
+      }
+    };
+
+    document.getElementById('btn-font-dec').onclick = () => {
+      if (currentFontSize > 70) {
+        currentFontSize -= 10;
+        document.getElementById('chapter-view').style.fontSize = `${currentFontSize / 100}rem`;
+        document.getElementById('font-size-indicator').innerText = `${currentFontSize}%`;
+      }
+    };
+
+    // 3. Theme selector clicks
+    const themes = {
+      'theme-dark': 'theme-dark',
+      'theme-light': 'theme-light',
+      'theme-sepia': 'theme-sepia'
+    };
+
+    function selectTheme(themeId) {
+      document.body.className = '';
+      if (themeId !== 'theme-dark') {
+        document.body.classList.add(themeId);
+      }
+
+      // Highlight active theme button
+      document.querySelectorAll('.theme-btn').forEach(btn => {
+        if (btn.id === themeId) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
+
+    document.getElementById('theme-dark').onclick = () => selectTheme('theme-dark');
+    document.getElementById('theme-light').onclick = () => selectTheme('theme-light');
+    document.getElementById('theme-sepia').onclick = () => selectTheme('theme-sepia');
+
+    // 4. Chapter Navigation paddles
+    document.getElementById('btn-prev-chap').onclick = () => {
+      if (currentChapterIndex > 0) {
+        loadChapter(currentChapterIndex - 1);
+      }
+    };
+
+    document.getElementById('btn-next-chap').onclick = () => {
+      if (currentChapterIndex < chapters.length - 1) {
+        loadChapter(currentChapterIndex + 1);
+      }
+    };
+
+    // 5. Arrow keybindings for easy paging
+    window.addEventListener('keydown', (e) => {
+      // Exclude text inputs to avoid navigation clashes
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+
+      if (e.key === 'ArrowLeft') {
+        if (currentChapterIndex > 0) loadChapter(currentChapterIndex - 1);
+      } else if (e.key === 'ArrowRight') {
+        if (currentChapterIndex < chapters.length - 1) loadChapter(currentChapterIndex + 1);
+      }
+    });
+
+    // 6. Fullscreen toggle binding
+    document.getElementById('btn-fullscreen').onclick = () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => {
+          console.error(`Error enabling fullscreen: ${err.message}`);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    };
+  </script>
+</body>
+</html>

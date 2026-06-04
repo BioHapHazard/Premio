@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Premio Retro Arcade Console</title>
+  
+  <!-- JSZip for client-side ZIP rom parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  
+  <style>
+    :root {
+      --color-primary: #8b5cf6;
+      --color-primary-glow: rgba(139, 92, 246, 0.4);
+      --color-secondary: #d946ef;
+      --color-success: #10b981;
+      --color-bg: #0d0f14;
+      --color-card: rgba(22, 28, 45, 0.6);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --text-primary: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--color-bg);
+      color: var(--text-primary);
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* Container for EmulatorJS */
+    #game {
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+
+    /* Glassmorphic Overlay System */
+    .overlay-panel {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--color-bg);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 2rem;
+      box-sizing: border-box;
+    }
+
+    .spinner {
+      border: 4px solid rgba(139, 92, 246, 0.1);
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border-left-color: var(--color-primary);
+      box-shadow: 0 0 15px var(--color-primary-glow);
+      animation: spin 1s linear infinite;
+      margin-bottom: 1.5rem;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .overlay-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      background: linear-gradient(135deg, #fff 30%, var(--color-primary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
+    }
+
+    .overlay-subtitle {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+    }
+
+    /* Multi-ROM Selection Menu */
+    .selection-card {
+      background: var(--color-card);
+      border: 1px solid var(--glass-border);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-radius: 16px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 700px;
+      max-height: 85%;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      animation: zoomIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    @keyframes zoomIn {
+      0% { transform: scale(0.92); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .selection-header {
+      margin-bottom: 1.5rem;
+      text-align: center;
+    }
+
+    .selection-header h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: #fff;
+    }
+
+    .selection-header p {
+      margin: 0.5rem 0 0;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .rom-list {
+      overflow-y: auto;
+      flex: 1;
+      padding-right: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    /* Custom Scrollbar for ROM list */
+    .rom-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    .rom-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .rom-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+    }
+    .rom-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(139, 92, 246, 0.3);
+    }
+
+    .rom-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 1.15rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: left;
+    }
+
+    .rom-item:hover {
+      background: rgba(139, 92, 246, 0.08);
+      border-color: var(--color-primary);
+      box-shadow: 0 0 15px rgba(139, 92, 246, 0.15);
+      transform: translateY(-1px);
+    }
+
+    /* Floating Back to Selector Button styling */
+    #back-to-selector-btn {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      z-index: 99999;
+      background: rgba(13, 15, 20, 0.85);
+      border: 1px solid var(--color-primary);
+      border-radius: 8px;
+      color: #fff;
+      padding: 0.6rem 1.1rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 0 15px var(--color-primary-glow);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    #back-to-selector-btn:hover {
+      background: var(--color-primary);
+      box-shadow: 0 0 20px var(--color-primary);
+      transform: translateY(-1px);
+    }
+
+    .rom-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .rom-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rom-meta {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    .system-badge {
+      padding: 0.1rem 0.4rem;
+      background: var(--color-primary-glow);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 4px;
+      font-size: 0.65rem;
+      color: #ddd;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .play-icon {
+      font-size: 1.1rem;
+      color: var(--color-primary);
+      opacity: 0.7;
+      transition: opacity 0.2s;
+      margin-left: 0.75rem;
+    }
+
+    .rom-item:hover .play-icon {
+      opacity: 1;
+      color: var(--color-secondary);
+    }
+
+    /* ROM Search Bar Styling */
+    .search-container {
+      margin-bottom: 1.25rem;
+      position: relative;
+      width: 100%;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 0.75rem 1rem 0.75rem 2.5rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      color: #fff;
+      font-size: 0.9rem;
+      font-family: inherit;
+      box-sizing: border-box;
+      outline: none;
+      transition: all 0.3s ease;
+    }
+
+    .search-input:focus {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: var(--color-primary);
+      box-shadow: 0 0 15px var(--color-primary-glow);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 0.9rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+      font-size: 0.95rem;
+    }
+
+    /* CRT scanline filter effect toggled on emulator */
+    .crt-effect {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+      background-size: 100% 4px, 6px 100%;
+      z-index: 10;
+      pointer-events: none;
+      opacity: 0.15;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Retro CRT Scanline Overlay -->
+  <div class="crt-effect"></div>
+
+  <!-- Floating Back to Selector Menu Button -->
+  <button id="back-to-selector-btn" style="display: none;">🎮 Game Menu</button>
+
+  <!-- Loading State Screen -->
+  <div class="overlay-panel" id="loading-panel">
+    <div class="spinner" id="spinner"></div>
+    <div class="overlay-title" id="loading-title">Arcade System Offline</div>
+    <div class="overlay-subtitle" id="loading-text">Initializing console loader...</div>
+  </div>
+
+  <!-- Multi-ROM Selection Overlay -->
+  <div class="overlay-panel" id="selection-panel" style="display: none; opacity: 0;">
+    <div class="selection-card">
+      <div class="selection-header">
+        <h2>🎮 Retro Games Library</h2>
+        <p>This zip package contains multiple retro games. Select a ROM to play:</p>
+      </div>
+      
+      <!-- ROM Search Bar -->
+      <div class="search-container">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="rom-search" class="search-input" placeholder="Search ROMs in bundle..." autocomplete="off">
+      </div>
+      
+      <div class="rom-list" id="rom-list-container">
+        <!-- Rendered ROM Items will be injected here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Emulator Canvas Container -->
+  <div id="game"></div>
+
+  <script type="text/javascript">
+    const params = new URLSearchParams(window.location.search);
+    const rawRomUrl = params.get('rom');
+    const paramSystem = params.get('system') || 'zip'; // "zip" initiates auto-detection
+    const paramFile = params.get('file') || '';
+
+    // Retro system extension dictionary mapping
+    const EXTENSION_TO_SYSTEM = {
+      'nes': 'nes',
+      'sfc': 'snes',
+      'smc': 'snes',
+      'md': 'segaMD',
+      'gen': 'segaMD',
+      'bin': 'segaMD',
+      'gb': 'gb',
+      'gbc': 'gbc',
+      'gba': 'gba',
+      'a26': 'atari2600',
+      'a78': 'atari7800'
+    };
+
+    const SYSTEM_DISPLAY_NAMES = {
+      'nes': 'Nintendo (NES)',
+      'snes': 'Super Nintendo (SNES)',
+      'segaMD': 'Sega Genesis',
+      'gb': 'Game Boy',
+      'gbc': 'Game Boy Color',
+      'gba': 'Game Boy Advance',
+      'atari2600': 'Atari 2600',
+      'atari7800': 'Atari 7800'
+    };
+
+    function getSystemFromFilename(name) {
+      const ext = name.split('.').pop().toLowerCase();
+      return EXTENSION_TO_SYSTEM[ext] || null;
+    }
+
+    // Hide Loading Panel Helper
+    function hideLoadingPanel() {
+      const panel = document.getElementById('loading-panel');
+      if (panel) {
+        panel.style.opacity = 0;
+        setTimeout(() => panel.style.display = 'none', 400);
+      }
+    }
+
+    // Show Selection Panel Helper
+    function showSelectionPanel() {
+      const panel = document.getElementById('selection-panel');
+      if (panel) {
+        panel.style.display = 'flex';
+        // Force reflow
+        panel.offsetHeight;
+        panel.style.opacity = 1;
+      }
+    }
+
+    // Hide Selection Panel Helper
+    function hideSelectionPanel() {
+      const panel = document.getElementById('selection-panel');
+      if (panel) {
+        panel.style.opacity = 0;
+        setTimeout(() => panel.style.display = 'none', 400);
+      }
+    }
+
+    // Recreate a clean #game canvas container to purge active WASM core state
+    function resetEmulator() {
+      console.log('🔄 Tearing down active emulator instance...');
+      
+      // 1. Hide floating menu button
+      const backBtn = document.getElementById('back-to-selector-btn');
+      if (backBtn) backBtn.style.display = 'none';
+
+      // 2. Destroy and clear EJS global state if bound
+      if (window.EJS_emulator) {
+        try {
+          window.EJS_emulator.destroy();
+        } catch (e) {
+          console.log('EJS destroy failed or unsupported:', e);
+        }
+        window.EJS_emulator = null;
+      }
+
+      // 3. Delete bound window properties
+      delete window.EJS_player;
+      delete window.EJS_core;
+      delete window.EJS_gameUrl;
+      delete window.EJS_pathtodata;
+      delete window.EJS_startOnLoaded;
+      delete window.EJS_onGameStart;
+
+      // 4. Remove EJS-associated CDN script nodes to avoid memory/instance locks
+      const scripts = document.querySelectorAll('script[src*="emulatorjs.org"]');
+      scripts.forEach(s => s.remove());
+
+      // 5. Purge EJS-created canvas and controls from container
+      const gameDiv = document.getElementById('game');
+      if (gameDiv) {
+        gameDiv.innerHTML = '';
+      }
+    }
+
+    // Attach click handler to the floating selector menu button
+    window.addEventListener('DOMContentLoaded', () => {
+      const backBtn = document.getElementById('back-to-selector-btn');
+      if (backBtn) {
+        backBtn.onclick = () => {
+          resetEmulator();
+          showSelectionPanel();
+        };
+      }
+    });
+
+    // Load EmulatorJS instance
+    function launchEmulator(romBlobUrl, systemCore, romFilename = '') {
+      console.log(`🕹️ Booting EmulatorJS with core: ${systemCore}`);
+      
+      const loadingTitle = document.getElementById('loading-title');
+      const loadingText = document.getElementById('loading-text');
+      const spinner = document.getElementById('spinner');
+
+      if (loadingTitle) loadingTitle.innerText = 'Booting Console';
+      if (loadingText) loadingText.innerText = `Compiling WASM core for ${SYSTEM_DISPLAY_NAMES[systemCore] || systemCore}...`;
+      if (spinner) spinner.style.display = 'block';
+
+      // Re-enable loading overlay before mount
+      const panel = document.getElementById('loading-panel');
+      if (panel) {
+        panel.style.display = 'flex';
+        panel.style.opacity = 1;
+      }
+
+      // Configure globally bound EJS variables
+      EJS_player = '#game';
+      EJS_core = systemCore;
+      EJS_gameUrl = romBlobUrl;
+      EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+      
+      // Load save state controls automatically
+      EJS_startOnLoaded = true;
+      
+      if (romFilename) {
+        EJS_gameName = romFilename;
+      }
+      
+      // Listen for core ready to tear down overlay
+      EJS_onGameStart = function() {
+        console.log('🎮 Emulator ready! Canvas active.');
+        hideLoadingPanel();
+        
+        // Show floating menu button when gameplay is active
+        const backBtn = document.getElementById('back-to-selector-btn');
+        if (backBtn) backBtn.style.display = 'flex';
+      };
+
+      // Load loader.js dynamically
+      const script = document.createElement('script');
+      script.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+      script.onload = () => {
+        console.log('✅ EmulatorJS core loader script mounted.');
+      };
+      script.onerror = () => {
+        if (loadingText) loadingText.innerText = 'Error: Failed to fetch core loader from CDN.';
+        if (spinner) spinner.style.display = 'none';
+      };
+      document.body.appendChild(script);
+    }
+
+    // --- Main Initializer Flow ---
+    window.addEventListener('DOMContentLoaded', async () => {
+      const loadingTitle = document.getElementById('loading-title');
+      const loadingText = document.getElementById('loading-text');
+      const spinner = document.getElementById('spinner');
+
+      if (!rawRomUrl) {
+        if (loadingTitle) loadingTitle.innerText = 'Console Error';
+        if (loadingText) loadingText.innerText = 'No ROM streaming link provided in context.';
+        if (spinner) spinner.style.display = 'none';
+        return;
+      }
+
+      // Decode URL parameters safely
+      const romUrl = decodeURIComponent(rawRomUrl);
+      console.log(`🌐 ROM resource URL: ${romUrl}`);
+
+      // Case A: Directly loading a Zip Archive
+      const isZip = romUrl.toLowerCase().split('?')[0].endsWith('.zip') || paramSystem === 'zip';
+
+      if (isZip) {
+        if (loadingTitle) loadingTitle.innerText = 'Analyzing Pack';
+        if (loadingText) loadingText.innerText = 'Downloading zip archive in-memory...';
+
+        try {
+          // Fetch Zip file bytes through our CORS proxy
+          const res = await fetch(romUrl);
+          if (!res.ok) throw new Error(`CDN replied with status: ${res.status}`);
+          
+          const arrayBuffer = await res.arrayBuffer();
+          if (loadingText) loadingText.innerText = 'Decompressing Zip headers...';
+
+          const zip = await JSZip.loadAsync(arrayBuffer);
+          const romFiles = [];
+
+          // Parse and extract valid ROM filenames
+          zip.forEach((relativePath, file) => {
+            if (file.dir) return; // Skip directories
+            let sys = getSystemFromFilename(relativePath);
+            
+            // If it ends in .zip, we can also support it!
+            if (!sys && relativePath.toLowerCase().endsWith('.zip')) {
+              sys = 'zip';
+            }
+            
+            if (sys) {
+              romFiles.push({
+                name: relativePath,
+                system: sys,
+                fileObject: file
+              });
+            }
+          });
+
+          console.log(`ℹ&nbsp; Zip package contains ${romFiles.length} valid ROM games.`);
+
+          if (romFiles.length === 0) {
+            throw new Error('No compatible retro ROM files found inside the Zip package.');
+          }
+
+          // Case A1: Zip contains exactly ONE rom file -> Load directly!
+          if (romFiles.length === 1) {
+            const romInfo = romFiles[0];
+            const cleanName = romInfo.name.split('/').pop();
+            if (loadingText) loadingText.innerText = `Extracting ${cleanName}...`;
+            
+            let finalRomBlobUrl = null;
+            let finalSystem = romInfo.system;
+            const bytes = await romInfo.fileObject.async('uint8array');
+
+            if (romInfo.name.toLowerCase().endsWith('.zip')) {
+              if (loadingText) loadingText.innerText = `Reading inner zip package...`;
+              const innerZip = await JSZip.loadAsync(bytes);
+              const innerRomFiles = [];
+
+              innerZip.forEach((relativePath, file) => {
+                if (file.dir) return;
+                const sys = getSystemFromFilename(relativePath);
+                if (sys) {
+                  innerRomFiles.push({
+                    name: relativePath,
+                    system: sys,
+                    fileObject: file
+                  });
+                }
+              });
+
+              if (innerRomFiles.length > 0) {
+                const innerRom = innerRomFiles[0];
+                if (loadingText) loadingText.innerText = `Extracting ${innerRom.name.split('/').pop()} from inner package...`;
+                const romBytes = await innerRom.fileObject.async('uint8array');
+                const romBlob = new Blob([romBytes], { type: 'application/octet-stream' });
+                finalRomBlobUrl = URL.createObjectURL(romBlob);
+                finalSystem = innerRom.system;
+              } else {
+                const romBlob = new Blob([bytes], { type: 'application/zip' });
+                finalRomBlobUrl = URL.createObjectURL(romBlob);
+                finalSystem = 'zip';
+              }
+            } else {
+              const romBlob = new Blob([bytes], { type: 'application/octet-stream' });
+              finalRomBlobUrl = URL.createObjectURL(romBlob);
+            }
+
+            // Launch the core directly
+            hideLoadingPanel();
+            launchEmulator(finalRomBlobUrl, finalSystem, cleanName);
+            hideLoadingPanel();
+            
+            // Sort ROMs alphabetically by clean filename case-insensitively
+            romFiles.sort((a, b) => {
+              const nameA = a.name.split('/').pop().toLowerCase();
+              const nameB = b.name.split('/').pop().toLowerCase();
+              return nameA.localeCompare(nameB);
+            });
+
+            const listContainer = document.getElementById('rom-list-container');
+            const searchInput = document.getElementById('rom-search');
+
+            // Function to render ROMs based on search filter
+            function renderRoms(filter = '') {
+              listContainer.innerHTML = '';
+              const query = filter.toLowerCase().trim();
+
+              const filtered = romFiles.filter(rom => {
+                const displayName = rom.name.split('/').pop().replace(/\.[^/.]+$/, "");
+                return displayName.toLowerCase().includes(query);
+              });
+
+              if (filtered.length === 0) {
+                const noResults = document.createElement('div');
+                noResults.style.padding = '2rem';
+                noResults.style.textAlign = 'center';
+                noResults.style.color = 'var(--text-muted)';
+                noResults.style.fontSize = '0.9rem';
+                noResults.innerHTML = `No ROMs match "${filter}"`;
+                listContainer.appendChild(noResults);
+                return;
+              }
+
+              filtered.forEach(rom => {
+                const displayName = rom.name.split('/').pop().replace(/\.[^/.]+$/, "");
+                const isInnerZip = rom.name.toLowerCase().endsWith('.zip');
+                
+                let badgeText = SYSTEM_DISPLAY_NAMES[rom.system] || rom.system;
+                if (isInnerZip) {
+                  badgeText = 'ZIP Package';
+                }
+
+                const item = document.createElement('button');
+                item.className = 'rom-item';
+                item.innerHTML = `
+                  <div class="rom-info">
+                    <span class="rom-name" title="${displayName}">${displayName}</span>
+                    <div class="rom-meta">
+                      <span class="system-badge">${badgeText}</span>
+                    </div>
+                  </div>
+                  <span class="play-icon">▶</span>
+                `;
+
+                item.onclick = async () => {
+                  // Hide selection menu and show spinner again
+                  hideSelectionPanel();
+                  
+                  // Spawn loading spinner
+                  const panel = document.getElementById('loading-panel');
+                  if (panel) {
+                    panel.style.display = 'flex';
+                    panel.style.opacity = 1;
+                  }
+                  if (loadingTitle) loadingTitle.innerText = 'Extracting ROM';
+                  if (loadingText) loadingText.innerText = `Decompressing ${displayName}...`;
+                  if (spinner) spinner.style.display = 'block';
+
+                  try {
+                    let finalRomBlobUrl = null;
+                    let finalSystem = rom.system;
+
+                    const bytes = await rom.fileObject.async('uint8array');
+
+                    if (isInnerZip) {
+                      if (loadingText) loadingText.innerText = `Reading inner zip package...`;
+                      const innerZip = await JSZip.loadAsync(bytes);
+                      const innerRomFiles = [];
+
+                      innerZip.forEach((relativePath, file) => {
+                        if (file.dir) return;
+                        const sys = getSystemFromFilename(relativePath);
+                        if (sys) {
+                          innerRomFiles.push({
+                            name: relativePath,
+                            system: sys,
+                            fileObject: file
+                          });
+                        }
+                      });
+
+                      if (innerRomFiles.length > 0) {
+                        const innerRom = innerRomFiles[0];
+                        if (loadingText) loadingText.innerText = `Extracting ${innerRom.name.split('/').pop()} from inner package...`;
+                        const romBytes = await innerRom.fileObject.async('uint8array');
+                        const romBlob = new Blob([romBytes], { type: 'application/octet-stream' });
+                        finalRomBlobUrl = URL.createObjectURL(romBlob);
+                        finalSystem = innerRom.system;
+                      } else {
+                        const romBlob = new Blob([bytes], { type: 'application/zip' });
+                        finalRomBlobUrl = URL.createObjectURL(romBlob);
+                        finalSystem = 'zip';
+                      }
+                    } else {
+                      const romBlob = new Blob([bytes], { type: 'application/octet-stream' });
+                      finalRomBlobUrl = URL.createObjectURL(romBlob);
+                    }
+
+                    // Boot Emulator
+                    launchEmulator(finalRomBlobUrl, finalSystem, rom.name.split('/').pop());
+                  } catch (err) {
+                    console.error('Extraction failed:', err.message);
+                    if (loadingTitle) loadingTitle.innerText = 'Extraction Error';
+                    if (loadingText) loadingText.innerText = `Decompression failed: ${err.message}`;
+                    if (spinner) spinner.style.display = 'none';
+                  }
+                };
+
+                listContainer.appendChild(item);
+              });
+            }
+
+            // Initial render
+            renderRoms();
+
+            // Listen to search changes
+            if (searchInput) {
+              searchInput.value = ''; // Reset on load
+              searchInput.addEventListener('input', (e) => {
+                renderRoms(e.target.value);
+              });
+            }
+
+            showSelectionPanel();
+          }
+
+        } catch (err) {
+          console.error('Zip parser failed:', err.message);
+          if (loadingTitle) loadingTitle.innerText = 'Unpack Failed';
+          if (loadingText) loadingText.innerText = `Could not parse ROM package: ${err.message}`;
+          if (spinner) spinner.style.display = 'none';
+        }
+      } 
+      // Case B: Direct ROM file stream (Uncompressed)
+      else {
+        if (loadingTitle) loadingTitle.innerText = 'Loading Console';
+        if (loadingText) loadingText.innerText = `Detecting target console system for ${paramSystem}...`;
+        
+        let targetSystem = paramSystem;
+        if (targetSystem === 'zip' || !SYSTEM_DISPLAY_NAMES[targetSystem]) {
+          // Detect system core by analyzing filename from URL
+          const filename = romUrl.split('/').pop().split('?')[0];
+          targetSystem = getSystemFromFilename(filename) || 'nes';
+        }
+
+        launchEmulator(romUrl, targetSystem, paramFile.split('/').pop() || romUrl.split('/').pop().split('?')[0]);
+      }
+    });
+  </script>
+</body>
+</html>
