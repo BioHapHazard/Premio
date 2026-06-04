@@ -1,3 +1,14 @@
+---
+title: Premio
+emoji: ⚡
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 3001
+license: cc-by-nc-4.0
+pinned: false
+---
+
 # ⚡ Premio — Real-Time Premiumize & Usenet (Newznab) Aggregator • Personal Cloud Media Suite
 
 **Premio** is a 100% stateless web application that serves as a unified interface and media manager for your **Premiumize.me** cloud storage and Usenet downloader. 
