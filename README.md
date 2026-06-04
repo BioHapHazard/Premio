@@ -5,7 +5,9 @@ colorFrom: purple
 colorTo: indigo
 sdk: docker
 app_port: 3001
-license: cc-by-nc-4.0
+license: other
+license_name: CC BY-NC 4.0
+license_link: LICENSE
 pinned: false
 ---
 
