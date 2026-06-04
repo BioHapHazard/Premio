@@ -216,6 +216,8 @@ export default function App() {
   });
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
+  const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
+  const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
 
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
@@ -434,6 +436,95 @@ export default function App() {
       triggerToast(`Cloud error: ${err.message}`, 'error');
     } finally {
       setCloudLoading(false);
+    }
+  };
+
+  // 1.5. Recursively build folder playlist for "Play All"
+  const buildFolderPlaylist = async (startFolderId, startFolderName) => {
+    setCloudPlaylistLoading(true);
+    setCloudPlaylistStatus(`Analyzing "${startFolderName}"...`);
+    triggerToast(`🔄 Initializing Play All for "${startFolderName}"...`, 'info');
+    
+    try {
+      const fetchedFiles = [];
+
+      // Depth-first search (sequential subfolder recursion) to maintain perfect chronological order
+      const scanFolder = async (folderId, folderName) => {
+        setCloudPlaylistStatus(`Scanning: ${folderName}...`);
+        
+        const url = folderId ? `/api/cloud/list?id=${encodeURIComponent(folderId)}` : '/api/cloud/list';
+        const res = await fetchWithCredentials(url);
+        if (!res.ok) throw new Error(`Failed to read folder "${folderName}"`);
+        
+        const data = await res.json();
+        if (data.status !== 'success') throw new Error(data.message || `Failed to list folder "${folderName}"`);
+        
+        const contents = data.content || [];
+        
+        // A. Filter and sort files in the current folder alphanumerically
+        const currentFiles = contents
+          .filter(item => item.type === 'file')
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+          
+        const videos = currentFiles.filter(f => {
+          const ext = f.name.split('.').pop().toLowerCase();
+          return ['mkv', 'mp4', 'avi', 'mov', 'webm'].includes(ext);
+        }).map(f => ({
+          name: f.name,
+          link: f.stream_link || f.link,
+          size: f.size || 0,
+          type: 'video',
+          id: f.id
+        }));
+        
+        fetchedFiles.push(...videos);
+        
+        // B. Filter and sort subfolders alphanumerically
+        const subfolders = contents
+          .filter(item => item.type === 'folder')
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+          
+        // C. Process subfolders recursively
+        for (const sub of subfolders) {
+          await scanFolder(sub.id, sub.name);
+        }
+      };
+
+      await scanFolder(startFolderId, startFolderName);
+
+      if (fetchedFiles.length === 0) {
+        triggerToast('⚠️ No streamable video files found in this folder or its subfolders.', 'warning');
+        return;
+      }
+
+      setPlayerLoading(true);
+      
+      const virtualTorrent = {
+        title: startFolderName,
+        category: 'TV', // Set to 'TV' to activate sequential autoplay!
+        isCloudFile: true,
+        isCloudPlaylist: true,
+        link: fetchedFiles[0].link,
+        files: fetchedFiles
+      };
+      
+      setActivePlayerTorrent(virtualTorrent);
+      setActiveRetroTorrent(null);
+      setSelectedRetroRomFile(null);
+      setPlayerFiles(fetchedFiles);
+      setSelectedSubtitleFile(null);
+      setSubtitleTrackUrl(null);
+      setResumeTime(0);
+      
+      // Select the first video file
+      setSelectedVideoFile(fetchedFiles[0]);
+      triggerToast(`🍿 Loaded ${fetchedFiles.length} videos. Enjoy!`, 'success');
+    } catch (err) {
+      console.error('❌ Play All Failed:', err);
+      triggerToast(`Failed to build playlist: ${err.message}`, 'error');
+    } finally {
+      setCloudPlaylistLoading(false);
+      setCloudPlaylistStatus('');
     }
   };
 
@@ -4387,9 +4478,41 @@ export default function App() {
               >
                 🔄 Refresh
               </button>
+              {cloudFolderId && (
+                <button 
+                  type="button" 
+                  className="search-submit-btn hover-action"
+                  style={{ 
+                    width: 'auto', 
+                    padding: '0.5rem 1.5rem', 
+                    height: '42px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '0.5rem', 
+                    fontSize: '0.95rem',
+                    background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)',
+                    border: 'none'
+                  }}
+                  onClick={() => buildFolderPlaylist(cloudFolderId, cloudFolderName)}
+                  disabled={cloudLoading || cloudPlaylistLoading}
+                >
+                  🎬 Play All
+                </button>
+              )}
             </div>
 
-            {cloudLoading ? (
+            {cloudPlaylistLoading ? (
+              <div className="loading-state glass-panel" style={{ padding: '4rem 2rem' }}>
+                <div className="spinner"></div>
+                <h2>🎬 Building "Play All" Playlist...</h2>
+                <p style={{ marginTop: '0.75rem', color: 'var(--color-primary)', fontWeight: 'bold', fontSize: '1.1rem' }}>
+                  {cloudPlaylistStatus}
+                </p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                  Scanning directories recursively and organizing media tracks chronologically.
+                </p>
+              </div>
+            ) : cloudLoading ? (
               <div className="loading-state glass-panel" style={{ padding: '4rem 2rem' }}>
                 <div className="spinner"></div>
                 <h2>Retrieving Cloud Storage contents...</h2>
@@ -4526,6 +4649,13 @@ export default function App() {
                                       onClick={() => bookmarkCloudItem(folder)}
                                     >
                                       ⭐ Bookmark
+                                    </button>
+                                    <button 
+                                      className="cache-badge badge-stream hover-action" 
+                                      style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '0.8rem' }}
+                                      onClick={() => buildFolderPlaylist(folder.id, folder.name)}
+                                    >
+                                      🎬 Play All
                                     </button>
                                   </div>
                                 )}
