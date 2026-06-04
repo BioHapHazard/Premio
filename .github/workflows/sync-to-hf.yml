@@ -3,14 +3,42 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   sync-premio-suite:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           lfs: true
+
+      - name: Prepend HF metadata to README
+        run: |
+          cat > /tmp/hf-header.txt << 'EOF'
+          ---
+          title: Premio
+          emoji: ⚡
+          colorFrom: purple
+          colorTo: indigo
+          sdk: docker
+          app_port: 3001
+          license: mit
+          pinned: false
+          ---
+          EOF
+          cat /tmp/hf-header.txt README.md > /tmp/README_HF.md
+          mv /tmp/README_HF.md README.md
+
+      - name: Commit HF metadata
+        run: |
+          git config user.email "BioHapHazard@users.noreply.github.com"
+          git config user.name "BioHapHazard"
+          git add README.md
+          git commit -m "ci: inject HF metadata" --allow-empty
+
       - name: Push to HF Space (premio-suite)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -20,10 +48,35 @@ jobs:
   sync-premio:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           lfs: true
+
+      - name: Prepend HF metadata to README
+        run: |
+          cat > /tmp/hf-header.txt << 'EOF'
+          ---
+          title: Premio
+          emoji: ⚡
+          colorFrom: purple
+          colorTo: indigo
+          sdk: docker
+          app_port: 3001
+          license: mit
+          pinned: false
+          ---
+          EOF
+          cat /tmp/hf-header.txt README.md > /tmp/README_HF.md
+          mv /tmp/README_HF.md README.md
+
+      - name: Commit HF metadata
+        run: |
+          git config user.email "BioHapHazard@users.noreply.github.com"
+          git config user.name "BioHapHazard"
+          git add README.md
+          git commit -m "ci: inject HF metadata" --allow-empty
+
       - name: Push to HF Space (Premio)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

@@ -1,13 +1,3 @@
----
-title: Premio
-emoji: ⚡
-colorFrom: purple
-colorTo: indigo
-sdk: docker
-app_port: 3001
-license: mit
-pinned: false
----
 
 # ⚡ Premio — Real-Time Premiumize & Usenet (Newznab) Aggregator • Personal Cloud Media Suite
 
