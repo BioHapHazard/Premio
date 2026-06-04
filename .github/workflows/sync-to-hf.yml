@@ -1,0 +1,31 @@
+name: Sync to Hugging Face Spaces
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-premio-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to HF Space (premio-suite)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git push https://BioHapHazard:$HF_TOKEN@huggingface.co/spaces/BioHapHazard/premio-suite main --force
+
+  sync-premio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to HF Space (Premio)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git push https://BioHapHazard:$HF_TOKEN@huggingface.co/spaces/BioHapHazard/Premio main --force
