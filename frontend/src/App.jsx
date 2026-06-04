@@ -218,6 +218,10 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
   const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
+  const [showPlaylistChoiceModal, setShowPlaylistChoiceModal] = useState(false);
+  const [pendingPlaylistFiles, setPendingPlaylistFiles] = useState([]);
+  const [pendingPlaylistName, setPendingPlaylistName] = useState('');
+  const [hasAviOrMkvInPending, setHasAviOrMkvInPending] = useState(false);
 
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
@@ -497,17 +501,14 @@ export default function App() {
         return;
       }
 
-      const virtualTorrent = {
-        title: startFolderName,
-        category: 'TV', // Set to 'TV' to activate sequential autoplay!
-        isCloudFile: true,
-        isCloudPlaylist: true,
-        link: fetchedFiles[0].link,
-        files: fetchedFiles
-      };
-      
-      await startStreaming(virtualTorrent);
-      triggerToast(`🍿 Loaded ${fetchedFiles.length} videos. Enjoy!`, 'success');
+      setPendingPlaylistFiles(fetchedFiles);
+      setPendingPlaylistName(startFolderName);
+      const hasUnplayable = fetchedFiles.some(f => {
+        const ext = f.name.split('.').pop().toLowerCase();
+        return ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
+      });
+      setHasAviOrMkvInPending(hasUnplayable);
+      setShowPlaylistChoiceModal(true);
     } catch (err) {
       console.error('❌ Play All Failed:', err);
       triggerToast(`Failed to build playlist: ${err.message}`, 'error');
@@ -515,6 +516,48 @@ export default function App() {
       setCloudPlaylistLoading(false);
       setCloudPlaylistStatus('');
     }
+  };
+
+  // Helper: Open browser streaming playlist
+  const handleLaunchBrowserPlaylist = async (files, name) => {
+    setShowPlaylistChoiceModal(false);
+    setPlayerLoading(true);
+    try {
+      const virtualTorrent = {
+        title: name,
+        category: 'TV', // Set to 'TV' to activate sequential autoplay!
+        isCloudFile: true,
+        isCloudPlaylist: true,
+        link: files[0].link,
+        files: files
+      };
+      await startStreaming(virtualTorrent);
+    } catch (e) {
+      console.error(e);
+      triggerToast('Failed to start browser streaming', 'error');
+    } finally {
+      setPlayerLoading(false);
+    }
+  };
+
+  // Helper: Generate and download M3U playlist file for VLC / external players
+  const downloadM3UPlaylist = (files, playlistName) => {
+    setShowPlaylistChoiceModal(false);
+    let m3uContent = '#EXTM3U\n';
+    files.forEach(file => {
+      m3uContent += `#EXTINF:-1,${file.name}\n${file.link}\n`;
+    });
+    
+    const blob = new Blob([m3uContent], { type: 'audio/x-mpegurl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${playlistName.replace(/[/\\?%*:|"<>\s]/g, '_')}_playlist.m3u`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    triggerToast('📥 M3U Playlist downloaded! Open it with VLC to play all.', 'success');
   };
 
   // 2. Rename item (File or Folder)
@@ -648,14 +691,14 @@ export default function App() {
       
       const videoFile = {
         name: file.name,
-        link: file.link || file.stream_link,
+        link: file.stream_link || file.link,
         size: file.size || 0,
         type: 'video'
       };
 
       startStreaming({
         title: file.name,
-        link: file.link || file.stream_link,
+        link: file.stream_link || file.link,
         size: file.size || 0,
         category: 'Movies',
         isCloudFile: true,
@@ -5968,6 +6011,85 @@ export default function App() {
                   🚀 Finish & Start Searching
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🎬 Playlist Choice Modal */}
+      {showPlaylistChoiceModal && (
+        <div className="modal-overlay legal-modal-overlay fade-in">
+          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '500px', width: '90%' }}>
+            <div className="modal-header">
+              <h2 style={{ background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>🎬 Choose Playback Mode</h2>
+            </div>
+            
+            <div className="modal-body" style={{ fontSize: '0.95rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '12px', lineHeight: '1.4' }}>
+              <p>
+                We found <strong>{pendingPlaylistFiles.length} videos</strong> inside <strong>&quot;{pendingPlaylistName}&quot;</strong>.
+              </p>
+              
+              {hasAviOrMkvInPending && (
+                <div style={{ background: 'rgba(239, 68, 68, 0.08)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #ef4444', fontSize: '0.8rem', color: '#fca5a5', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontWeight: 'bold' }}>⚠️ Browser Codec Warning:</span>
+                  <span>
+                    Some files are in <strong>.avi</strong> or <strong>.mkv</strong> formats. Modern web browsers (Chrome, Safari, Edge) cannot play these formats natively. Since Premiumize retired their public video transcoding API, these will show a black screen or fail to play in the browser.
+                  </span>
+                </div>
+              )}
+
+              <p>
+                How would you like to play this playlist?
+              </p>
+            </div>
+            
+            <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+              <button 
+                type="button" 
+                className="action-btn"
+                onClick={() => handleLaunchBrowserPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
+                style={{ 
+                  width: '100%', 
+                  background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)',
+                  padding: '12px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                🌐 Play in Web Browser (HTML5)
+              </button>
+              
+              <button 
+                type="button" 
+                className="action-btn success"
+                onClick={() => downloadM3UPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
+                style={{ 
+                  width: '100%', 
+                  background: 'linear-gradient(135deg, #22c55e 0%, #15803d 100%)',
+                  padding: '12px',
+                  fontWeight: 'bold',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                📥 Download M3U Playlist (Recommended for VLC)
+              </button>
+
+              <button 
+                type="button" 
+                className="action-btn text-only"
+                onClick={() => setShowPlaylistChoiceModal(false)}
+                style={{ 
+                  width: '100%', 
+                  padding: '8px',
+                  color: 'var(--text-muted)',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
