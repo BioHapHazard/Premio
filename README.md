@@ -105,6 +105,12 @@ Switch the application's theme preset. Your preference is persisted in `localSto
   * Active adult transfers are omitted from local download logs.
   * Bookmarked adult releases are hidden from view.
 
+### 🤖 8. Premiumize.ai AI Assistant Integration
+Premio integrates with your **Premiumize.ai** account to provide an intelligent, automated media companion under your existing subscription—with zero additional API token costs:
+* **🪄 AI Filename Cleaner**: Clean up long, messy release folder or file names (e.g. `Stranger.Things.S01E01.1080p.WEB.h264-EDITH.mkv` ➡️ `Stranger Things S01E01`) in 1-click while renaming files or folders in your cloud browser.
+* **✨ AI Playlist Curator**: When creating M3U show playlists, type natural language rules (e.g. *"only seasons 1 and 2, chronological"* or *"only fingerprint cases"*) to filter and sort the files instantly.
+* **💬 Floating AI Co-pilot Chat Sidebar**: Access a slide-out, glassmorphic chat sidebar powered by your preferred Premiumize.ai LLM model (GPT-4o, Llama, DeepSeek) for movie recommendations, library navigation support, or casual conversations.
+
 ---
 
 ## 💻 Tech Stack & Dependencies
@@ -203,6 +209,27 @@ Jackett serves as an XML/JSON indexer proxy, aggregating search requests and tra
    * Paste it as `JACKETT_API_KEY` in your `.env` file and restart Premio.
 
 *Tip: A pre-compiled macOS ARM64 binary of Jackett is also included in the repository under the `/Jackett` folder. It can be initialized by running `./jackett` in your terminal inside that directory.*
+
+---
+
+## 🤖 Setting Up Premiumize.ai
+
+Premio routes all AI calls securely through the backend proxy using your active browser session JWT token, allowing you to access premium LLM models at no additional charge.
+
+1. **Log in to Premiumize AI**:
+   * Open [https://premiumize.ai](https://premiumize.ai) in your browser and sign in.
+2. **Retrieve your JWT Token**:
+   * Open browser Developer Tools (**F12** or right-click ➡️ **Inspect**) and select the **Network** tab.
+   * Filter the list by selecting **Fetch/XHR**.
+   * Send a chat message on the website.
+   * Click on the new request that appears (e.g., `completions`).
+   * Under **Headers** ➡️ **Request Headers**, locate the `authorization` value (looks like `Bearer eyJ...`).
+   * Copy the entire token string (Premio will automatically strip out any `Bearer` or `Bearer: ` prefix if pasted).
+3. **Save Token in Premio**:
+   * In Premio, click **⚙️ Control Panel** in the top right.
+   * Toggle **Enable Premiumize AI Assistant** to on.
+   * Paste your token in the **Premiumize.ai JWT Token** field.
+   * Click **Fetch Models** to retrieve all models available on your account and select your preferred one (e.g., Llama, GPT-4o) from the dropdown.
 
 ---
 
