@@ -2735,8 +2735,15 @@ app.post('/api/transfers/delete', async (req, res) => {
 });
 
 // G. AI Assistant Integration (Proxy for premiumize.ai)
+const sanitizeAiToken = (rawToken) => {
+  if (!rawToken) return '';
+  // Strip out "Bearer " or "Bearer: " prefixes case-insensitively and trim spaces
+  return rawToken.replace(/^Bearer:?\s*/i, '').trim();
+};
+
 app.get('/api/ai/models', async (req, res) => {
-  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+  const rawToken = req.query.token || req.headers.authorization;
+  const token = sanitizeAiToken(rawToken);
 
   if (!token) {
     return res.status(400).json({ error: 'Missing parameter: token is required.' });
@@ -2765,7 +2772,8 @@ app.get('/api/ai/models', async (req, res) => {
 });
 
 app.post('/api/ai/chat', async (req, res) => {
-  const { messages, model, token } = req.body;
+  const { messages, model, token: rawToken } = req.body;
+  const token = sanitizeAiToken(rawToken);
 
   if (!token) {
     return res.status(400).json({ error: 'Missing parameter: token is required.' });
