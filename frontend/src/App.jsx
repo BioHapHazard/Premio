@@ -6424,33 +6424,28 @@ export default function App() {
 
               {aiEnabled && pendingPlaylistFiles.length > 1 && (
                 <div style={{ marginTop: '8px', border: '1px solid var(--glass-border)', padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => setShowAICurateInput(!showAICurateInput)}>
-                    <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      ✨ Curate Playlist with Premiumize AI
-                    </span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{showAICurateInput ? '▲ Hide' : '▼ Show'}</span>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    ✨ Curate Playlist with Premiumize AI
+                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. only seasons 1 and 2, chronological, only fingerprint cases"
+                      value={aiCuratePrompt}
+                      onChange={(e) => setAiCuratePrompt(e.target.value)}
+                      className="settings-text-input small"
+                      style={{ height: '36px' }}
+                    />
+                    <button 
+                      type="button" 
+                      className="cache-badge badge-stream hover-action"
+                      style={{ border: 'none', cursor: 'pointer', padding: '8px 12px', fontSize: '0.8rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                      onClick={handleAICuratePlaylist}
+                      disabled={aiLoading}
+                    >
+                      {aiLoading ? '⏳ Curating...' : '🪄 Apply AI Curation'}
+                    </button>
                   </div>
-                  {showAICurateInput && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
-                      <input 
-                        type="text" 
-                        placeholder="e.g. only seasons 1 and 2, chronological, only fingerprint cases"
-                        value={aiCuratePrompt}
-                        onChange={(e) => setAiCuratePrompt(e.target.value)}
-                        className="settings-text-input small"
-                        style={{ height: '36px' }}
-                      />
-                      <button 
-                        type="button" 
-                        className="cache-badge badge-stream hover-action"
-                        style={{ border: 'none', cursor: 'pointer', padding: '8px 12px', fontSize: '0.8rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                        onClick={handleAICuratePlaylist}
-                        disabled={aiLoading}
-                      >
-                        {aiLoading ? '⏳ Curating...' : '🪄 Apply AI Curation'}
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
