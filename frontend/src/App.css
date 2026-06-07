@@ -4114,3 +4114,37 @@ textarea::placeholder {
   border-color: rgba(13, 11, 22, 0.95) transparent transparent transparent;
 }
 
+/* --- Premiumize AI Co-pilot Styling --- */
+
+.copilot-floating-btn:hover {
+  transform: scale(1.1) rotate(5deg);
+  box-shadow: 0 10px 30px rgba(139, 92, 246, 0.6), 0 0 20px var(--color-primary);
+}
+
+.copilot-floating-btn:active {
+  transform: scale(0.95);
+}
+
+.copilot-sidebar {
+  animation: slide-in-right-anim 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slide-in-right-anim {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+

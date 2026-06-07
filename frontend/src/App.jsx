@@ -225,6 +225,36 @@ export default function App() {
   const [pendingItemId, setPendingItemId] = useState(null);
   const [pendingItemType, setPendingItemType] = useState(''); // 'file', 'folder', or 'torrent'
 
+  // --- Premiumize AI States ---
+  const [aiEnabled, setAiEnabled] = useState(() => {
+    return localStorage.getItem('premio_ai_enabled') === 'true';
+  });
+  const [aiToken, setAiToken] = useState(() => {
+    return localStorage.getItem('premio_ai_token') || '';
+  });
+  const [aiModel, setAiModel] = useState(() => {
+    return localStorage.getItem('premio_ai_model') || 'gpt-5.4';
+  });
+  const [aiModelsList, setAiModelsList] = useState(() => {
+    const saved = localStorage.getItem('premio_ai_models_list');
+    return saved ? JSON.parse(saved) : [
+      { id: 'gpt-5.4', name: 'gpt-5.4', owned_by: 'openai' },
+      { id: 'gpt-4o', name: 'gpt-4o', owned_by: 'openai' }
+    ];
+  });
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [showAICurateInput, setShowAICurateInput] = useState(false);
+  const [aiCuratePrompt, setAiCuratePrompt] = useState('');
+  const [showAICopilot, setShowAICopilot] = useState(false);
+  const [copilotMessages, setCopilotMessages] = useState(() => {
+    const saved = localStorage.getItem('premio_ai_copilot_messages');
+    return saved ? JSON.parse(saved) : [
+      { role: 'assistant', content: '👋 Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?' }
+    ];
+  });
+  const [copilotInput, setCopilotInput] = useState('');
+
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
   const [adultControlsUnlocked, setAdultControlsUnlocked] = useState(false);
@@ -2521,10 +2551,14 @@ export default function App() {
     localStorage.removeItem('premium_search_downloads');
     localStorage.removeItem('premium_search_continue_watching');
     localStorage.removeItem('premium_search_library');
+    localStorage.removeItem('premio_ai_copilot_messages');
     setRecentSearches([]);
     setRecentDownloads([]);
     setContinueWatchingList([]);
     setLibraryList([]);
+    setCopilotMessages([
+      { role: 'assistant', content: '👋 Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?' }
+    ]);
     
     try {
       // Overwrite the cloud sync file with empty states to purge data on Premiumize
@@ -2538,6 +2572,206 @@ export default function App() {
     } catch (err) {
       console.error('Failed to clear cloud sync:', err.message);
       triggerToast('Local logs cleared, but cloud sync wipe encountered an error.', 'error');
+    }
+  };
+
+  // --- Premiumize AI Helper Functions ---
+  const fetchAiModels = async () => {
+    if (!aiToken) {
+      triggerToast('Please enter your Premiumize.ai JWT Token first.', 'error');
+      return;
+    }
+    setFetchingModels(true);
+    try {
+      const res = await fetch(`/api/ai/models?token=${encodeURIComponent(aiToken)}`);
+      if (!res.ok) {
+        throw new Error('Failed to fetch models from Premiumize.ai proxy');
+      }
+      const data = await res.json();
+      const models = data.models || data.data || [];
+      const formattedModels = models.map(m => ({
+        id: m.id,
+        name: m.name || m.id,
+        owned_by: m.owned_by || 'unknown'
+      }));
+      if (formattedModels.length > 0) {
+        setAiModelsList(formattedModels);
+        localStorage.setItem('premio_ai_models_list', JSON.stringify(formattedModels));
+        triggerToast(`Successfully loaded ${formattedModels.length} AI models!`, 'success');
+        
+        if (!formattedModels.find(m => m.id === aiModel)) {
+          setAiModel(formattedModels[0].id);
+          localStorage.setItem('premio_ai_model', formattedModels[0].id);
+        }
+      } else {
+        triggerToast('No models found in your Premiumize.ai list.', 'warning');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast('Failed to fetch models. Check your token.', 'error');
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  const handleAICleanName = async (originalName, setNameCallback) => {
+    if (!aiEnabled || !aiToken) {
+      triggerToast('AI is disabled or token is missing. Please check settings.', 'error');
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const systemPrompt = "You are a specialized filename cleaner. Your task is to take a messy movie, TV show, folder, or media release filename, clean it up to be human-readable, and output ONLY the cleaned name. Strip out resolution (1080p, 4k, etc.), source (WEB-DL, BluRay, HDTV), codecs (x264, h265, HEVC), release groups (EDITH, GalaxyTV, Joy, AVS), format extensions (.mkv, .mp4, .avi), and replace periods or underscores with spaces. Keep the title, season and episode numbers (e.g. S01E02), and release year if present. Never output any introductory text, explanation, warnings, or punctuation. If you cannot clean it, return the input name exactly.";
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Clean up this name: "${originalName}"` }
+      ];
+      
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: aiToken,
+          model: aiModel,
+          messages: messages
+        })
+      });
+      
+      if (!res.ok) {
+        throw new Error('AI request failed');
+      }
+      
+      const data = await res.json();
+      const cleaned = data.choices?.[0]?.message?.content?.trim();
+      if (cleaned) {
+        const sanitized = cleaned.replace(/^["']|["']$/g, '').trim();
+        setNameCallback(sanitized);
+        triggerToast('✨ Filename cleaned by AI!', 'success');
+      } else {
+        throw new Error('Empty response from AI');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast('Failed to clean filename with AI.', 'error');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleAICuratePlaylist = async () => {
+    if (!aiToken || !aiCuratePrompt.trim()) {
+      triggerToast('Please configure AI token and enter a curation request.', 'error');
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const fileNames = pendingPlaylistFiles.map((f, i) => `${i}: ${f.name}`).join('\n');
+      const systemPrompt = "You are an expert playlist curator. You receive a list of files in a directory in the format 'index: filename'. Your task is to filter, select, or sort these files based on the user's specific request. You MUST respond with ONLY a valid JSON array containing the indices of the matching files in the requested order (e.g., [0, 2, 5]). Do not include any explanation, code blocks, or formatting. Only return the JSON array of numbers. If no files match, return an empty array [].";
+      const userContent = `Here is the playlist file list:\n${fileNames}\n\nUser request: "${aiCuratePrompt}"`;
+      
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent }
+      ];
+      
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: aiToken,
+          model: aiModel,
+          messages: messages
+        })
+      });
+      
+      if (!res.ok) {
+        throw new Error('AI curation request failed');
+      }
+      
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content?.trim();
+      if (content) {
+        const jsonStr = content.replace(/```json|```/g, '').trim();
+        const indices = JSON.parse(jsonStr);
+        if (Array.isArray(indices)) {
+          const curatedFiles = indices
+            .map(idx => pendingPlaylistFiles[Number(idx)])
+            .filter(f => f !== undefined);
+             
+          if (curatedFiles.length > 0) {
+            setPendingPlaylistFiles(curatedFiles);
+            triggerToast(`✨ AI Playlist Curation applied: Kept ${curatedFiles.length} of ${pendingPlaylistFiles.length} items!`, 'success');
+            setShowAICurateInput(false);
+          } else {
+            triggerToast('AI curation returned 0 matching files.', 'warning');
+          }
+        } else {
+          throw new Error('AI did not return a valid array');
+        }
+      } else {
+        throw new Error('Empty response from AI');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast('Failed to apply AI curation. Please check your request formatting.', 'error');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleSendCopilotMessage = async () => {
+    if (!copilotInput.trim()) return;
+    if (!aiToken) {
+      triggerToast('Please configure your Premiumize.ai JWT Token first.', 'error');
+      return;
+    }
+    
+    const userMsg = { role: 'user', content: copilotInput.trim() };
+    const updatedMessages = [...copilotMessages, userMsg];
+    setCopilotMessages(updatedMessages);
+    setCopilotInput('');
+    setAiLoading(true);
+    
+    try {
+      const systemMessage = {
+        role: 'system',
+        content: "You are Premio Co-pilot, a helpful AI assistant built into Premio (a debrid cache streaming dashboard). You help the user manage their cloud locker, search for media, curate sleep show playlists, and recommend movies or shows. Keep your responses friendly, concise, and formatted in Markdown. If the user asks about playlists, mention that they can curate M3U files natively in the Choose Playback Mode modal using AI!"
+      };
+      
+      const payloadMessages = [
+        systemMessage,
+        ...updatedMessages.filter(m => m.role !== 'system')
+      ];
+      
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: aiToken,
+          model: aiModel,
+          messages: payloadMessages
+        })
+      });
+      
+      if (!res.ok) {
+        throw new Error('AI chat request failed');
+      }
+      
+      const data = await res.json();
+      const assistantText = data.choices?.[0]?.message?.content;
+      if (assistantText) {
+        const newHistory = [...updatedMessages, { role: 'assistant', content: assistantText }];
+        setCopilotMessages(newHistory);
+        localStorage.setItem('premio_ai_copilot_messages', JSON.stringify(newHistory));
+      } else {
+        throw new Error('No content returned');
+      }
+    } catch (err) {
+      console.error(err);
+      const errorHistory = [...updatedMessages, { role: 'assistant', content: '❌ Sorry, I encountered an error connecting to the Premiumize AI service. Please check your token in the settings.' }];
+      setCopilotMessages(errorHistory);
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -2811,6 +3045,72 @@ export default function App() {
                   placeholder="Enter your TMDb v3 API Key..."
                   className="settings-text-input"
                 />
+              </div>
+
+              {/* Premiumize AI Settings */}
+              <div className="setting-item full-width-field" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                  <div className="setting-info" style={{ flex: 1 }}>
+                    <h3>Premiumize AI Assistant</h3>
+                    <p>Enable AI features like smart filename cleaning and conversational copilot using your Premiumize.ai subscription.</p>
+                  </div>
+                  <label className="switch-control" style={{ flexShrink: 0 }}>
+                    <input 
+                      type="checkbox" 
+                      checked={aiEnabled} 
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setAiEnabled(val);
+                        localStorage.setItem('premio_ai_enabled', val);
+                      }} 
+                      id="checkbox-ai-enabled"
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                {aiEnabled && (
+                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                    <input 
+                      type="password" 
+                      value={aiToken}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setAiToken(val);
+                        localStorage.setItem('premio_ai_token', val);
+                      }}
+                      placeholder="Enter Premiumize.ai JWT Token..."
+                      className="settings-text-input"
+                    />
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      To find this: Log in to <b>premiumize.ai</b>, open browser Developer Tools (F12) ➡️ Network ➡️ send a chat message ➡️ look at request headers ➡️ copy the <b>authorization</b> value.
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
+                      <select 
+                        value={aiModel}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setAiModel(val);
+                          localStorage.setItem('premio_ai_model', val);
+                        }}
+                        className="settings-text-input small"
+                        style={{ flex: 2, height: '36px' }}
+                      >
+                        {aiModelsList.map(model => (
+                          <option key={model.id} value={model.id}>{model.name} ({model.owned_by})</option>
+                        ))}
+                      </select>
+                      <button 
+                        type="button" 
+                        className="action-btn"
+                        style={{ flex: 1, height: '36px', fontSize: '0.8rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        onClick={fetchAiModels}
+                        disabled={fetchingModels}
+                      >
+                        {fetchingModels ? '🔄 Fetching...' : '🔄 Fetch Models'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Jackett Server Settings */}
@@ -4679,6 +4979,18 @@ export default function App() {
                                         style={{ height: '32px', padding: '0 0.5rem', fontSize: '0.9rem' }}
                                         autoFocus
                                       />
+                                      {aiEnabled && (
+                                        <button
+                                          type="button"
+                                          className="cache-badge badge-stream hover-action"
+                                          style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                          onClick={() => handleAICleanName(folder.name, setCloudRenameName)}
+                                          title="Clean folder name with Premiumize AI"
+                                          disabled={aiLoading}
+                                        >
+                                          {aiLoading ? '⏳' : '🪄 Clean'}
+                                        </button>
+                                      )}
                                       <button 
                                         className="cache-badge badge-cached hover-action" 
                                         style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
@@ -4801,6 +5113,18 @@ export default function App() {
                                         style={{ height: '32px', padding: '0 0.5rem', fontSize: '0.9rem' }}
                                         autoFocus
                                       />
+                                      {aiEnabled && (
+                                        <button
+                                          type="button"
+                                          className="cache-badge badge-stream hover-action"
+                                          style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                          onClick={() => handleAICleanName(file.name, setCloudRenameName)}
+                                          title="Clean file name with Premiumize AI"
+                                          disabled={aiLoading}
+                                        >
+                                          {aiLoading ? '⏳' : '🪄 Clean'}
+                                        </button>
+                                      )}
                                       <button 
                                         className="cache-badge badge-cached hover-action" 
                                         style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
@@ -6097,6 +6421,38 @@ export default function App() {
               <p>
                 How would you like to play this {pendingPlaylistFiles.length > 1 ? 'playlist' : 'video'}?
               </p>
+
+              {aiEnabled && pendingPlaylistFiles.length > 1 && (
+                <div style={{ marginTop: '8px', border: '1px solid var(--glass-border)', padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => setShowAICurateInput(!showAICurateInput)}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      ✨ Curate Playlist with Premiumize AI
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{showAICurateInput ? '▲ Hide' : '▼ Show'}</span>
+                  </div>
+                  {showAICurateInput && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. only seasons 1 and 2, chronological, only fingerprint cases"
+                        value={aiCuratePrompt}
+                        onChange={(e) => setAiCuratePrompt(e.target.value)}
+                        className="settings-text-input small"
+                        style={{ height: '36px' }}
+                      />
+                      <button 
+                        type="button" 
+                        className="cache-badge badge-stream hover-action"
+                        style={{ border: 'none', cursor: 'pointer', padding: '8px 12px', fontSize: '0.8rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                        onClick={handleAICuratePlaylist}
+                        disabled={aiLoading}
+                      >
+                        {aiLoading ? '⏳ Curating...' : '🪄 Apply AI Curation'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             
             <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
@@ -6199,6 +6555,176 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 🤖 Premiumize AI Co-pilot Floating Button & Sidebar */}
+      {aiEnabled && (
+        <>
+          {/* Floating Action Button */}
+          <button 
+            type="button"
+            className="copilot-floating-btn hover-glow"
+            onClick={() => setShowAICopilot(!showAICopilot)}
+            style={{
+              position: 'fixed',
+              bottom: '24px',
+              right: '24px',
+              width: '56px',
+              height: '56px',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              boxShadow: '0 8px 25px rgba(139, 92, 246, 0.4), 0 0 15px var(--color-primary-glow)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.6rem',
+              cursor: 'pointer',
+              zIndex: 999,
+              transition: 'all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
+            }}
+            title="Open Premio AI Co-pilot"
+          >
+            {showAICopilot ? '✕' : '🤖'}
+          </button>
+
+          {/* Slide-out Sidebar Panel */}
+          {showAICopilot && (
+            <div className="copilot-sidebar glass-panel" style={{
+              position: 'fixed',
+              top: 0,
+              right: 0,
+              width: '400px',
+              maxWidth: '100%',
+              height: '100vh',
+              borderRadius: 0,
+              borderLeft: '1px solid var(--glass-border)',
+              borderTop: 'none',
+              borderRight: 'none',
+              borderBottom: 'none',
+              zIndex: 1001,
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 0,
+              boxShadow: '-10px 0 30px rgba(0, 0, 0, 0.5)'
+            }}>
+              {/* Sidebar Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem', borderBottom: '1px solid var(--glass-border)', background: 'rgba(0, 0, 0, 0.2)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '1.4rem' }}>🤖</span>
+                  <h3 style={{ margin: 0, background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: 'bold' }}>Premio Co-pilot</h3>
+                </div>
+                <button 
+                  type="button" 
+                  className="text-only" 
+                  onClick={() => setShowAICopilot(false)}
+                  style={{ color: 'var(--text-muted)', fontSize: '1.2rem', padding: '4px', cursor: 'pointer', border: 'none', background: 'none' }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Messages Thread */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {copilotMessages.map((msg, index) => {
+                  const isUser = msg.role === 'user';
+                  return (
+                    <div 
+                      key={index} 
+                      style={{ 
+                        alignSelf: isUser ? 'flex-end' : 'flex-start',
+                        maxWidth: '85%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px'
+                      }}
+                    >
+                      <div style={{
+                        background: isUser ? 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)' : 'rgba(255, 255, 255, 0.05)',
+                        border: isUser ? 'none' : '1px solid var(--glass-border)',
+                        color: '#ffffff',
+                        padding: '10px 14px',
+                        borderRadius: isUser ? '14px 14px 2px 14px' : '14px 14px 14px 2px',
+                        fontSize: '0.88rem',
+                        lineHeight: '1.4',
+                        whiteSpace: 'pre-wrap',
+                        boxShadow: isUser ? '0 4px 12px rgba(139, 92, 246, 0.15)' : 'none'
+                      }}>
+                        {msg.content}
+                      </div>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
+                        {isUser ? 'You' : 'Co-pilot'}
+                      </span>
+                    </div>
+                  );
+                })}
+                {aiLoading && (
+                  <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--glass-border)', borderRadius: '12px', fontSize: '0.85rem' }}>
+                    <div className="spinner" style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.1)', borderTopColor: 'var(--color-primary)' }}></div>
+                    <span style={{ color: 'var(--text-muted)' }}>Co-pilot is thinking...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Quick Action Suggestions */}
+              <div style={{ padding: '0.5rem 1.25rem', display: 'flex', gap: '6px', overflowX: 'auto', whiteSpace: 'nowrap', borderTop: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.1)' }} className="hide-scrollbar">
+                <button 
+                  type="button" 
+                  className="presets-badge" 
+                  onClick={() => { setCopilotInput("What TV shows can you recommend?"); }}
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                >
+                  📺 Show Recommendations
+                </button>
+                <button 
+                  type="button" 
+                  className="presets-badge" 
+                  onClick={() => { setCopilotInput("How do I use the AI Playlist Curator?"); }}
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                >
+                  ✨ Curating Playlists
+                </button>
+                <button 
+                  type="button" 
+                  className="presets-badge" 
+                  onClick={() => { setCopilotInput("Explain how the AI filename clean button works."); }}
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                >
+                  🪄 Filename Cleaner
+                </button>
+              </div>
+
+              {/* Chat Input Box */}
+              <div style={{ padding: '1.25rem', borderTop: '1px solid var(--glass-border)', background: 'rgba(0, 0, 0, 0.2)' }}>
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSendCopilotMessage();
+                  }}
+                  style={{ display: 'flex', gap: '8px' }}
+                >
+                  <input 
+                    type="text" 
+                    value={copilotInput}
+                    onChange={(e) => setCopilotInput(e.target.value)}
+                    placeholder="Ask Premio Co-pilot..."
+                    className="settings-text-input"
+                    style={{ flex: 1, height: '42px', borderRadius: '24px' }}
+                    disabled={aiLoading}
+                  />
+                  <button 
+                    type="submit" 
+                    className="search-submit-btn" 
+                    style={{ width: '42px', height: '42px', minWidth: 'auto', padding: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    disabled={aiLoading || !copilotInput.trim()}
+                  >
+                    📤
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

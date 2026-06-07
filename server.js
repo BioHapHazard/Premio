@@ -2734,6 +2734,75 @@ app.post('/api/transfers/delete', async (req, res) => {
   }
 });
 
+// G. AI Assistant Integration (Proxy for premiumize.ai)
+app.get('/api/ai/models', async (req, res) => {
+  const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(400).json({ error: 'Missing parameter: token is required.' });
+  }
+
+  try {
+    const response = await fetch('https://premiumize.ai/api/models', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Cookie': `token=${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Premiumize AI returned status ${response.status}: ${errText}`);
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err) {
+    console.error('❌ Failed to fetch Premiumize AI models:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/chat', async (req, res) => {
+  const { messages, model, token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ error: 'Missing parameter: token is required.' });
+  }
+
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: 'Missing parameter: messages array is required.' });
+  }
+
+  try {
+    const response = await fetch('https://premiumize.ai/api/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Cookie': `token=${token}`
+      },
+      body: JSON.stringify({
+        model: model || 'gpt-5.4',
+        messages: messages,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Premiumize AI returned status ${response.status}: ${errText}`);
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err) {
+    console.error('❌ Failed to execute Premiumize AI chat:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve static frontend assets in production
 const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
 if (fs.existsSync(frontendDistPath)) {
