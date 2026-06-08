@@ -759,8 +759,13 @@ app.get('/api/usenet/search', async (req, res) => {
       }
 
       try {
-        const searchUrl = `${idx.url}?t=search&apikey=${idx.key}&q=${encodeURIComponent(q)}&cat=${newznabCat}&o=json`;
-        console.log(`🌐 Aggregator: Querying indexer "${idx.name}": ${idx.url}?cat=${newznabCat}...`);
+        let cleanUrl = idx.url;
+        const pathPart = cleanUrl.replace(/^https?:\/\/[^\/]+/, '');
+        if (!pathPart.includes('api') && !cleanUrl.endsWith('.php') && !cleanUrl.endsWith('.xml')) {
+          cleanUrl = cleanUrl.replace(/\/$/, '') + '/api';
+        }
+        const searchUrl = `${cleanUrl}?t=search&apikey=${idx.key}&q=${encodeURIComponent(q)}&cat=${newznabCat}&o=json`;
+        console.log(`🌐 Aggregator: Querying indexer "${idx.name}": ${cleanUrl}?cat=${newznabCat}...`);
 
         const response = await fetchWithTimeout(searchUrl, {}, 5000);
         if (!response.ok) {
@@ -1433,9 +1438,158 @@ app.post('/api/stream-links', async (req, res) => {
   }
 });
 
+// Helper to clean JWT AI token
+const sanitizeAiToken = (rawToken) => {
+  if (!rawToken) return '';
+  return rawToken.replace(/^Bearer:?\s*/i, '').trim();
+};
+
+// Helper to translate subtitle file texts using premiumize.ai in parallel batches
+async function translateSubtitleText(text, targetLanguage, rawToken, model = 'gpt-5.4') {
+  const token = sanitizeAiToken(rawToken);
+  if (!token) {
+    throw new Error('Missing Premiumize.ai JWT Token.');
+  }
+
+  // Split subtitle text into blocks (cues are separated by blank lines)
+  const blocks = text.split(/\r?\n\r?\n/);
+  const cues = [];
+  
+  const parsedBlocks = blocks.map((block, idx) => {
+    const lines = block.split(/\r?\n/);
+    const timestampIndex = lines.findIndex(l => l.includes('-->'));
+    if (timestampIndex !== -1) {
+      const prefix = lines.slice(0, timestampIndex + 1).join('\n');
+      const textLines = lines.slice(timestampIndex + 1);
+      
+      const cue = {
+        blockIndex: idx,
+        prefix,
+        text: textLines.join('\n').trim(),
+        originalLines: textLines
+      };
+      cues.push(cue);
+      return cue;
+    } else {
+      return {
+        blockIndex: idx,
+        isMetadata: true,
+        content: block
+      };
+    }
+  });
+
+  // Extract texts to translate (keeping original text)
+  const textsToTranslate = cues.map(c => c.text);
+
+  // If there are no texts to translate, return original
+  if (textsToTranslate.length === 0) {
+    return text;
+  }
+
+  // Chunk texts to translate (chunk size of 80 is safe and fast)
+  const chunkSize = 80;
+  const chunks = [];
+  for (let i = 0; i < textsToTranslate.length; i += chunkSize) {
+    chunks.push(textsToTranslate.slice(i, i + chunkSize));
+  }
+
+  const translatedTexts = new Array(textsToTranslate.length);
+
+  // Translate each chunk in parallel
+  const promises = chunks.map(async (chunk, chunkIdx) => {
+    const startIdx = chunkIdx * chunkSize;
+    
+    // Skip empty chunks
+    if (chunk.every(t => !t)) {
+      for (let j = 0; j < chunk.length; j++) {
+        translatedTexts[startIdx + j] = '';
+      }
+      return;
+    }
+
+    try {
+      const systemPrompt = `You are a professional subtitle translator. Translate the following JSON array of subtitle text strings into ${targetLanguage}.
+Keep any HTML formatting tags (like <i>, <b>, <u>) or font styling tags exactly as they are in the translation.
+For empty strings or numeric-only strings, return them exactly as-is.
+Return the result ONLY as a raw JSON array of strings of the exact same length (${chunk.length} items).
+Do not include any Markdown formatting fences, explanation, intro, or wrap-up text.`;
+
+      const response = await fetch('https://premiumize.ai/api/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'Cookie': `token=${token}`
+        },
+        body: JSON.stringify({
+          model: model || 'gpt-5.4',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: JSON.stringify(chunk) }
+          ],
+          stream: false
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Premiumize AI HTTP error ${response.status}: ${errText}`);
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content?.trim();
+      
+      if (content) {
+        let cleaned = content;
+        // Strip markdown code fences if LLM ignored instructions
+        if (cleaned.startsWith('```')) {
+          cleaned = cleaned.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
+        }
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed) && parsed.length === chunk.length) {
+          for (let j = 0; j < chunk.length; j++) {
+            translatedTexts[startIdx + j] = parsed[j];
+          }
+        } else {
+          console.warn(`⚠️ Chunk ${chunkIdx} length mismatch or not an array. falling back to original.`);
+          for (let j = 0; j < chunk.length; j++) {
+            translatedTexts[startIdx + j] = chunk[j];
+          }
+        }
+      } else {
+        throw new Error('Empty completion content from AI.');
+      }
+    } catch (err) {
+      console.error(`❌ Failed to translate subtitle chunk ${chunkIdx}:`, err.message);
+      // Fallback to original texts for this chunk
+      for (let j = 0; j < chunk.length; j++) {
+        translatedTexts[startIdx + j] = chunk[j];
+      }
+    }
+  });
+
+  await Promise.all(promises);
+
+  // Reassemble blocks
+  cues.forEach((cue, cueIdx) => {
+    cue.text = translatedTexts[cueIdx] !== undefined ? translatedTexts[cueIdx] : cue.text;
+  });
+
+  const rebuiltBlocks = parsedBlocks.map(block => {
+    if (block.isMetadata) {
+      return block.content;
+    } else {
+      return `${block.prefix}\n${block.text}`;
+    }
+  });
+
+  return rebuiltBlocks.join('\n\n');
+}
+
 // 4. Subtitle proxy endpoint (to bypass browser CORS restrictions)
 app.get('/api/proxy-subtitle', async (req, res) => {
-  const { url } = req.query;
+  const { url, translateTo, token, model } = req.query;
   if (!url) {
     return res.status(400).json({ error: 'Missing parameter: url' });
   }
@@ -1447,7 +1601,17 @@ app.get('/api/proxy-subtitle', async (req, res) => {
       throw new Error(`Failed to fetch subtitle from source: ${response.status}`);
     }
 
-    const text = await response.text();
+    let text = await response.text();
+
+    if (translateTo && token) {
+      console.log(`🔮 Translating subtitle to ${translateTo} using AI...`);
+      try {
+        text = await translateSubtitleText(text, translateTo, token, model);
+      } catch (transErr) {
+        console.error('❌ AI Subtitle translation failed, returning original:', transErr.message);
+      }
+    }
+
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.send(text);
   } catch (err) {
@@ -2735,11 +2899,7 @@ app.post('/api/transfers/delete', async (req, res) => {
 });
 
 // G. AI Assistant Integration (Proxy for premiumize.ai)
-const sanitizeAiToken = (rawToken) => {
-  if (!rawToken) return '';
-  // Strip out "Bearer " or "Bearer: " prefixes case-insensitively and trim spaces
-  return rawToken.replace(/^Bearer:?\s*/i, '').trim();
-};
+
 
 app.get('/api/ai/models', async (req, res) => {
   const rawToken = req.query.token || req.headers.authorization;

@@ -4148,3 +4148,181 @@ textarea::placeholder {
   scrollbar-width: none;  /* Firefox */
 }
 
+/* --- Premiumize AI New Integrations (Semantic Search, TV Recapper, Subtitle Translator) --- */
+
+/* 🪄 AI Semantic Search Button */
+.ai-semantic-search-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #d946ef 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(217, 70, 239, 0.4) !important;
+  border-radius: 2rem;
+  padding: 0.75rem 1.75rem;
+  font-family: var(--font-sans);
+  font-size: 1.05rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 8.5rem;
+  box-shadow: 0 4px 15px rgba(217, 70, 239, 0.25);
+}
+
+.ai-semantic-search-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #d946ef 0%, #8b5cf6 100%) !important;
+  border-color: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(217, 70, 239, 0.4), 0 0 10px rgba(255, 255, 255, 0.3);
+}
+
+.ai-semantic-search-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+  background: hsla(224, 15%, 20%, 0.4) !important;
+  border-color: var(--glass-border) !important;
+  color: var(--text-muted) !important;
+}
+
+/* 📺 TV Show AI Recap Box */
+.ai-recap-box {
+  background: rgba(139, 92, 246, 0.05);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 12px;
+  margin-bottom: 1.25rem;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.ai-recap-box:hover {
+  border-color: rgba(139, 92, 246, 0.35);
+  background: rgba(139, 92, 246, 0.08);
+  box-shadow: 0 4px 25px rgba(139, 92, 246, 0.1);
+}
+
+.ai-recap-toggle-btn {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 1rem 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 1.05rem;
+  text-align: left;
+  transition: background 0.2s ease;
+}
+
+.ai-recap-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.recap-title-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recap-toggle-icon {
+  font-size: 0.8rem;
+  color: #c084fc;
+}
+
+.ai-recap-content-area {
+  padding: 0 1.25rem 1.25rem 1.25rem;
+  border-top: 1px solid rgba(139, 92, 246, 0.1);
+  background: rgba(10, 10, 15, 0.3);
+  animation: slide-down-fade 0.25s ease forwards;
+}
+
+@keyframes slide-down-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.recap-loader-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+}
+
+.recap-loading-text {
+  color: #c084fc;
+  font-size: 0.95rem;
+  font-weight: 500;
+  animation: pulse-recap 1.5s infinite;
+}
+
+@keyframes pulse-recap {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+.recap-error-text {
+  color: #f87171;
+  font-size: 0.95rem;
+  padding: 0.5rem 0;
+  margin: 0;
+}
+
+.recap-info-text {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  padding: 0.5rem 0;
+  margin: 0;
+}
+
+.recap-bullets-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.recap-bullet-item {
+  color: #e2e8f0;
+  font-size: 0.98rem;
+  line-height: 1.5;
+  position: relative;
+  padding-left: 1.5rem;
+}
+
+.recap-bullet-item::before {
+  content: "✦";
+  position: absolute;
+  left: 0;
+  color: #c084fc;
+  font-size: 0.9rem;
+  top: 1px;
+}
+
+/* 🪄 AI Subtitle Translator dropdown styling */
+.ai-translator-select {
+  border: 1px solid rgba(217, 70, 239, 0.35) !important;
+  color: #f472b6 !important;
+  font-weight: 600 !important;
+}
+
+.ai-translator-select:focus {
+  border-color: #d946ef !important;
+  box-shadow: 0 0 8px rgba(217, 70, 239, 0.4) !important;
+}
+
+

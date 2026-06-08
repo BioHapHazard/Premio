@@ -145,6 +145,34 @@ function matchEpisode(name) {
   return '';
 }
 
+// TV Show Details parser: extracts show name, season, and episode for recap lookup
+function parseShowDetails(filename) {
+  if (!filename || typeof filename !== 'string') return null;
+  const cleanName = filename.split('/').pop(); // Get basename
+
+  // Match standard S01E02 / S1E5 style
+  const sxe = cleanName.match(/(.*?)\bS(\d+)E(\d+)\b/i);
+  if (sxe) {
+    return {
+      showName: sxe[1].replace(/[\._\-]/g, ' ').trim(),
+      season: parseInt(sxe[2], 10),
+      episode: parseInt(sxe[3], 10)
+    };
+  }
+
+  // Match 1x02 style
+  const cross = cleanName.match(/(.*?)\b(\d+)x(\d+)\b/i);
+  if (cross) {
+    return {
+      showName: cross[1].replace(/[\._\-]/g, ' ').trim(),
+      season: parseInt(cross[2], 10),
+      episode: parseInt(cross[3], 10)
+    };
+  }
+
+  return null;
+}
+
 export default function App() {
   // --- UI Layout Navigation state ---
   const [activeTab, setActiveTab] = useState('search'); // Options: search, library, progress, cloud
@@ -242,8 +270,15 @@ export default function App() {
       { id: 'gpt-4o', name: 'gpt-4o', owned_by: 'openai' }
     ];
   });
-  const [fetchingModels, setFetchingModels] = useState(false);
+    const [fetchingModels, setFetchingModels] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiTranslateLanguage, setAiTranslateLanguage] = useState(() => {
+    return localStorage.getItem('premio_ai_translate_language') || '';
+  });
+  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapText, setRecapText] = useState(null);
+  const [recapLoading, setRecapLoading] = useState(false);
+  const [recapError, setRecapError] = useState('');
   const [showAICurateInput, setShowAICurateInput] = useState(false);
   const [aiCuratePrompt, setAiCuratePrompt] = useState('');
   const [showAICopilot, setShowAICopilot] = useState(false);
@@ -1287,13 +1322,20 @@ export default function App() {
   useEffect(() => {
     if (!selectedSubtitleFile) {
       setSubtitleTrackUrl(null);
+      setAiTranslateLanguage('');
       return;
     }
 
     let active = true;
     const fetchAndCompileSubtitle = async () => {
       try {
-        const res = await fetchWithCredentials(`/api/proxy-subtitle?url=${encodeURIComponent(selectedSubtitleFile.link)}`);
+        let fetchUrl = `/api/proxy-subtitle?url=${encodeURIComponent(selectedSubtitleFile.link)}`;
+        if (aiTranslateLanguage && aiToken && aiEnabled) {
+          triggerToast(`🔮 Translating subtitle to ${aiTranslateLanguage}...`, 'info');
+          fetchUrl += `&translateTo=${encodeURIComponent(aiTranslateLanguage)}&token=${encodeURIComponent(aiToken)}&model=${encodeURIComponent(aiModel)}`;
+        }
+
+        const res = await fetchWithCredentials(fetchUrl);
         if (!res.ok) throw new Error('Subtitle track unreachable.');
         
         const rawText = await res.text();
@@ -1308,8 +1350,15 @@ export default function App() {
         const blob = new Blob([compiledVtt], { type: 'text/vtt' });
         const objectUrl = URL.createObjectURL(blob);
         setSubtitleTrackUrl(objectUrl);
+
+        if (aiTranslateLanguage && aiToken && aiEnabled) {
+          triggerToast(`✨ Subtitle successfully translated to ${aiTranslateLanguage}!`, 'success');
+        }
       } catch (err) {
         console.error('Subtitle compiler failed:', err.message);
+        if (aiTranslateLanguage && aiToken && aiEnabled) {
+          triggerToast('❌ AI Subtitle translation failed. Loaded original.', 'error');
+        }
       }
     };
 
@@ -1321,7 +1370,7 @@ export default function App() {
         URL.revokeObjectURL(subtitleTrackUrl);
       }
     };
-  }, [selectedSubtitleFile]);
+  }, [selectedSubtitleFile, aiTranslateLanguage, aiToken, aiModel, aiEnabled]);
 
   // Programmatically mount and force-refresh the active subtitle track
   // to bypass HTML5 text track loading bugs and prevent manual CC toggling
@@ -1357,6 +1406,73 @@ export default function App() {
       }, 100);
     }
   }, [subtitleTrackUrl, selectedSubtitleFile]);
+
+  // --- TV Show "Previously On..." Recap logic ---
+  useEffect(() => {
+    setRecapOpen(false);
+    setRecapText(null);
+    setRecapError('');
+    setRecapLoading(false);
+  }, [selectedVideoFile]);
+
+  const handleToggleRecap = async () => {
+    const nextState = !recapOpen;
+    setRecapOpen(nextState);
+    
+    if (nextState && !recapText && !recapLoading) {
+      if (!aiEnabled || !aiToken) {
+        setRecapError('Premiumize AI is disabled or token is missing. Please check settings.');
+        return;
+      }
+      
+      const showDetails = parseShowDetails(selectedVideoFile?.name);
+      if (!showDetails) {
+        setRecapError('Failed to identify show details from filename.');
+        return;
+      }
+      
+      setRecapLoading(true);
+      setRecapError('');
+      
+      try {
+        const systemPrompt = `You are a TV show expert. Provide a concise, spoiler-free 3-bullet-point summary of the preceding events in the TV show "${showDetails.showName}" leading up to Season ${showDetails.season}, Episode ${showDetails.episode}.
+Focus ONLY on key plot points needed to catch up. Do NOT reveal what happens in Season ${showDetails.season} Episode ${showDetails.episode} itself.
+Output ONLY the 3 bullet points (each starting with a bullet character "• "). No introductory text, no conversational replies, and no spoilers for the current episode.`;
+        
+        const messages = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Give me a recap for ${showDetails.showName} before S${showDetails.season}E${showDetails.episode}` }
+        ];
+        
+        const res = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: aiToken,
+            model: aiModel,
+            messages: messages
+          })
+        });
+        
+        if (!res.ok) {
+          throw new Error('AI Recap request failed');
+        }
+        
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content?.trim();
+        if (content) {
+          setRecapText(content);
+        } else {
+          throw new Error('Invalid response from AI');
+        }
+      } catch (err) {
+        console.error(err);
+        setRecapError('Failed to generate recap. Check your token or connection.');
+      } finally {
+        setRecapLoading(false);
+      }
+    }
+  };
 
   // --- TV Series Autoplay Countdown Timer Hooks ---
   useEffect(() => {
@@ -1572,9 +1688,10 @@ export default function App() {
   };
 
   // Trigger search
-  const handleSearch = async (e, forcedMode = null) => {
+  const handleSearch = async (e, forcedMode = null, overrideQuery = null) => {
     if (e) e.preventDefault();
-    if (!query.trim()) return;
+    const currentQuery = overrideQuery !== null ? overrideQuery : query;
+    if (!currentQuery.trim()) return;
 
     setLoading(true);
     setSearched(true);
@@ -1591,7 +1708,7 @@ export default function App() {
     // STRICT PRIVACY COMPLIANCE RULE:
     // Do NOT save search queries to history if they are in the Adult category.
     if (category !== 'Adult') {
-      const updatedQueries = [query, ...recentSearches.filter(q => q !== query)].slice(0, 8);
+      const updatedQueries = [currentQuery, ...recentSearches.filter(q => q !== currentQuery)].slice(0, 8);
       setRecentSearches(updatedQueries);
       localStorage.setItem('premium_search_recent_queries', JSON.stringify(updatedQueries));
     } else {
@@ -1600,8 +1717,8 @@ export default function App() {
 
     try {
       const fetchUrl = activeSearchMode === 'usenet'
-        ? `/api/usenet/search?q=${encodeURIComponent(query)}&category=${category}`
-        : `/api/search?q=${encodeURIComponent(query)}&category=${category}`;
+        ? `/api/usenet/search?q=${encodeURIComponent(currentQuery)}&category=${category}`
+        : `/api/search?q=${encodeURIComponent(currentQuery)}&category=${category}`;
 
       const res = await fetchWithCredentials(fetchUrl);
       if (!res.ok) throw new Error('Search request failed.');
@@ -2614,6 +2731,54 @@ export default function App() {
     }
   };
 
+  const handleAiSemanticSearch = async (e) => {
+    if (e) e.preventDefault();
+    if (!query.trim()) return;
+    if (!aiEnabled || !aiToken) {
+      triggerToast('AI is disabled or token is missing. Please check settings.', 'error');
+      return;
+    }
+    setLoading(true);
+    triggerToast('🔮 AI is interpreting your search phrase...', 'info');
+    try {
+      const systemPrompt = "You are a movie and TV show search assistant. The user will give you a conceptual description or search phrase. Your job is to translate it into the most likely exact, clean movie or TV show title. Output ONLY the clean title. No extra text, no explanations, no quotes, and no punctuation. If the description is already a specific title, output it as-is. Example: 'the 90s thriller in a cabin in the woods' -> 'The Cabin in the Woods'. Example: 'christopher nolan movie about dreams' -> 'Inception'.";
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: query }
+      ];
+      
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: aiToken,
+          model: aiModel,
+          messages: messages
+        })
+      });
+      
+      if (!res.ok) {
+        throw new Error('AI Semantic Search request failed');
+      }
+      
+      const data = await res.json();
+      const cleaned = data.choices?.[0]?.message?.content?.trim();
+      if (cleaned) {
+        const sanitized = cleaned.replace(/^["']|["']$/g, '').trim();
+        setQuery(sanitized);
+        triggerToast(`✨ Translated to: "${sanitized}"`, 'success');
+        handleSearch(null, null, sanitized);
+      } else {
+        throw new Error('Invalid response from AI');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast('Failed to perform AI search. Check your token or connection.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleAICleanName = async (originalName, setNameCallback) => {
     if (!aiEnabled || !aiToken) {
       triggerToast('AI is disabled or token is missing. Please check settings.', 'error');
@@ -2881,6 +3046,9 @@ export default function App() {
   
   // Calculate cached count for stats indicator
   const cachedCount = processedResults.filter(item => item.cached).length;
+
+  const showDetails = parseShowDetails(selectedVideoFile?.name);
+  const showRecapOption = showDetails && !(showDetails.season === 1 && showDetails.episode === 1);
 
   return (
     <div className="app-container">
@@ -3559,6 +3727,18 @@ export default function App() {
                   >
                     🎛️ Filters
                   </button>
+
+                  {aiEnabled && (
+                    <button 
+                      type="button" 
+                      className="ai-semantic-search-btn" 
+                      disabled={loading || !query.trim()} 
+                      onClick={handleAiSemanticSearch}
+                      title="AI Semantic Search: Translate conceptual query into clean title and search"
+                    >
+                      🪄 AI Search
+                    </button>
+                  )}
 
                   <button type="submit" className="search-submit-btn" disabled={loading} id="btn-submit-search">
                     {loading ? <span className="spinner-micro"></span> : 'Search'}
@@ -5370,6 +5550,43 @@ export default function App() {
                   {/* Browser audio track limitations notice & Custom controls */}
                   <div className="player-custom-controls">
                     
+                    {/* TV Show AI Recap Section */}
+                    {showRecapOption && (
+                      <div className="ai-recap-box glass-panel-subtle">
+                        <button
+                          type="button"
+                          className="ai-recap-toggle-btn"
+                          onClick={handleToggleRecap}
+                        >
+                          <span className="recap-title-text">📺 {recapOpen ? 'Hide' : 'Show'} "Previously On..." AI Recap</span>
+                          <span className="recap-toggle-icon">{recapOpen ? '▲' : '▼'}</span>
+                        </button>
+                        
+                        {recapOpen && (
+                          <div className="ai-recap-content-area">
+                            {recapLoading ? (
+                              <div className="recap-loader-container">
+                                <span className="spinner-micro purple small"></span>
+                                <span className="recap-loading-text">Generating recap for S{showDetails.season}E{showDetails.episode}...</span>
+                              </div>
+                            ) : recapError ? (
+                              <p className="recap-error-text">⚠️ {recapError}</p>
+                            ) : recapText ? (
+                              <ul className="recap-bullets-list">
+                                {recapText.split('\n').filter(line => line.trim()).map((line, idx) => (
+                                  <li key={idx} className="recap-bullet-item">
+                                    {line.replace(/^[•\-\*]\s*/, '')}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="recap-info-text">No recap loaded. Check your settings if AI is disabled.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="audio-notice-box">
                       <span className="badge-notice">ℹ️ Multi-Language Audio Info</span>
                       <p>Web browsers do not support switching audio tracks for raw video streams. To play this file in other languages or switch tracks, click the orange <strong>Open in VLC Player</strong> button below!</p>
@@ -5461,6 +5678,45 @@ export default function App() {
                                 {f.name}
                               </option>
                             ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* AI Subtitle Translation language select */}
+                    {selectedSubtitleFile && (
+                      <div className="player-select-group">
+                        <label htmlFor="select-subtitle-translation">🪄 AI Translate Subtitles:</label>
+                        <select
+                          id="select-subtitle-translation"
+                          value={aiTranslateLanguage}
+                          onChange={(e) => {
+                            if (!aiEnabled || !aiToken) {
+                              triggerToast('⚠️ Please enable Premiumize AI and set a token in Settings first.', 'warning');
+                              return;
+                            }
+                            const val = e.target.value;
+                            setAiTranslateLanguage(val);
+                            localStorage.setItem('premio_ai_translate_language', val);
+                          }}
+                          className="player-select ai-translator-select"
+                        >
+                          <option value="">Original Language</option>
+                          <option value="Spanish">Spanish (Español)</option>
+                          <option value="French">French (Français)</option>
+                          <option value="German">German (Deutsch)</option>
+                          <option value="Japanese">Japanese (日本語)</option>
+                          <option value="Italian">Italian (Italiano)</option>
+                          <option value="Chinese (Simplified)">Chinese (Simplified)</option>
+                          <option value="Chinese (Traditional)">Chinese (Traditional)</option>
+                          <option value="Korean">Korean (한국어)</option>
+                          <option value="Portuguese">Portuguese (Português)</option>
+                          <option value="Dutch">Dutch (Nederlands)</option>
+                          <option value="Russian">Russian (Русский)</option>
+                          <option value="Arabic">Arabic (العربية)</option>
+                          <option value="Turkish">Turkish (Türkçe)</option>
+                          <option value="Polish">Polish (Polski)</option>
+                          <option value="Swedish">Swedish (Svenska)</option>
+                          <option value="Vietnamese">Vietnamese (Tiếng Việt)</option>
                         </select>
                       </div>
                     )}
