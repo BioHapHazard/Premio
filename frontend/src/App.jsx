@@ -2741,7 +2741,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     setLoading(true);
     triggerToast('🔮 AI is interpreting your search phrase...', 'info');
     try {
-      const systemPrompt = "You are a movie and TV show search assistant. The user will give you a conceptual description or search phrase. Your job is to translate it into the most likely exact, clean movie or TV show title. Output ONLY the clean title. No extra text, no explanations, no quotes, and no punctuation. If the description is already a specific title, output it as-is. Example: 'the 90s thriller in a cabin in the woods' -> 'The Cabin in the Woods'. Example: 'christopher nolan movie about dreams' -> 'Inception'.";
+      const systemPrompt = "You are a movie and TV show search assistant. The user will give you a conceptual description, recommendation request, or search phrase.\nYour job is to translate it into one or more exact, clean movie or TV show titles.\nIf the request is for a single movie/show (e.g., 'the nolan movie about dreams'), output just the clean title (e.g., 'Inception').\nIf the request implies multiple movies/shows (e.g., 'top 5 horror movies this year' or 'recommend 3 sci-fi movies'), determine the matching list of titles, and output them separated by '|||' (e.g., 'A Quiet Place: Day One ||| Smile 2 ||| Heretic ||| Longlegs ||| Oddity').\nOutput ONLY the title(s) separated by '|||' if multiple. No extra text, no markdown, no explanations, no numbering, and no quotes. Keep it strictly to the exact titles.";
       const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: query }
@@ -2762,14 +2762,63 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       }
       
       const data = await res.json();
-      const cleaned = data.choices?.[0]?.message?.content?.trim();
-      if (cleaned) {
-        const sanitized = cleaned.replace(/^["']|["']$/g, '').trim();
-        setQuery(sanitized);
-        triggerToast(`✨ Translated to: "${sanitized}"`, 'success');
-        handleSearch(null, null, sanitized);
-      } else {
+      const rawContent = data.choices?.[0]?.message?.content?.trim();
+      if (!rawContent) {
         throw new Error('Invalid response from AI');
+      }
+
+      const sanitized = rawContent.replace(/^["']|["']$/g, '').trim();
+      const titles = sanitized.split('|||').map(t => t.trim().replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+
+      if (titles.length === 0) {
+        throw new Error('No titles returned by AI');
+      }
+
+      if (titles.length === 1) {
+        const singleTitle = titles[0];
+        setQuery(singleTitle);
+        triggerToast(`✨ Translated to: "${singleTitle}"`, 'success');
+        handleSearch(null, null, singleTitle);
+      } else {
+        // Multi-search mode!
+        const friendlyQuery = titles.join(' & ');
+        setQuery(friendlyQuery);
+        setSearched(true);
+        setResults([]);
+        triggerToast(`🔍 Searching for ${titles.length} titles concurrently: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? '...' : ''}`, 'info');
+
+        const activeSearchMode = searchMode;
+        const fetchPromises = titles.map(async (title) => {
+          try {
+            const fetchUrl = activeSearchMode === 'usenet'
+              ? `/api/usenet/search?q=${encodeURIComponent(title)}&category=${category}`
+              : `/api/search?q=${encodeURIComponent(title)}&category=${category}`;
+            
+            const searchRes = await fetchWithCredentials(fetchUrl);
+            if (!searchRes.ok) throw new Error(`Search failed for ${title}`);
+            const searchData = await searchRes.json();
+            return Array.isArray(searchData) ? searchData : [];
+          } catch (fetchErr) {
+            console.error(`Fetch failed for title "${title}":`, fetchErr.message);
+            return [];
+          }
+        });
+
+        const resultsLists = await Promise.all(fetchPromises);
+        const combinedResults = resultsLists.flat();
+
+        // Deduplicate combined results by torrent unique identifiers
+        const uniqueResultsMap = new Map();
+        combinedResults.forEach(item => {
+          const id = item.infoHash || item.magnet || item.torrentFile || item.title;
+          if (id && !uniqueResultsMap.has(id)) {
+            uniqueResultsMap.set(id, item);
+          }
+        });
+        const finalResults = Array.from(uniqueResultsMap.values());
+
+        setResults(finalResults);
+        triggerToast(`✨ Found ${finalResults.length} releases across all ${titles.length} searches!`, 'success');
       }
     } catch (err) {
       console.error(err);
