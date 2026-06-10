@@ -4325,4 +4325,179 @@ textarea::placeholder {
   box-shadow: 0 0 8px rgba(217, 70, 239, 0.4) !important;
 }
 
+/* 👥 Multi-Profile Family Account System Styles */
+
+.avatar-grad-purple-pink {
+  background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+  color: #ffffff;
+}
+.avatar-grad-blue-green {
+  background: linear-gradient(135deg, #3b82f6 0%, #10b981 100%);
+  color: #ffffff;
+}
+.avatar-grad-sunset-orange {
+  background: linear-gradient(135deg, #f97316 0%, #f43f5e 100%);
+  color: #ffffff;
+}
+.avatar-grad-emerald-teal {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
+  color: #ffffff;
+}
+.avatar-grad-space-gray {
+  background: linear-gradient(135deg, #4b5563 0%, #1f2937 100%);
+  color: #ffffff;
+}
+
+.profile-picker-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.profile-picker-container {
+  animation: profileFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes profileFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.profile-card {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.profile-card:hover {
+  transform: translateY(-8px);
+}
+
+.profile-card:hover .profile-avatar {
+  box-shadow: 0 12px 30px rgba(168, 85, 247, 0.4);
+  filter: brightness(1.1);
+}
+
+.profile-card.managing:hover .profile-avatar {
+  border-color: var(--color-primary);
+}
+
+.profile-card.add-profile:hover .avatar-add-button {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.profile-edit-card {
+  width: 100%;
+  max-width: 550px;
+  margin: 0 auto;
+}
+
+/* Switch control styling */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 24px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--glass-border);
+  transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.slider::before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--text-muted);
+  transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: var(--color-primary-glow);
+  border-color: var(--color-primary);
+}
+
+input:checked + .slider::before {
+  transform: translateX(22px);
+  background-color: var(--color-primary);
+}
+
+.slider.round {
+  border-radius: 24px;
+}
+
+.profile-color-selector {
+  transition: transform 0.2s ease;
+}
+
+.profile-color-selector:hover {
+  transform: scale(1.1);
+}
+
+.header-profile-trigger:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: var(--color-primary) !important;
+}
+
+.dropdown-profile-item {
+  transition: background 0.15s ease;
+}
+
+.dropdown-profile-item:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+.dropdown-profile-item.active {
+  background: var(--color-primary-glow) !important;
+}
+
+/* PIN Verification Card and Dots */
+.profile-pin-card {
+  animation: profileFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.pin-dot.filled {
+  transform: scale(1.1);
+}
+
+.shake-pin {
+  animation: shake 0.5s;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-6px); }
+  20%, 40%, 60%, 80% { transform: translateX(6px); }
+}
 

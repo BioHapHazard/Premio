@@ -1,10 +1,123 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
 
 // Configuration constants
 const PM_SIGNUP_URL = "https://www.premiumize.me";
 
 // Category Definitions
 const CATEGORIES = ['Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
+
+// --- Multi-Profile Constants & Helpers ---
+const GRADIENTS = [
+  { name: 'Purple-Pink', class: 'avatar-grad-purple-pink' },
+  { name: 'Blue-Green', class: 'avatar-grad-blue-green' },
+  { name: 'Sunset-Orange', class: 'avatar-grad-sunset-orange' },
+  { name: 'Emerald-Teal', class: 'avatar-grad-emerald-teal' },
+  { name: 'Space-Gray', class: 'avatar-grad-space-gray' }
+];
+
+const EMOJIS = ['🦁', '🐯', '🐼', '🦊', '🐨', '🦄', '🦖', '🚀', '🍿', '🎧', '🎮', '👾', '🧙', '🦸'];
+const COMMON_TRACKERS = ['1337x', 'YTS', 'LimeTorrents', 'Nyaa', 'TorrentGalaxy', 'EZTV'];
+
+const filterResultsForKids = (items, profile) => {
+  if (!items) return [];
+  if (!profile || !profile.isKids) return items;
+  
+  // Strict adult keyword filtering on titles using word boundary regex
+  const adultTerms = [
+    'xxx', 'porn', 'nsfw', 'adult', 'erotica', '18\\+', 'sex', 'nude',
+    'hentai', 'milf', 'blowjob', 'anal', 'ass', 'cunt', 'dick', 'cock', 'vagina',
+    'orgasm', 'naked', 'softcore', 'hardcore', 'erotic', 'sensual', 'playboy'
+  ];
+  
+  const regex = new RegExp('\\b(' + adultTerms.join('|') + ')\\b', 'i');
+  
+  let filtered = items.filter(item => {
+    const title = item.title || item.name || '';
+    return !regex.test(title);
+  });
+  
+  // Tracker Whitelisting
+  if (profile.allowedTrackers && profile.allowedTrackers.length > 0) {
+    filtered = filtered.filter(item => {
+      const trackerName = (item.tracker || item.indexer || '').toLowerCase().trim();
+      return profile.allowedTrackers.some(allowed => {
+        const allowedLower = allowed.toLowerCase().trim();
+        return trackerName.includes(allowedLower) || allowedLower.includes(trackerName);
+      });
+    });
+  }
+  
+  return filtered;
+};
+
+const isRatingAllowed = (certification, category, profile) => {
+  if (!profile || !profile.isKids) return true;
+  
+  const cert = (certification || '').toUpperCase().trim();
+  
+  // If no certification was resolved (meaning Unrated or empty)
+  if (!cert || cert === 'UNRATED' || cert === 'NR' || cert === 'NOT RATED') {
+    return !profile.blockUnrated; // True if parent allows unrated
+  }
+
+  // Handle movie categories
+  if (category === 'Movies') {
+    const maxMovie = profile.maxMovieRating || 'PG-13';
+    if (maxMovie === 'Any') return true;
+    
+    // US Movie ratings
+    const movieOrder = ['G', 'PG', 'PG-13', 'R', 'NC-17'];
+    const maxIdx = movieOrder.indexOf(maxMovie);
+    const itemIdx = movieOrder.indexOf(cert);
+    
+    if (itemIdx !== -1 && maxIdx !== -1) {
+      return itemIdx <= maxIdx;
+    }
+    
+    // International age check fallbacks (e.g. 18, 15, M18, R21)
+    const ageMatch = cert.match(/\d+/);
+    if (ageMatch) {
+      const age = parseInt(ageMatch[0]);
+      if (maxMovie === 'G') return age <= 6;
+      if (maxMovie === 'PG') return age <= 12;
+      if (maxMovie === 'PG-13') return age <= 13;
+      if (maxMovie === 'R') return age <= 17;
+    }
+    
+    // Fallback block if unrecognized rating and G/PG
+    if (['G', 'PG'].includes(maxMovie)) return false;
+    return true;
+  }
+  
+  // Handle TV show categories
+  if (category === 'TV') {
+    const maxTv = profile.maxTvRating || 'TV-14';
+    if (maxTv === 'Any') return true;
+    
+    const tvOrder = ['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA'];
+    const maxIdx = tvOrder.indexOf(maxTv);
+    const itemIdx = tvOrder.indexOf(cert);
+    
+    if (itemIdx !== -1 && maxIdx !== -1) {
+      return itemIdx <= maxIdx;
+    }
+    
+    // International TV rating fallback numbers
+    const ageMatch = cert.match(/\d+/);
+    if (ageMatch) {
+      const age = parseInt(ageMatch[0]);
+      if (maxTv === 'TV-G') return age <= 6;
+      if (maxTv === 'TV-PG') return age <= 12;
+      if (maxTv === 'TV-14') return age <= 14;
+      if (maxTv === 'TV-MA') return age <= 17;
+    }
+    
+    if (['TV-Y', 'TV-Y7', 'TV-G', 'TV-PG'].includes(maxTv)) return false;
+    return true;
+  }
+  
+  return true;
+};
 
 // Formatter: Convert bytes to readable sizes
 function formatBytes(bytes) {
@@ -199,10 +312,51 @@ export default function App() {
   const [transfers, setTransfers] = useState([]);
   const [transfersLoading, setTransfersLoading] = useState(false);
 
+  // --- Multi-Profile States ---
+  const [profiles, setProfiles] = useState(() => {
+    const saved = localStorage.getItem('premium_search_profiles');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [activeProfileId, setActiveProfileId] = useState(() => {
+    return localStorage.getItem('premium_search_active_profile_id') || '';
+  });
+  const [isProfilePickerOpen, setIsProfilePickerOpen] = useState(false);
+  const [isManagingProfiles, setIsManagingProfiles] = useState(false);
+  const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
+
+  // Profile Edit Form States
+  const [editingProfile, setEditingProfile] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editAvatar, setEditAvatar] = useState('🦁');
+  const [editColor, setEditColor] = useState('avatar-grad-purple-pink');
+  const [editIsKids, setEditIsKids] = useState(false);
+  const [editAllowedTrackers, setEditAllowedTrackers] = useState([]);
+  const [customTrackerInput, setCustomTrackerInput] = useState('');
+  const [editMaxMovieRating, setEditMaxMovieRating] = useState('PG-13');
+  const [editMaxTvRating, setEditMaxTvRating] = useState('TV-14');
+  const [editBlockUnrated, setEditBlockUnrated] = useState(false);
+  const [pinTargetProfile, setPinTargetProfile] = useState(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
+  const [editPin, setEditPin] = useState('');
+  const [editEnablePin, setEditEnablePin] = useState(false);
+  const [pinTargetAction, setPinTargetAction] = useState('switch');
+
+  const activeProfile = useMemo(() => {
+    return profiles.find(p => p.id === activeProfileId) || null;
+  }, [profiles, activeProfileId]);
+
+  const isKids = activeProfile ? activeProfile.isKids : false;
+
   // --- UI & Application State ---
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('Movies');
-  const [results, setResults] = useState([]);
+  const [rawResults, setRawResults] = useState([]);
+  const results = useMemo(() => {
+    const activeProf = profiles.find(p => p.id === activeProfileId);
+    return filterResultsForKids(rawResults, activeProf);
+  }, [rawResults, activeProfileId, profiles]);
+  const setResults = setRawResults;
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [activeDownloadId, setActiveDownloadId] = useState(null);
@@ -293,6 +447,17 @@ export default function App() {
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
   const [adultControlsUnlocked, setAdultControlsUnlocked] = useState(false);
+  const profileDropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (isProfileDropdownOpen && profileDropdownRef.current && !profileDropdownRef.current.contains(e.target)) {
+        setIsProfileDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isProfileDropdownOpen]);
 
   // --- Dynamic Filters States ---
   const [showFilters, setShowFilters] = useState(false);
@@ -355,12 +520,156 @@ export default function App() {
     return fetch(url, options);
   };
 
-  const syncToCloud = async (currentLib = libraryList, currentProgress = continueWatchingList) => {
+  const syncProfilesToCloud = async (currentProfiles = profiles) => {
     try {
-      const res = await fetchWithCredentials('/api/sync', {
+      const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ libraryList: currentLib, continueWatchingList: currentProgress })
+        body: JSON.stringify(currentProfiles)
+      });
+      if (res.ok) {
+        console.log('✅ Profiles list synced to cloud successfully.');
+      }
+    } catch (err) {
+      console.error('❌ Syncing profiles to cloud failed:', err.message);
+    }
+  };
+
+  const syncProfilesFromCloud = async () => {
+    try {
+      const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json');
+      if (!res.ok) throw new Error('Could not contact sync endpoint.');
+      const data = await res.json();
+      if (data.success && data.synced && data.data) {
+        const cloudProfiles = data.data;
+        setProfiles(cloudProfiles);
+        localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
+        
+        // If there's an active profile, sync its data too
+        const activeId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
+        if (activeId) {
+          const profileExists = cloudProfiles.some(p => p.id === activeId);
+          if (profileExists) {
+            const activeProf = cloudProfiles.find(p => p.id === activeId);
+            if (activeProf && activeProf.pin) {
+              setActiveProfileId('');
+              setIsProfilePickerOpen(true);
+            } else {
+              await syncProfileDataFromCloud(activeId);
+            }
+          } else {
+            setActiveProfileId('');
+            localStorage.removeItem('premium_search_active_profile_id');
+            setIsProfilePickerOpen(true);
+          }
+        } else {
+          setIsProfilePickerOpen(true);
+        }
+      } else {
+        // If file doesn't exist, and we have local profiles, back them up
+        if (profiles.length > 0) {
+          await syncProfilesToCloud(profiles);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Syncing profiles from cloud failed:', err.message);
+    }
+  };
+
+  const syncProfileDataFromCloud = async (profileId) => {
+    if (!profileId) return;
+    setIsSyncing(true);
+    try {
+      const res = await fetchWithCredentials(`/api/sync?filename=profile_${profileId}_sync.json`);
+      if (!res.ok) throw new Error('Could not contact sync endpoint.');
+      const data = await res.json();
+      
+      if (data.success) {
+        if (data.synced && data.data) {
+          const cloudLib = data.data.libraryList || [];
+          const cloudProgress = data.data.continueWatchingList || [];
+          const cloudPlaylists = data.data.playlists || [];
+          const cloudTheme = data.data.selectedTheme || 'midnight-nebula';
+          
+          // Save profile-specific local storage
+          localStorage.setItem(`premium_search_library_${profileId}`, JSON.stringify(cloudLib));
+          localStorage.setItem(`premium_search_continue_watching_${profileId}`, JSON.stringify(cloudProgress));
+          localStorage.setItem(`premium_search_playlists_${profileId}`, JSON.stringify(cloudPlaylists));
+          localStorage.setItem(`premium_search_theme_${profileId}`, cloudTheme);
+          
+          // If this is still the active profile, update states
+          const currentActiveId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
+          if (profileId === currentActiveId) {
+            setLibraryList(cloudLib);
+            localStorage.setItem('premium_search_library', JSON.stringify(cloudLib));
+            
+            setContinueWatchingList(cloudProgress);
+            localStorage.setItem('premium_search_continue_watching', JSON.stringify(cloudProgress));
+            
+            setPlaylists(cloudPlaylists);
+            localStorage.setItem('premium_search_playlists', JSON.stringify(cloudPlaylists));
+            
+            setSelectedTheme(cloudTheme);
+            localStorage.setItem('premium_search_theme', cloudTheme);
+            
+            setLastSynced(new Date());
+            triggerToast('☁️ Cloud profile storage synchronized!', 'success');
+          }
+        } else {
+          // If no cloud data found for this profile, upload current local state
+          const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
+          const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
+          const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
+          const localTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
+          
+          const parsedLib = localLib ? JSON.parse(localLib) : [];
+          const parsedCW = localCW ? JSON.parse(localCW) : [];
+          const parsedPL = localPL ? JSON.parse(localPL) : [];
+          
+          if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
+            console.log('ℹ️ Syncing local profile data up to cloud...');
+            await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
+            triggerToast('☁️ Cloud profile sync backup created!', 'success');
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Profile sync error:', err.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const syncToCloud = async (
+    currentLib = libraryList,
+    currentProgress = continueWatchingList,
+    currentPlaylists = playlists,
+    currentTheme = selectedTheme,
+    targetProfileId = activeProfileId
+  ) => {
+    if (!targetProfileId) return;
+    try {
+      // Save locally to profile-specific keys as well
+      localStorage.setItem(`premium_search_library_${targetProfileId}`, JSON.stringify(currentLib));
+      localStorage.setItem(`premium_search_continue_watching_${targetProfileId}`, JSON.stringify(currentProgress));
+      localStorage.setItem(`premium_search_playlists_${targetProfileId}`, JSON.stringify(currentPlaylists));
+      localStorage.setItem(`premium_search_theme_${targetProfileId}`, currentTheme);
+      
+      // Also save to generic keys for compatibility
+      localStorage.setItem('premium_search_library', JSON.stringify(currentLib));
+      localStorage.setItem('premium_search_continue_watching', JSON.stringify(currentProgress));
+      localStorage.setItem('premium_search_playlists', JSON.stringify(currentPlaylists));
+      localStorage.setItem('premium_search_theme', currentTheme);
+
+      const res = await fetchWithCredentials(`/api/sync?filename=profile_${targetProfileId}_sync.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          libraryList: currentLib,
+          continueWatchingList: currentProgress,
+          playlists: currentPlaylists,
+          selectedTheme: currentTheme
+        })
       });
       if (res.ok) {
         setLastSynced(new Date());
@@ -373,47 +682,273 @@ export default function App() {
   const syncFromCloud = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetchWithCredentials('/api/sync');
-      if (!res.ok) throw new Error('Could not contact sync endpoint.');
-      const data = await res.json();
-      
-      if (data.success) {
-        if (data.synced && data.data) {
-          const cloudLib = data.data.libraryList || [];
-          const cloudProgress = data.data.continueWatchingList || [];
-          
-          // Overwrite local state with cloud master lists for absolute cross-device sync
-          const mergedLib = cloudLib;
-          const mergedProgress = cloudProgress;
-
-          const slicedProgress = mergedProgress.slice(0, 12); // Sync up to 12 watch progress items
-
-          // Update local states
-          setLibraryList(mergedLib);
-          localStorage.setItem('premium_search_library', JSON.stringify(mergedLib));
-
-          setContinueWatchingList(slicedProgress);
-          localStorage.setItem('premium_search_continue_watching', JSON.stringify(slicedProgress));
-
-          setLastSynced(new Date());
-          triggerToast('☁️ Cloud storage synchronized!', 'success');
-        } else {
-          // If folder/file doesn't exist yet, upload current local storage to initialize
-          if (libraryList.length > 0 || continueWatchingList.length > 0) {
-            console.log('ℹ️ Syncing local storage up to cloud...');
-            await syncToCloud(libraryList, continueWatchingList);
-            triggerToast('☁️ Cloud sync backup created!', 'success');
-          }
-        }
-      } else {
-        console.warn('Sync notice:', data.error);
-      }
+      await syncProfilesFromCloud();
     } catch (err) {
       console.error('Sync error:', err.message);
     } finally {
       setIsSyncing(false);
     }
   };
+
+  // --- Profile Switching & Management Handlers ---
+  const switchProfile = (profileId) => {
+    setActiveProfileId(profileId);
+    localStorage.setItem('premium_search_active_profile_id', profileId);
+    
+    // Load local storage values for this profile
+    const profileLib = localStorage.getItem(`premium_search_library_${profileId}`);
+    const parsedLib = profileLib ? JSON.parse(profileLib) : [];
+    setLibraryList(parsedLib);
+    localStorage.setItem('premium_search_library', JSON.stringify(parsedLib));
+    
+    const profileCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
+    const parsedCW = profileCW ? JSON.parse(profileCW) : [];
+    setContinueWatchingList(parsedCW);
+    localStorage.setItem('premium_search_continue_watching', JSON.stringify(parsedCW));
+    
+    const profilePL = localStorage.getItem(`premium_search_playlists_${profileId}`);
+    const parsedPL = profilePL ? JSON.parse(profilePL) : [];
+    setPlaylists(parsedPL);
+    localStorage.setItem('premium_search_playlists', JSON.stringify(parsedPL));
+    
+    const profileTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
+    setSelectedTheme(profileTheme);
+    localStorage.setItem('premium_search_theme', profileTheme);
+    
+    // If it's a kids profile, disable developer options/unlocking controls and hide adult category
+    const activeProf = profiles.find(p => p.id === profileId);
+    if (activeProf && activeProf.isKids) {
+      setAdultControlsUnlocked(false);
+      setHideAdult(true);
+      setCategory(prev => prev === 'Adult' ? 'Movies' : prev);
+    }
+    
+    triggerToast(`Switched profile to ${activeProf ? activeProf.name : 'Unknown'}`, 'success');
+    
+    // Background cloud sync for this profile
+    syncProfileDataFromCloud(profileId);
+  };
+
+  const handleProfileSelect = (profileId, action = 'switch') => {
+    const p = profiles.find(prof => prof.id === profileId);
+    if (!p) return;
+    
+    if (p.pin) {
+      setPinTargetProfile(p);
+      setPinTargetAction(action);
+      setPinInput('');
+      setPinError(false);
+      setIsProfilePickerOpen(true);
+    } else {
+      if (action === 'edit') {
+        startEditProfile(p);
+      } else {
+        switchProfile(p.id);
+        setIsProfilePickerOpen(false);
+      }
+    }
+  };
+
+  const startEditProfile = (profile) => {
+    setEditingProfile(profile);
+    setEditName(profile.name);
+    setEditAvatar(profile.avatar);
+    setEditColor(profile.color);
+    setEditIsKids(profile.isKids);
+    setEditMaxMovieRating(profile.maxMovieRating || 'PG-13');
+    setEditMaxTvRating(profile.maxTvRating || 'TV-14');
+    setEditBlockUnrated(profile.blockUnrated || false);
+    setEditPin(profile.pin || '');
+    setEditEnablePin(!!profile.pin);
+    
+    // Parse allowed trackers
+    const trackers = profile.allowedTrackers || [];
+    // Separate common and custom trackers
+    const commonSelected = trackers.filter(t => COMMON_TRACKERS.includes(t) || userIndexers.some(idx => idx.name === t));
+    const customSelected = trackers.filter(t => !COMMON_TRACKERS.includes(t) && !userIndexers.some(idx => idx.name === t));
+    
+    setEditAllowedTrackers(commonSelected);
+    setCustomTrackerInput(customSelected.join(', '));
+  };
+
+  const saveProfileHandler = () => {
+    if (!editName.trim()) {
+      triggerToast('Profile name cannot be empty.', 'error');
+      return;
+    }
+
+    if (editEnablePin && !/^\d{4}$/.test(editPin)) {
+      triggerToast('⚠️ PIN must be exactly 4 numeric digits.', 'error');
+      return;
+    }
+    
+    // Parse custom trackers from comma-separated input
+    const customTrackers = customTrackerInput
+      .split(',')
+      .map(t => t.trim())
+      .filter(t => t.length > 0);
+      
+    const finalAllowedTrackers = [...editAllowedTrackers, ...customTrackers];
+    
+    let updatedProfiles;
+    if (editingProfile.id === 'new') {
+      const newProfile = {
+        id: 'profile-' + Math.random().toString(36).substring(2, 9),
+        name: editName.trim(),
+        avatar: editAvatar,
+        color: editColor,
+        isKids: editIsKids,
+        allowedTrackers: finalAllowedTrackers,
+        maxMovieRating: editMaxMovieRating,
+        maxTvRating: editMaxTvRating,
+        blockUnrated: editBlockUnrated,
+        pin: editEnablePin ? editPin : null
+      };
+      updatedProfiles = [...profiles, newProfile];
+      triggerToast(`Created profile: ${newProfile.name}!`, 'success');
+      
+      // Initialize local storage empty values for this profile
+      localStorage.setItem(`premium_search_library_${newProfile.id}`, '[]');
+      localStorage.setItem(`premium_search_continue_watching_${newProfile.id}`, '[]');
+      localStorage.setItem(`premium_search_playlists_${newProfile.id}`, '[]');
+      localStorage.setItem(`premium_search_theme_${newProfile.id}`, 'midnight-nebula');
+    } else {
+      updatedProfiles = profiles.map(p => {
+        if (p.id === editingProfile.id) {
+          return {
+            ...p,
+            name: editName.trim(),
+            avatar: editAvatar,
+            color: editColor,
+            isKids: editIsKids,
+            allowedTrackers: finalAllowedTrackers,
+            maxMovieRating: editMaxMovieRating,
+            maxTvRating: editMaxTvRating,
+            blockUnrated: editBlockUnrated,
+            pin: editEnablePin ? editPin : null
+          };
+        }
+        return p;
+      });
+      triggerToast(`Updated profile: ${editName.trim()}!`, 'success');
+    }
+    
+    setProfiles(updatedProfiles);
+    localStorage.setItem('premium_search_profiles', JSON.stringify(updatedProfiles));
+    setEditingProfile(null);
+    
+    if (editingProfile.id === activeProfileId) {
+      if (editIsKids) {
+        setAdultControlsUnlocked(false);
+        setHideAdult(true);
+        setCategory(prev => prev === 'Adult' ? 'Movies' : prev);
+      }
+    }
+    
+    // Sync profiles list to cloud
+    syncProfilesToCloud(updatedProfiles);
+  };
+
+  const deleteProfileHandler = (profileId) => {
+    const updatedProfiles = profiles.filter(p => p.id !== profileId);
+    setProfiles(updatedProfiles);
+    localStorage.setItem('premium_search_profiles', JSON.stringify(updatedProfiles));
+    setEditingProfile(null);
+    
+    // Clean local storage entries for this deleted profile
+    localStorage.removeItem(`premium_search_library_${profileId}`);
+    localStorage.removeItem(`premium_search_continue_watching_${profileId}`);
+    localStorage.removeItem(`premium_search_playlists_${profileId}`);
+    localStorage.removeItem(`premium_search_theme_${profileId}`);
+    
+    // If the active profile was deleted, clear active profile
+    if (activeProfileId === profileId) {
+      setActiveProfileId('');
+      localStorage.removeItem('premium_search_active_profile_id');
+      setIsProfilePickerOpen(true);
+    }
+    
+    // Sync profiles list to cloud
+    syncProfilesToCloud(updatedProfiles);
+  };
+
+  // --- Profile Lifecycle & Migration Hook ---
+  useEffect(() => {
+    // 1. Perform migration if no profiles list exists
+    const storedProfiles = localStorage.getItem('premium_search_profiles');
+    let currentProfiles = storedProfiles ? JSON.parse(storedProfiles) : [];
+    
+    if (currentProfiles.length === 0) {
+      // Perform migration of existing non-profile lists to a default "Owner" profile
+      const defaultProfile = {
+        id: 'profile-' + Math.random().toString(36).substring(2, 9),
+        name: 'Owner',
+        avatar: '🦁',
+        color: 'avatar-grad-purple-pink',
+        isKids: false,
+        allowedTrackers: [] // empty means all
+      };
+      
+      currentProfiles = [defaultProfile];
+      localStorage.setItem('premium_search_profiles', JSON.stringify(currentProfiles));
+      setProfiles(currentProfiles);
+      
+      const activeId = defaultProfile.id;
+      setActiveProfileId(activeId);
+      localStorage.setItem('premium_search_active_profile_id', activeId);
+      
+      // Migrate standard library, continue watching, playlists, theme
+      const existingLib = localStorage.getItem('premium_search_library') || '[]';
+      const existingCW = localStorage.getItem('premium_search_continue_watching') || '[]';
+      const existingPlaylists = localStorage.getItem('premium_search_playlists') || '[]';
+      const existingTheme = localStorage.getItem('premium_search_theme') || 'midnight-nebula';
+      
+      localStorage.setItem(`premium_search_library_${activeId}`, existingLib);
+      localStorage.setItem(`premium_search_continue_watching_${activeId}`, existingCW);
+      localStorage.setItem(`premium_search_playlists_${activeId}`, existingPlaylists);
+      localStorage.setItem(`premium_search_theme_${activeId}`, existingTheme);
+      
+      // Also update current state so we don't have blank values
+      setLibraryList(JSON.parse(existingLib));
+      setContinueWatchingList(JSON.parse(existingCW));
+      setPlaylists(JSON.parse(existingPlaylists));
+      setSelectedTheme(existingTheme);
+    } else {
+      // Check if active profile is set
+      const activeId = localStorage.getItem('premium_search_active_profile_id');
+      if (activeId && currentProfiles.some(p => p.id === activeId)) {
+        const activeProf = currentProfiles.find(p => p.id === activeId);
+        if (activeProf && activeProf.pin) {
+          setIsProfilePickerOpen(true);
+          setActiveProfileId('');
+        } else {
+          setActiveProfileId(activeId);
+          // Force load local storage values to be safe
+          const lib = localStorage.getItem(`premium_search_library_${activeId}`);
+          if (lib) setLibraryList(JSON.parse(lib));
+          const cw = localStorage.getItem(`premium_search_continue_watching_${activeId}`);
+          if (cw) setContinueWatchingList(JSON.parse(cw));
+          const pl = localStorage.getItem(`premium_search_playlists_${activeId}`);
+          if (pl) setPlaylists(JSON.parse(pl));
+          const theme = localStorage.getItem(`premium_search_theme_${activeId}`);
+          if (theme) setSelectedTheme(theme);
+        }
+      } else {
+        // Force open profile picker
+        setIsProfilePickerOpen(true);
+      }
+    }
+    
+    // 2. Perform Cloud Sync
+    if (userPmKey) {
+      syncProfilesFromCloud();
+    } else {
+      const activeId = localStorage.getItem('premium_search_active_profile_id');
+      if (!activeId) {
+        setIsProfilePickerOpen(true);
+      }
+    }
+  }, [userPmKey]);
 
 
   // --- Account Quota & Active Downloads API Controllers ---
@@ -852,6 +1387,12 @@ export default function App() {
   const [subtitleTrackUrl, setSubtitleTrackUrl] = useState(null);
   const [resumeTime, setResumeTime] = useState(0);
   const autoplayDeclinedRef = useRef(false);
+  const [introSegment, setIntroSegment] = useState(null);
+  const [showSkipButton, setShowSkipButton] = useState(false);
+  const [skipTimer, setSkipTimer] = useState(0);
+  const [autoSkipEnabled, setAutoSkipEnabled] = useState(() => {
+    return localStorage.getItem('premium_search_auto_skip_intro') === 'true';
+  });
 
   // --- Retro Emulation Arcade States ---
   const [activeRetroTorrent, setActiveRetroTorrent] = useState(null);
@@ -989,7 +1530,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', selectedTheme);
     localStorage.setItem('premium_search_theme', selectedTheme);
-  }, [selectedTheme]);
+    if (activeProfileId) {
+      localStorage.setItem(`premium_search_theme_${activeProfileId}`, selectedTheme);
+    }
+  }, [selectedTheme, activeProfileId]);
 
   // Prevent page scroll with arrow keys/space while retro game ROM is active
   useEffect(() => {
@@ -1213,6 +1757,7 @@ export default function App() {
 
   // --- Secret Developer Settings Lock ---
   const handleLogoClick = () => {
+    if (isKids) return; // Prevent unlocking developer options on Kids profile
     const now = Date.now();
     // Keep only clicks within the last 2000ms
     logoClicksRef.current = [...logoClicksRef.current, now].filter(t => now - t < 2000);
@@ -1414,6 +1959,91 @@ export default function App() {
     setRecapError('');
     setRecapLoading(false);
   }, [selectedVideoFile]);
+
+  // Fetch IntroDB timestamps for TV episodes when playback begins
+  useEffect(() => {
+    setIntroSegment(null);
+    setShowSkipButton(false);
+    setSkipTimer(0);
+
+    if (!selectedVideoFile || !activePlayerTorrent) return;
+    const cat = activePlayerTorrent.category || 'Movies';
+    if (cat !== 'TV') return;
+
+    const showDetails = parseShowDetails(selectedVideoFile.name);
+    if (!showDetails) return;
+
+    const fetchIntro = async () => {
+      try {
+        console.log(`🔍 [IntroDB] Resolving IMDb ID for TV show: "${activePlayerTorrent.title}"`);
+        const metadataUrl = `/api/metadata?title=${encodeURIComponent(activePlayerTorrent.title || activePlayerTorrent.name)}&category=TV`;
+        const metaRes = await fetchWithCredentials(metadataUrl);
+        if (!metaRes.ok) return;
+
+        const metaData = await metaRes.json();
+        if (metaData.status === 'success' && metaData.metadata) {
+          const imdbId = metaData.metadata.imdbId;
+          if (imdbId) {
+            console.log(`🌐 [IntroDB] Fetching segments for IMDb ID: ${imdbId}, S${showDetails.season}E${showDetails.episode}`);
+            const segmentsUrl = `https://api.introdb.app/segments?imdb_id=${encodeURIComponent(imdbId)}&season=${showDetails.season}&episode=${showDetails.episode}`;
+            const segmentsRes = await fetch(segmentsUrl);
+            if (segmentsRes.ok) {
+              const data = await segmentsRes.json();
+              const segments = data.segments || data;
+              if (Array.isArray(segments)) {
+                const intro = segments.find(s => s.type === 'intro' || s.segment_type === 'intro');
+                if (intro) {
+                  const start = parseFloat(intro.start !== undefined ? intro.start : intro.start_sec);
+                  const end = parseFloat(intro.end !== undefined ? intro.end : intro.end_sec);
+                  if (!isNaN(start) && !isNaN(end) && end > start) {
+                    console.log(`✅ [IntroDB] Found intro: ${start}s - ${end}s`);
+                    setIntroSegment({ start, end });
+                  }
+                } else {
+                  console.log(`ℹ️ [IntroDB] No intro segment found for this episode.`);
+                }
+              }
+            } else {
+              console.warn(`[IntroDB] API returned status ${segmentsRes.status}`);
+            }
+          } else {
+            console.log(`ℹ️ [IntroDB] No IMDb ID available for metadata enrichment.`);
+          }
+        }
+      } catch (err) {
+        console.error('❌ [IntroDB] Failed to fetch intro timestamps:', err.message);
+      }
+    };
+
+    fetchIntro();
+  }, [selectedVideoFile, activePlayerTorrent]);
+
+  // 10 second countdown timer for the Skip Intro popup button
+  useEffect(() => {
+    let interval;
+    if (showSkipButton && skipTimer > 0) {
+      interval = setInterval(() => {
+        setSkipTimer(prev => {
+          if (prev <= 1) {
+            setShowSkipButton(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [showSkipButton, skipTimer]);
+
+  const handleSkipIntro = () => {
+    const video = document.querySelector('.main-video-player');
+    if (video && introSegment) {
+      video.currentTime = introSegment.end;
+      triggerToast("⏭️ Skipped intro!", "success");
+      setIntroSegment(null);
+      setShowSkipButton(false);
+    }
+  };
 
   const handleToggleRecap = async () => {
     const nextState = !recapOpen;
@@ -1716,6 +2346,26 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     }
 
     try {
+      const activeProf = profiles.find(p => p.id === activeProfileId);
+      if (activeProf && activeProf.isKids && (category === 'Movies' || category === 'TV')) {
+        try {
+          const metadataUrl = `/api/metadata?title=${encodeURIComponent(currentQuery)}&category=${category}`;
+          const metaRes = await fetchWithCredentials(metadataUrl);
+          if (metaRes.ok) {
+            const metaData = await metaRes.json();
+            if (metaData.status === 'success' && metaData.metadata) {
+              const allowed = isRatingAllowed(metaData.metadata.certification, category, activeProf);
+              if (!allowed) {
+                triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be searched.`, 'error');
+                setLoading(false);
+                return;
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Failed search rating verification:', err.message);
+        }
+      }
       const fetchUrl = activeSearchMode === 'usenet'
         ? `/api/usenet/search?q=${encodeURIComponent(currentQuery)}&category=${category}`
         : `/api/search?q=${encodeURIComponent(currentQuery)}&category=${category}`;
@@ -1745,6 +2395,27 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     if (!downloadSource) {
       triggerToast('No download link or magnet available for this item.', 'error');
       return;
+    }
+
+    const activeProf = profiles.find(p => p.id === activeProfileId);
+    if (activeProf && activeProf.isKids && (category === 'Movies' || category === 'TV' || torrent.category === 'Movies' || torrent.category === 'TV')) {
+      const activeCat = torrent.category || category;
+      try {
+        const metadataUrl = `/api/metadata?title=${encodeURIComponent(torrent.title || torrent.name)}&category=${activeCat}`;
+        const metaRes = await fetchWithCredentials(metadataUrl);
+        if (metaRes.ok) {
+          const metaData = await metaRes.json();
+          if (metaData.status === 'success' && metaData.metadata) {
+            const allowed = isRatingAllowed(metaData.metadata.certification, activeCat, activeProf);
+            if (!allowed) {
+              triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be added.`, 'error');
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed download rating verification:', err.message);
+      }
     }
 
     // Identify this specific item uniquely
@@ -1889,6 +2560,27 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     if (!downloadSource) {
       triggerToast('No streamable link available for this item.', 'error');
       return;
+    }
+
+    const activeProf = profiles.find(p => p.id === activeProfileId);
+    if (activeProf && activeProf.isKids && (category === 'Movies' || category === 'TV' || torrent.category === 'Movies' || torrent.category === 'TV')) {
+      const activeCat = torrent.category || category;
+      try {
+        const metadataUrl = `/api/metadata?title=${encodeURIComponent(torrent.title || torrent.name)}&category=${activeCat}`;
+        const metaRes = await fetchWithCredentials(metadataUrl);
+        if (metaRes.ok) {
+          const metaData = await metaRes.json();
+          if (metaData.status === 'success' && metaData.metadata) {
+            const allowed = isRatingAllowed(metaData.metadata.certification, activeCat, activeProf);
+            if (!allowed) {
+              triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be played.`, 'error');
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed playback rating verification:', err.message);
+      }
     }
 
     setPlayerLoading(true);
@@ -2360,6 +3052,23 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     const currentSecs = video.currentTime;
     const totalSecs = video.duration;
 
+    // IntroDB Skip Intro Trigger
+    if (introSegment) {
+      if (currentSecs >= introSegment.start && currentSecs <= introSegment.end) {
+        if (autoSkipEnabled) {
+          video.currentTime = introSegment.end;
+          triggerToast("⏭️ Auto-skipped intro!", "success");
+          setIntroSegment(null);
+          setShowSkipButton(false);
+        } else if (!showSkipButton && skipTimer === 0) {
+          setShowSkipButton(true);
+          setSkipTimer(10);
+        }
+      } else if (showSkipButton && (currentSecs < introSegment.start || currentSecs > introSegment.end)) {
+        setShowSkipButton(false);
+      }
+    }
+
     if (totalSecs > 0 && currentSecs > 10) { // Start saving after 10 seconds of playback
       const progressPercent = (currentSecs / totalSecs) * 100;
       
@@ -2494,6 +3203,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     const updated = [...playlists, newPl];
     setPlaylists(updated);
     localStorage.setItem('premium_search_playlists', JSON.stringify(updated));
+    syncToCloud(libraryList, continueWatchingList, updated);
     setPlaylistSelectionTrack(null);
     triggerToast(`Added to new playlist "${name}"!`, "success");
   };
@@ -2533,6 +3243,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     
     setPlaylists(updated);
     localStorage.setItem('premium_search_playlists', JSON.stringify(updated));
+    syncToCloud(libraryList, continueWatchingList, updated);
   };
 
   const removeTrackFromPlaylist = (playlistName, trackIndex) => {
@@ -2547,6 +3258,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     });
     setPlaylists(updated);
     localStorage.setItem('premium_search_playlists', JSON.stringify(updated));
+    syncToCloud(libraryList, continueWatchingList, updated);
     triggerToast("Track removed from playlist.", "success");
   };
 
@@ -2554,6 +3266,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     const updated = playlists.filter(p => p.name !== playlistName);
     setPlaylists(updated);
     localStorage.setItem('premium_search_playlists', JSON.stringify(updated));
+    syncToCloud(libraryList, continueWatchingList, updated);
     triggerToast(`Playlist "${playlistName}" deleted.`, "success");
   };
 
@@ -3099,8 +3812,728 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   const showDetails = parseShowDetails(selectedVideoFile?.name);
   const showRecapOption = showDetails && !(showDetails.season === 1 && showDetails.episode === 1);
 
+  const showPicker = isProfilePickerOpen || !activeProfileId;
+
   return (
     <div className="app-container">
+      
+      {/* Profile Selection Overlay */}
+      {showPicker && (
+        <div className="modal-overlay profile-picker-overlay fade-in" style={{ zIndex: '9999', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(25px)' }}>
+          <div className="profile-picker-container" style={{ textAlign: 'center', maxWidth: '800px', width: '95%', margin: '0 auto' }}>
+            
+            {pinTargetProfile ? (
+              // PIN Entry Dialog
+              <div className="profile-pin-card glass-panel fade-in" style={{ padding: '2.5rem 2rem', borderRadius: '16px', maxWidth: '360px', margin: '0 auto', textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.6)', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
+                <div 
+                  className={`profile-avatar-large ${pinTargetProfile.color}`}
+                  style={{
+                    width: '90px',
+                    height: '90px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '3.5rem',
+                    margin: '0 auto 1.5rem auto',
+                    boxShadow: '0 8px 25px rgba(0,0,0,0.3)',
+                    animation: pinError ? 'shake 0.5s' : 'none'
+                  }}
+                >
+                  {pinTargetProfile.avatar}
+                </div>
+                
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '1.25rem', color: 'var(--text-primary)' }}>Profile Lock</h3>
+                <p style={{ margin: '0 0 1.5rem 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Enter PIN to access <strong>{pinTargetProfile.name}</strong>
+                </p>
+
+                {/* PIN dots container */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginBottom: '2rem' }}>
+                  {[0, 1, 2, 3].map(idx => {
+                    const filled = pinInput.length > idx;
+                    return (
+                      <div 
+                        key={idx}
+                        className={`pin-dot ${filled ? 'filled' : ''} ${pinError ? 'shake-pin' : ''}`}
+                        style={{
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '50%',
+                          border: '2px solid var(--glass-border)',
+                          backgroundColor: filled ? 'var(--color-primary, #9333ea)' : 'transparent',
+                          boxShadow: filled ? '0 0 10px var(--color-primary, #9333ea)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+
+                {/* Hidden input to capture physical keyboard input */}
+                <input
+                  type="text"
+                  pattern="\d*"
+                  maxLength={4}
+                  autoFocus
+                  value={pinInput}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').substring(0, 4);
+                    setPinInput(val);
+                    setPinError(false);
+                    
+                    if (val.length === 4) {
+                      if (val === pinTargetProfile.pin) {
+                        if (pinTargetAction === 'edit') {
+                          startEditProfile(pinTargetProfile);
+                        } else {
+                          switchProfile(pinTargetProfile.id);
+                          setIsProfilePickerOpen(false);
+                        }
+                        setPinTargetProfile(null);
+                      } else {
+                        setPinError(true);
+                        triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                        setTimeout(() => {
+                          setPinInput('');
+                          setPinError(false);
+                        }, 600);
+                      }
+                    }
+                  }}
+                  style={{
+                    position: 'absolute',
+                    opacity: 0,
+                    pointerEvents: 'none'
+                  }}
+                />
+
+                {/* Virtual Keypad */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', maxWidth: '200px', margin: '0 auto 1.5rem auto' }}>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+                    <button
+                      key={num}
+                      onClick={() => {
+                        if (pinInput.length < 4) {
+                          const val = pinInput + num;
+                          setPinInput(val);
+                          if (val.length === 4) {
+                            if (val === pinTargetProfile.pin) {
+                              if (pinTargetAction === 'edit') {
+                                startEditProfile(pinTargetProfile);
+                              } else {
+                                switchProfile(pinTargetProfile.id);
+                                setIsProfilePickerOpen(false);
+                              }
+                              setPinTargetProfile(null);
+                            } else {
+                              setPinError(true);
+                              triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                              setTimeout(() => {
+                                setPinInput('');
+                                setPinError(false);
+                              }, 600);
+                            }
+                          }
+                        }
+                      }}
+                      className="glass-panel"
+                      style={{
+                        fontSize: '1.2rem',
+                        fontWeight: 'bold',
+                        borderRadius: '50%',
+                        width: '48px',
+                        height: '48px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        margin: '0 auto',
+                        background: 'rgba(255,255,255,0.05)',
+                        border: '1px solid var(--glass-border)',
+                        color: 'white',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                  
+                  {/* Cancel button */}
+                  <button
+                    onClick={() => {
+                      setPinTargetProfile(null);
+                      setPinInput('');
+                    }}
+                    style={{
+                      fontSize: '0.8rem',
+                      borderRadius: '50%',
+                      width: '48px',
+                      height: '48px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto',
+                      background: 'rgba(255,255,255,0.02)',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  {/* 0 Key */}
+                  <button
+                    onClick={() => {
+                      if (pinInput.length < 4) {
+                        const val = pinInput + '0';
+                        setPinInput(val);
+                        if (val.length === 4) {
+                          if (val === pinTargetProfile.pin) {
+                            if (pinTargetAction === 'edit') {
+                              startEditProfile(pinTargetProfile);
+                            } else {
+                              switchProfile(pinTargetProfile.id);
+                              setIsProfilePickerOpen(false);
+                            }
+                            setPinTargetProfile(null);
+                          } else {
+                            setPinError(true);
+                            triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                            setTimeout(() => {
+                              setPinInput('');
+                              setPinError(false);
+                            }, 600);
+                          }
+                        }
+                      }
+                    }}
+                    className="glass-panel"
+                    style={{
+                      fontSize: '1.2rem',
+                      fontWeight: 'bold',
+                      borderRadius: '50%',
+                      width: '48px',
+                      height: '48px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid var(--glass-border)',
+                      color: 'white',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    0
+                  </button>
+
+                  {/* Backspace Key */}
+                  <button
+                    onClick={() => {
+                      setPinInput(prev => prev.slice(0, -1));
+                    }}
+                    style={{
+                      fontSize: '1rem',
+                      borderRadius: '50%',
+                      width: '48px',
+                      height: '48px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto',
+                      background: 'rgba(255,255,255,0.02)',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ⌫
+                  </button>
+                </div>
+              </div>
+            ) : editingProfile ? (
+              // Edit/Create Profile Form
+              <div className="profile-edit-card glass-panel" style={{ padding: '2rem', borderRadius: '16px', position: 'relative', textAlign: 'left' }}>
+                <h2 style={{ marginTop: '0', marginBottom: '1.5rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px' }}>
+                  {editingProfile.id === 'new' ? '➕ Create Profile' : '✏️ Edit Profile'}
+                </h2>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  
+                  {/* Name field */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Profile Name</label>
+                    <input 
+                      type="text" 
+                      value={editName} 
+                      onChange={(e) => setEditName(e.target.value)} 
+                      placeholder="e.g. Guest" 
+                      className="settings-text-input"
+                      maxLength={15}
+                      style={{ fontSize: '1rem', padding: '10px 14px' }}
+                    />
+                  </div>
+                  
+                  {/* Avatar & Color Picker */}
+                  <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+                    
+                    {/* Preview circle */}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Preview</span>
+                      <div 
+                        className={`profile-avatar-large ${editColor}`}
+                        style={{
+                          width: '80px',
+                          height: '80px',
+                          borderRadius: '50%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '3rem',
+                          boxShadow: '0 8px 20px rgba(0,0,0,0.3)'
+                        }}
+                      >
+                        {editAvatar}
+                      </div>
+                    </div>
+                    
+                    {/* Emoji Select */}
+                    <div style={{ flex: 1, minWidth: '200px' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>Choose Avatar Icon</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                        {EMOJIS.map(emoji => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => setEditAvatar(emoji)}
+                            style={{
+                              fontSize: '1.5rem',
+                              width: '40px',
+                              height: '40px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              border: editAvatar === emoji ? '2px solid var(--color-primary)' : '1px solid var(--glass-border)',
+                              borderRadius: '8px',
+                              background: editAvatar === emoji ? 'var(--color-primary-glow)' : 'transparent',
+                              cursor: 'pointer',
+                              color: 'var(--text-primary)',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Gradient Select */}
+                    <div style={{ flex: 1, minWidth: '200px' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>Choose Theme Gradient</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                        {GRADIENTS.map(grad => (
+                          <button
+                            key={grad.class}
+                            type="button"
+                            onClick={() => setEditColor(grad.class)}
+                            className={`profile-color-selector ${grad.class}`}
+                            style={{
+                              width: '36px',
+                              height: '36px',
+                              borderRadius: '50%',
+                              border: editColor === grad.class ? '3px solid var(--text-primary)' : '1px solid rgba(255,255,255,0.1)',
+                              cursor: 'pointer',
+                              boxShadow: 'inset 0 0 10px rgba(0,0,0,0.5)',
+                              transition: 'all 0.2s ease'
+                            }}
+                            title={grad.name}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    
+                  </div>
+                  
+                  {/* Kids Mode Toggle */}
+                  <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h4 style={{ margin: '0', fontSize: '0.9rem' }}>👶 Kids Mode (Parental Controls)</h4>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          Hides adult content, applies strict keyword filters, disables dev tools, and restricts trackers.
+                        </p>
+                      </div>
+                      <label className="switch">
+                        <input 
+                          type="checkbox" 
+                          checked={editIsKids} 
+                          onChange={(e) => setEditIsKids(e.target.checked)}
+                        />
+                        <span className="slider round"></span>
+                      </label>
+                    </div>
+
+                    {editIsKids && (
+                      <div className="kids-trackers-whitelist" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '12px', marginTop: '4px' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
+                          Allowed Trackers & Indexers (empty means all)
+                        </span>
+                        
+                        {/* Tracker Checklist */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px', marginBottom: '10px' }}>
+                          {COMMON_TRACKERS.map(tracker => {
+                            const isChecked = editAllowedTrackers.includes(tracker);
+                            return (
+                              <label key={tracker} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    if (isChecked) {
+                                      setEditAllowedTrackers(editAllowedTrackers.filter(t => t !== tracker));
+                                    } else {
+                                      setEditAllowedTrackers([...editAllowedTrackers, tracker]);
+                                    }
+                                  }}
+                                />
+                                {tracker}
+                              </label>
+                            );
+                          })}
+                          {userIndexers.map(idx => {
+                            const isChecked = editAllowedTrackers.includes(idx.name);
+                            return (
+                              <label key={idx.name} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    if (isChecked) {
+                                      setEditAllowedTrackers(editAllowedTrackers.filter(t => t !== idx.name));
+                                    } else {
+                                      setEditAllowedTrackers([...editAllowedTrackers, idx.name]);
+                                    }
+                                  }}
+                                />
+                                ⚡ {idx.name}
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        {/* Custom Tracker input */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Or add custom tracker names (comma-separated):</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Rarbg, YggTorrent"
+                            value={customTrackerInput}
+                            onChange={(e) => setCustomTrackerInput(e.target.value)}
+                            className="settings-text-input small"
+                          />
+                        </div>
+
+                        {/* Rating Limits Config */}
+                        <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '12px', marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                          <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>
+                            Age Rating Limits (TMDb verification)
+                          </span>
+                          
+                          <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '120px' }}>
+                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Max Movie Rating</label>
+                              <select 
+                                value={editMaxMovieRating} 
+                                onChange={(e) => setEditMaxMovieRating(e.target.value)}
+                                className="theme-dropdown-select"
+                                style={{ width: '100%', padding: '6px', fontSize: '0.8rem' }}
+                              >
+                                <option value="G">G</option>
+                                <option value="PG">PG</option>
+                                <option value="PG-13">PG-13</option>
+                                <option value="R">R</option>
+                                <option value="Any">Any (No Movie Limit)</option>
+                              </select>
+                            </div>
+                            
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '120px' }}>
+                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Max TV Rating</label>
+                              <select 
+                                value={editMaxTvRating} 
+                                onChange={(e) => setEditMaxTvRating(e.target.value)}
+                                className="theme-dropdown-select"
+                                style={{ width: '100%', padding: '6px', fontSize: '0.8rem' }}
+                              >
+                                <option value="TV-G">TV-G</option>
+                                <option value="TV-PG">TV-PG</option>
+                                <option value="TV-14">TV-14</option>
+                                <option value="TV-MA">TV-MA</option>
+                                <option value="Any">Any (No TV Limit)</option>
+                              </select>
+                            </div>
+                          </div>
+                          
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', cursor: 'pointer', marginTop: '4px' }}>
+                            <input
+                              type="checkbox"
+                              checked={editBlockUnrated}
+                              onChange={(e) => setEditBlockUnrated(e.target.checked)}
+                            />
+                            Block Unrated/Not Rated Content
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* PIN Lock Toggle */}
+                  <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h4 style={{ margin: '0', fontSize: '0.9rem' }}>🔒 Profile PIN Lock</h4>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          Requires a 4-digit PIN to access this profile.
+                        </p>
+                      </div>
+                      <label className="switch">
+                        <input 
+                          type="checkbox" 
+                          checked={editEnablePin} 
+                          onChange={(e) => {
+                            setEditEnablePin(e.target.checked);
+                            if (!e.target.checked) setEditPin('');
+                          }}
+                        />
+                        <span className="slider round"></span>
+                      </label>
+                    </div>
+
+                    {editEnablePin && (
+                      <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '12px', marginTop: '4px' }}>
+                        <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                          Enter 4-Digit PIN
+                        </label>
+                        <input
+                          type="text"
+                          pattern="\d*"
+                          maxLength={4}
+                          placeholder="e.g. 1234"
+                          value={editPin}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/\D/g, '');
+                            setEditPin(val);
+                          }}
+                          className="settings-text-input"
+                          style={{ width: '100px', fontSize: '1.2rem', letterSpacing: '8px', textAlign: 'center', padding: '8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--glass-border)', borderRadius: '4px', color: 'white' }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Actions buttons */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginTop: '1rem' }}>
+                    <div>
+                      {editingProfile.id !== 'new' && profiles.length > 1 && (
+                        <button
+                          type="button"
+                          className="danger-btn"
+                          onClick={() => {
+                            if (window.confirm(`Are you sure you want to delete profile "${editingProfile.name}"? All local history for this profile will be removed.`)) {
+                              deleteProfileHandler(editingProfile.id);
+                            }
+                          }}
+                          style={{ padding: '8px 16px', fontSize: '0.9rem' }}
+                        >
+                          🗑️ Delete Profile
+                        </button>
+                      )}
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <button
+                        type="button"
+                        className="danger-btn text-only"
+                        onClick={() => setEditingProfile(null)}
+                        style={{ padding: '8px 16px', fontSize: '0.9rem' }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="action-btn"
+                        onClick={saveProfileHandler}
+                        style={{ padding: '8px 24px', fontSize: '0.9rem', fontWeight: 'bold' }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  
+                </div>
+              </div>
+            ) : (
+              // Netflix style Profile Grid
+              <div className="profile-selector-view">
+                <h1 style={{ fontSize: '2.5rem', marginBottom: '2.5rem', fontWeight: 'bold', textShadow: '0 4px 10px rgba(0,0,0,0.4)', color: 'var(--text-primary)' }}>
+                  {isManagingProfiles ? 'Manage Profiles' : "Who's watching?"}
+                </h1>
+                
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '2.5rem', marginBottom: '3.5rem' }}>
+                  {profiles.map(p => (
+                    <div 
+                      key={p.id} 
+                      className={`profile-card ${isManagingProfiles ? 'managing' : ''}`}
+                      onClick={() => {
+                        handleProfileSelect(p.id, isManagingProfiles ? 'edit' : 'switch');
+                      }}
+                      style={{
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '12px',
+                        width: '120px'
+                      }}
+                    >
+                      <div style={{ position: 'relative' }}>
+                        <div 
+                          className={`profile-avatar ${p.color}`}
+                          style={{
+                            width: '100px',
+                            height: '100px',
+                            borderRadius: '50%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '3.5rem',
+                            boxShadow: '0 8px 25px rgba(0,0,0,0.3)',
+                            border: p.id === activeProfileId && !isManagingProfiles ? '4px solid var(--color-primary)' : '3px solid transparent'
+                          }}
+                        >
+                          {p.avatar}
+                          
+                          {p.isKids && (
+                            <span 
+                              style={{
+                                position: 'absolute',
+                                bottom: '-4px',
+                                right: '-4px',
+                                background: 'var(--color-primary)',
+                                padding: '2px 6px',
+                                borderRadius: '10px',
+                                fontSize: '0.65rem',
+                                fontWeight: 'bold',
+                                color: 'white',
+                                boxShadow: '0 2px 5px rgba(0,0,0,0.3)'
+                              }}
+                            >
+                              KIDS
+                            </span>
+                          )}
+                        </div>
+
+                        {isManagingProfiles && (
+                          <div 
+                            style={{
+                              position: 'absolute',
+                              top: 0, left: 0, width: '100%', height: '100%',
+                              background: 'rgba(0,0,0,0.6)',
+                              borderRadius: '50%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '1.5rem',
+                              color: 'white'
+                            }}
+                          >
+                            ✏️
+                          </div>
+                        )}
+                      </div>
+                      
+                      <span 
+                        style={{ 
+                          fontSize: '1.05rem', 
+                          fontWeight: '500', 
+                          color: p.id === activeProfileId && !isManagingProfiles ? 'var(--color-primary)' : 'var(--text-primary)',
+                          maxWidth: '100%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        {p.name}
+                      </span>
+                    </div>
+                  ))}
+                  
+                  {isManagingProfiles && (
+                    <div 
+                      className="profile-card add-profile"
+                      onClick={() => startEditProfile({ id: 'new', name: '', avatar: '🦁', color: 'avatar-grad-purple-pink', isKids: false, allowedTrackers: [] })}
+                      style={{
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '12px',
+                        width: '120px'
+                      }}
+                    >
+                      <div 
+                        style={{
+                          width: '100px',
+                          height: '100px',
+                          borderRadius: '50%',
+                          border: '3px dashed var(--glass-border)',
+                          background: 'rgba(255,255,255,0.03)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '3rem',
+                          color: 'var(--text-muted)',
+                          transition: 'all 0.3s ease'
+                        }}
+                        className="avatar-add-button"
+                      >
+                        ＋
+                      </div>
+                      <span style={{ fontSize: '1.05rem', fontWeight: '500', color: 'var(--text-muted)' }}>
+                        Add Profile
+                      </span>
+                    </div>
+                  )}
+                </div>
+                
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setIsManagingProfiles(!isManagingProfiles)}
+                    style={{ padding: '10px 24px', fontSize: '1rem', border: '1px solid var(--text-muted)', borderRadius: '4px', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer' }}
+                  >
+                    {isManagingProfiles ? 'Done' : 'Manage Profiles'}
+                  </button>
+                  
+                  {activeProfileId && (
+                    <button
+                      type="button"
+                      className="action-btn"
+                      onClick={() => setIsProfilePickerOpen(false)}
+                      style={{ padding: '10px 24px', fontSize: '1rem' }}
+                    >
+                      Go Back
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            
+          </div>
+        </div>
+      )}
       
       {/* Toast Notification Banner */}
       {toast && (
@@ -3121,10 +4554,141 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
         {/* Global Toolbar */}
         <div className="header-actions">
+          {/* Profile Switcher Header Widget */}
+          {activeProfileId && (
+            <div className="header-profile-menu-container" ref={profileDropdownRef} style={{ position: 'relative', marginRight: '0.5rem' }}>
+              <button
+                className="header-profile-trigger"
+                onClick={() => setIsProfileDropdownOpen(!isProfileDropdownOpen)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: 'var(--panel-glass)',
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: '30px',
+                  padding: '4px 12px 4px 6px',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  fontWeight: '500',
+                  height: '36px',
+                  boxSizing: 'border-box'
+                }}
+              >
+                <div 
+                  className={`profile-avatar-mini ${activeProfile?.color || 'avatar-grad-purple-pink'}`}
+                  style={{
+                    width: '24px',
+                    height: '24px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '1rem',
+                    lineHeight: '1'
+                  }}
+                >
+                  {activeProfile?.avatar || '🦁'}
+                </div>
+                <span>{activeProfile?.name || 'User'}</span>
+                <span style={{ fontSize: '0.65rem', opacity: '0.7' }}>▼</span>
+              </button>
+              
+              {isProfileDropdownOpen && (
+                <div 
+                  className="profile-dropdown-menu glass-panel"
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: '0',
+                    marginTop: '8px',
+                    width: '180px',
+                    zIndex: '1000',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    padding: '6px',
+                    gap: '4px',
+                    background: 'var(--panel-glass)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: '8px',
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+                    backdropFilter: 'blur(20px)'
+                  }}
+                >
+                  <div style={{ padding: '6px 8px', fontSize: '0.75rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--glass-border)', marginBottom: '4px', textAlign: 'left' }}>
+                    Profiles
+                  </div>
+                  {profiles.map(p => (
+                    <button
+                      key={p.id}
+                      className={`dropdown-profile-item ${p.id === activeProfileId ? 'active' : ''}`}
+                      onClick={() => {
+                        handleProfileSelect(p.id);
+                        setIsProfileDropdownOpen(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '6px 8px',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: '4px',
+                        color: 'var(--text-primary)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontSize: '0.8rem'
+                      }}
+                    >
+                      <span className={`profile-avatar-mini ${p.color}`} style={{ width: '20px', height: '20px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem' }}>
+                        {p.avatar}
+                      </span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {p.name} {p.isKids && '👶'}
+                      </span>
+                    </button>
+                  ))}
+                  <div style={{ borderTop: '1px solid var(--glass-border)', marginTop: '4px', paddingTop: '4px' }}>
+                    <button
+                      onClick={() => {
+                        setIsProfilePickerOpen(true);
+                        setIsProfileDropdownOpen(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '6px 8px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--color-primary)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontSize: '0.8rem',
+                        fontWeight: '500'
+                      }}
+                    >
+                      <span>👥</span> Manage Profiles
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="theme-selector-container" style={{ marginRight: '0.5rem' }}>
             <select 
               value={selectedTheme} 
-              onChange={(e) => setSelectedTheme(e.target.value)} 
+              onChange={(e) => {
+                const newTheme = e.target.value;
+                setSelectedTheme(newTheme);
+                if (activeProfileId) {
+                  syncToCloud(libraryList, continueWatchingList, playlists, newTheme);
+                }
+              }} 
               className="theme-dropdown-select"
               title="Switch Ambient UI Theme Preset"
             >
@@ -3500,7 +5064,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               </div>
 
               {/* Privacy Setting Toggle (Only visible if secretly unlocked) */}
-              {adultControlsUnlocked && (
+              {!isKids && adultControlsUnlocked && (
                 <div className="setting-item">
                   <div className="setting-info">
                     <h3>Adult Category Filter</h3>
@@ -3547,7 +5111,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             </div>
             
             {/* Privacy Shield Active note (Only visible if secretly unlocked and adult content is enabled) */}
-            {adultControlsUnlocked && !hideAdult && (
+            {!isKids && adultControlsUnlocked && !hideAdult && (
               <div className="settings-note">
                 <span className="badge-shield">🛡️ Privacy Shield Active</span>
                 <p>Adult content searches, library additions, and playback progress metrics are strictly excluded from history lists and local browser storage logs, regardless of settings.</p>
@@ -4449,7 +6013,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               >
                 📦 Other ({libraryList.filter(item => item.category === 'Other' || item.category === 'Music').length})
               </button>
-              {adultControlsUnlocked && !hideAdult && (
+              {!isKids && adultControlsUnlocked && !hideAdult && (
                 <button 
                   className={`sub-tab ${librarySubTab === 'Adult' ? 'active' : ''}`}
                   onClick={() => setLibrarySubTab('Adult')}
@@ -5559,6 +7123,36 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       Your browser does not support HTML5 video playback.
                     </video>
 
+                    {/* Netflix-Style Skip Intro Popup */}
+                    {showSkipButton && introSegment && (
+                      <button 
+                        className="skip-intro-btn glass-panel animate-zoom-in"
+                        onClick={handleSkipIntro}
+                        style={{
+                          position: 'absolute',
+                          bottom: '80px',
+                          right: '30px',
+                          padding: '12px 24px',
+                          fontSize: '1rem',
+                          fontWeight: 'bold',
+                          color: 'white',
+                          background: 'rgba(0, 0, 0, 0.75)',
+                          border: '1px solid rgba(255, 255, 255, 0.25)',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          zIndex: '1000',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        <span>⏭️ Skip Intro</span>
+                        <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>{skipTimer}s</span>
+                      </button>
+                    )}
+
                     {/* Netflix-Style Episode Autoplay Overlay popup */}
                     {showAutoplayOverlay && nextEpisodeFile && (
                       <div className="autoplay-overlay-container">
@@ -5599,6 +7193,28 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Browser audio track limitations notice & Custom controls */}
                   <div className="player-custom-controls">
                     
+                    {/* Auto Skip Intro Setting */}
+                    {activePlayerTorrent && activePlayerTorrent.category === 'TV' && (
+                      <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'rgba(255, 255, 255, 0.02)', marginBottom: '1.25rem' }}>
+                        <div>
+                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-primary)', display: 'block', textAlign: 'left' }}>⏭️ Auto-Skip TV Intros</span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', textAlign: 'left', marginTop: '2px' }}>Automatically fast-forward past intros matching IntroDB timestamps.</span>
+                        </div>
+                        <label className="switch">
+                          <input 
+                            type="checkbox" 
+                            checked={autoSkipEnabled} 
+                            onChange={(e) => {
+                              setAutoSkipEnabled(e.target.checked);
+                              localStorage.setItem('premium_search_auto_skip_intro', e.target.checked ? 'true' : 'false');
+                              triggerToast(e.target.checked ? "⏭️ Auto-skip intros enabled!" : "⏭️ Auto-skip intros disabled.", "success");
+                            }}
+                          />
+                          <span className="slider round"></span>
+                        </label>
+                      </div>
+                    )}
+
                     {/* TV Show AI Recap Section */}
                     {showRecapOption && (
                       <div className="ai-recap-box glass-panel-subtle">

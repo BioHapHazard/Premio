@@ -1715,6 +1715,7 @@ app.get('/mock-download/:hash', (req, res) => {
 // 5. Cloud Sync endpoints (GET: Download sync, POST: Upload sync)
 app.get('/api/sync', async (req, res) => {
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  const filename = req.query.filename || 'sync_data.json';
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     console.log('ℹ️  Premiumize key not configured. Cloud sync is disabled.');
@@ -1722,7 +1723,7 @@ app.get('/api/sync', async (req, res) => {
   }
 
   try {
-    console.log('🔄 Fetching cloud sync data from Premiumize...');
+    console.log(`🔄 Fetching cloud sync data (${filename}) from Premiumize...`);
     
     // A. List root folder to find "PremiumSearch_Sync"
     const rootListRes = await fetch('https://www.premiumize.me/api/folder/list', {
@@ -1749,7 +1750,7 @@ app.get('/api/sync', async (req, res) => {
 
     const folderId = syncFolder.id;
 
-    // B. List the sync folder contents to locate "sync_data.json"
+    // B. List the sync folder contents to locate the file
     const folderListRes = await fetch(`https://www.premiumize.me/api/folder/list?id=${folderId}`, {
       headers: { 'Authorization': `Bearer ${premiumizeApiKey}` }
     });
@@ -1764,11 +1765,11 @@ app.get('/api/sync', async (req, res) => {
     }
 
     const syncFile = (folderData.content || []).find(
-      item => item.name === 'sync_data.json' && item.type === 'file'
+      item => item.name === filename && item.type === 'file'
     );
 
     if (!syncFile) {
-      console.log('ℹ️ "sync_data.json" file not found in sync folder.');
+      console.log(`ℹ️ "${filename}" file not found in sync folder.`);
       return res.json({ success: true, synced: false, data: null });
     }
 
@@ -1779,25 +1780,26 @@ app.get('/api/sync', async (req, res) => {
     }
 
     const syncContent = await downloadRes.json();
-    console.log('✅ Cloud sync data successfully fetched and parsed.');
+    console.log(`✅ Cloud sync data (${filename}) successfully fetched and parsed.`);
     return res.json({ success: true, synced: true, data: syncContent });
 
   } catch (err) {
-    console.error('❌ Cloud sync download failed:', err.message);
+    console.error(`❌ Cloud sync download for ${filename} failed:`, err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.post('/api/sync', async (req, res) => {
-  const syncData = req.body; // Expect { libraryList, continueWatchingList }
+  const syncData = req.body;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  const filename = req.query.filename || 'sync_data.json';
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     return res.status(400).json({ success: false, error: 'Premiumize API key is missing.' });
   }
 
   try {
-    console.log('🔄 Uploading cloud sync data to Premiumize...');
+    console.log(`🔄 Uploading cloud sync data (${filename}) to Premiumize...`);
 
     // A. Find or create the "PremiumSearch_Sync" folder in root
     const rootListRes = await fetch('https://www.premiumize.me/api/folder/list', {
@@ -1845,7 +1847,7 @@ app.post('/api/sync', async (req, res) => {
       console.log(`📁 Found existing sync folder ID: ${folderId}`);
     }
 
-    // B. List the sync folder contents to check if "sync_data.json" already exists (so we can delete it first)
+    // B. List the sync folder contents to check if the file already exists (so we can delete it first)
     const folderListRes = await fetch(`https://www.premiumize.me/api/folder/list?id=${folderId}`, {
       headers: { 'Authorization': `Bearer ${premiumizeApiKey}` }
     });
@@ -1854,11 +1856,11 @@ app.post('/api/sync', async (req, res) => {
       const folderData = await folderListRes.json();
       if (folderData.status === 'success') {
         const existingSyncFile = (folderData.content || []).find(
-          item => item.name === 'sync_data.json' && item.type === 'file'
+          item => item.name === filename && item.type === 'file'
         );
         
         if (existingSyncFile) {
-          console.log(`🗑️ Deleting old "sync_data.json" (ID: ${existingSyncFile.id})...`);
+          console.log(`🗑️ Deleting old "${filename}" (ID: ${existingSyncFile.id})...`);
           const deleteParams = new URLSearchParams();
           deleteParams.append('id', existingSyncFile.id);
 
@@ -1897,9 +1899,9 @@ app.post('/api/sync', async (req, res) => {
     
     // Convert JSON state to a Blob
     const jsonBlob = new Blob([JSON.stringify(syncData, null, 2)], { type: 'application/json' });
-    formData.append('file', jsonBlob, 'sync_data.json');
+    formData.append('file', jsonBlob, filename);
 
-    console.log(`📤 Posting sync payload to Premiumize CDN upload URL...`);
+    console.log(`📤 Posting sync payload to Premiumize CDN upload URL for ${filename}...`);
     const uploadRes = await fetch(uploadUrl, {
       method: 'POST',
       body: formData
@@ -1909,7 +1911,7 @@ app.post('/api/sync', async (req, res) => {
       throw new Error(`File upload POST to CDN failed: ${uploadRes.status}`);
     }
 
-    console.log('✅ Sync upload complete!');
+    console.log(`✅ Sync upload complete for ${filename}!`);
     return res.json({ success: true });
 
   } catch (err) {
@@ -2212,9 +2214,9 @@ async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
     
     let detailUrl;
     if (hasReadToken) {
-      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?append_to_response=videos,credits`;
+      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?append_to_response=videos,credits,release_dates,content_ratings,external_ids`;
     } else {
-      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?api_key=${tmdbKey}&append_to_response=videos,credits`;
+      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?api_key=${tmdbKey}&append_to_response=videos,credits,release_dates,content_ratings,external_ids`;
     }
 
     const detailRes = await fetchWithTimeout(detailUrl, options);
@@ -2241,6 +2243,35 @@ async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
       }));
     }
 
+    let certification = '';
+    if (detail.release_dates && detail.release_dates.results) {
+      const usRelease = detail.release_dates.results.find(r => r.iso_3166_1 === 'US');
+      if (usRelease && usRelease.release_dates) {
+        const certObj = usRelease.release_dates.find(rd => rd.certification);
+        if (certObj) certification = certObj.certification;
+      }
+      if (!certification) {
+        for (const res of detail.release_dates.results) {
+          if (res.release_dates) {
+            const certObj = res.release_dates.find(rd => rd.certification);
+            if (certObj) {
+              certification = certObj.certification;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (detail.content_ratings && detail.content_ratings.results) {
+      const usRating = detail.content_ratings.results.find(r => r.iso_3166_1 === 'US');
+      if (usRating) {
+        certification = usRating.rating;
+      } else {
+        const anyRating = detail.content_ratings.results.find(r => r.rating);
+        if (anyRating) certification = anyRating.rating;
+      }
+    }
+
     const metadata = {
       poster: detail.poster_path ? `https://image.tmdb.org/t/p/w500${detail.poster_path}` : null,
       backdrop: detail.backdrop_path ? `https://image.tmdb.org/t/p/w1280${detail.backdrop_path}` : null,
@@ -2249,11 +2280,13 @@ async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
       overview: detail.overview || null,
       voteAverage: detail.vote_average || null,
       genres: (detail.genres || []).map(g => g.name),
+      certification: certification || 'Unrated',
       trailer,
-      cast
+      cast,
+      imdbId: detail.external_ids?.imdb_id || detail.imdb_id || null
     };
 
-    console.log(`✅ TMDb metadata found: "${metadata.title}"`);
+    console.log(`✅ TMDb metadata found: "${metadata.title}" [Rating: ${metadata.certification}]`);
     return { status: 'success', metadata };
   } catch (err) {
     console.error('❌ TMDb lookup failed:', err.message);
@@ -2320,9 +2353,9 @@ async function fetchMovieTvMetadataByImdb(imdbId, customTmdbKey) {
 
     let detailUrl;
     if (hasReadToken) {
-      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?append_to_response=videos,credits`;
+      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?append_to_response=videos,credits,release_dates,content_ratings`;
     } else {
-      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?api_key=${tmdbKey}&append_to_response=videos,credits`;
+      detailUrl = `https://api.themoviedb.org/3/${mediaType}/${firstResult.id}?api_key=${tmdbKey}&append_to_response=videos,credits,release_dates,content_ratings`;
     }
 
     const detailRes = await fetchWithTimeout(detailUrl, options);
@@ -2347,6 +2380,35 @@ async function fetchMovieTvMetadataByImdb(imdbId, customTmdbKey) {
       }));
     }
 
+    let certification = '';
+    if (detail.release_dates && detail.release_dates.results) {
+      const usRelease = detail.release_dates.results.find(r => r.iso_3166_1 === 'US');
+      if (usRelease && usRelease.release_dates) {
+        const certObj = usRelease.release_dates.find(rd => rd.certification);
+        if (certObj) certification = certObj.certification;
+      }
+      if (!certification) {
+        for (const res of detail.release_dates.results) {
+          if (res.release_dates) {
+            const certObj = res.release_dates.find(rd => rd.certification);
+            if (certObj) {
+              certification = certObj.certification;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (detail.content_ratings && detail.content_ratings.results) {
+      const usRating = detail.content_ratings.results.find(r => r.iso_3166_1 === 'US');
+      if (usRating) {
+        certification = usRating.rating;
+      } else {
+        const anyRating = detail.content_ratings.results.find(r => r.rating);
+        if (anyRating) certification = anyRating.rating;
+      }
+    }
+
     const metadata = {
       poster: detail.poster_path ? `https://image.tmdb.org/t/p/w500${detail.poster_path}` : null,
       backdrop: detail.backdrop_path ? `https://image.tmdb.org/t/p/w1280${detail.backdrop_path}` : null,
@@ -2355,12 +2417,13 @@ async function fetchMovieTvMetadataByImdb(imdbId, customTmdbKey) {
       overview: detail.overview || null,
       voteAverage: detail.vote_average || null,
       genres: (detail.genres || []).map(g => g.name),
+      certification: certification || 'Unrated',
       trailer,
       cast,
       imdbId: formattedImdb
     };
 
-    console.log(`✅ TMDb metadata found via exact IMDb match: "${metadata.title}"`);
+    console.log(`✅ TMDb metadata found via exact IMDb match: "${metadata.title}" [Rating: ${metadata.certification}]`);
     return { status: 'success', metadata };
   } catch (err) {
     console.error('❌ TMDb IMDb lookup failed:', err.message);
