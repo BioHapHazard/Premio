@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
+import Icon from './Icon';
 
 // Configuration constants
 const PM_SIGNUP_URL = "https://www.premiumize.me";
 
+// Deterministic hue (0-359) from a string, for gradient poster fallbacks.
+const hashHue = (str) => { let h = 0; for (let i = 0; i < (str || '').length; i++) h = (h * 31 + str.charCodeAt(i)) % 360; return h; };
+
 // Category Definitions
-const CATEGORIES = ['Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
+const CATEGORIES = ['All', 'Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
 
 // --- Multi-Profile Constants & Helpers ---
 const GRADIENTS = [
@@ -398,6 +402,17 @@ export default function App() {
   });
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
+
+  // First-run guidance for the bring-your-own-key model: once the legal notice is
+  // dismissed, if no Premiumize key is set and onboarding hasn't been completed,
+  // open the setup wizard so new users are guided to add their key instead of
+  // hitting silent failures.
+  useEffect(() => {
+    if (!showLegalDisclaimer && !userPmKey && localStorage.getItem('premio_onboarding_completed') !== 'true') {
+      setShowOnboarding(true);
+      setOnboardingStep(1);
+    }
+  }, [showLegalDisclaimer]);
   const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
   const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
   const [showPlaylistChoiceModal, setShowPlaylistChoiceModal] = useState(false);
@@ -439,7 +454,7 @@ export default function App() {
   const [copilotMessages, setCopilotMessages] = useState(() => {
     const saved = localStorage.getItem('premio_ai_copilot_messages');
     return saved ? JSON.parse(saved) : [
-      { role: 'assistant', content: '👋 Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?' }
+      { role: 'assistant', content: 'Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?'}
     ];
   });
   const [copilotInput, setCopilotInput] = useState('');
@@ -483,6 +498,17 @@ export default function App() {
     const saved = localStorage.getItem('premium_search_library');
     return saved ? JSON.parse(saved) : [];
   });
+
+  // --- Watchlist State (per-profile; track titles to find cached releases) ---
+  const [watchlist, setWatchlist] = useState([]);
+  const [watchlistChecking, setWatchlistChecking] = useState(false);
+  useEffect(() => {
+    if (!activeProfileId) { setWatchlist([]); return; }
+    try {
+      const saved = localStorage.getItem(`premium_search_watchlist_${activeProfileId}`);
+      setWatchlist(saved ? JSON.parse(saved) : []);
+    } catch { setWatchlist([]); }
+  }, [activeProfileId]);
 
   // --- Continue Watching log State (Strict Privacy Filtered) ---
   const [continueWatchingList, setContinueWatchingList] = useState(() => {
@@ -613,7 +639,7 @@ export default function App() {
             localStorage.setItem('premium_search_theme', cloudTheme);
             
             setLastSynced(new Date());
-            triggerToast('☁️ Cloud profile storage synchronized!', 'success');
+            triggerToast('Cloud profile storage synchronized!', 'success');
           }
         } else {
           // If no cloud data found for this profile, upload current local state
@@ -629,7 +655,7 @@ export default function App() {
           if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
             console.log('ℹ️ Syncing local profile data up to cloud...');
             await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
-            triggerToast('☁️ Cloud profile sync backup created!', 'success');
+            triggerToast('Cloud profile sync backup created!', 'success');
           }
         }
       }
@@ -778,7 +804,7 @@ export default function App() {
     }
 
     if (editEnablePin && !/^\d{4}$/.test(editPin)) {
-      triggerToast('⚠️ PIN must be exactly 4 numeric digits.', 'error');
+      triggerToast('PIN must be exactly 4 numeric digits.', 'error');
       return;
     }
     
@@ -1049,7 +1075,7 @@ export default function App() {
   const buildFolderPlaylist = async (startFolderId, startFolderName) => {
     setCloudPlaylistLoading(true);
     setCloudPlaylistStatus(`Analyzing "${startFolderName}"...`);
-    triggerToast(`🔄 Initializing Play All for "${startFolderName}"...`, 'info');
+    triggerToast(` Initializing Play All for "${startFolderName}"...`, 'info');
     
     try {
       const fetchedFiles = [];
@@ -1099,7 +1125,7 @@ export default function App() {
       await scanFolder(startFolderId, startFolderName);
 
       if (fetchedFiles.length === 0) {
-        triggerToast('⚠️ No streamable video files found in this folder or its subfolders.', 'warning');
+        triggerToast('No streamable video files found in this folder or its subfolders.', 'warning');
         return;
       }
 
@@ -1165,7 +1191,7 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    triggerToast('📥 M3U Playlist downloaded! Open it with VLC to play all.', 'success');
+    triggerToast('M3U Playlist downloaded! Open it with VLC to play all.', 'success');
   };
 
   // 2. Rename item (File or Folder)
@@ -1430,7 +1456,7 @@ export default function App() {
 
   // Fetch metadata for a given torrent item, with deduplication
   const fetchMetadata = async (item) => {
-    const cat = item.category || category;
+    const cat = item.detectedType || item.category || category;
     // Skip categories that don't have metadata APIs
     if (['Software', 'Other', 'Retro Games', 'Adult', 'VST'].includes(cat)) {
       return null;
@@ -1478,7 +1504,7 @@ export default function App() {
   // Batch fetch metadata for an array of items and update state
   const fetchMetadataBatch = async (items) => {
     const eligibleItems = items.filter(item => {
-      const cat = item.category || category;
+      const cat = item.detectedType || item.category || category;
       return !['Software', 'Other', 'Retro Games', 'Adult', 'VST'].includes(cat);
     });
     
@@ -1493,7 +1519,7 @@ export default function App() {
       const promises = batch.map(async (item) => {
         const metadata = await fetchMetadata(item);
         if (metadata) {
-          const cat = item.category || category;
+          const cat = item.detectedType || item.category || category;
           newResults[`${cat}::${item.title}`] = metadata;
         }
       });
@@ -1507,16 +1533,79 @@ export default function App() {
 
   // Helper: Get metadata for an item from state
   const getMetadata = (item) => {
-    const cat = item.category || category;
+    const cat = item.detectedType || item.category || category;
     const key = `${cat}::${item.title}`;
     return metadataResults[key] || null;
+  };
+
+  // --- Watchlist helpers & actions ---
+  const watchKeyOf = (item) => ((item._metadata?.title) || (getMetadata(item)?.title) || item.title || '').toLowerCase().trim();
+  const persistWatchlist = (next) => {
+    setWatchlist(next);
+    if (activeProfileId) localStorage.setItem(`premium_search_watchlist_${activeProfileId}`, JSON.stringify(next));
+  };
+  const isInWatchlist = (item) => { const k = watchKeyOf(item); return !!k && watchlist.some(w => w.key === k); };
+  const toggleWatchlist = (item) => {
+    const key = watchKeyOf(item);
+    if (!key) return;
+    if (watchlist.some(w => w.key === key)) {
+      persistWatchlist(watchlist.filter(w => w.key !== key));
+      triggerToast('Removed from watchlist', 'info');
+    } else {
+      const meta = item._metadata || getMetadata(item);
+      const entry = {
+        key,
+        title: meta?.title || item.title,
+        query: meta?.title || item.title,
+        category: item.detectedType || item.category || 'Movies',
+        poster: meta?.poster || null,
+        year: meta?.year || null,
+        addedAt: Date.now(),
+        lastChecked: null,
+        cachedCount: null,
+      };
+      persistWatchlist([entry, ...watchlist]);
+      triggerToast(`Added "${entry.title}" to watchlist`, 'success');
+    }
+  };
+  const findWatchlistItem = (w) => {
+    setActiveTab('search');
+    setSearchMode('torrent');
+    setCategory(w.category && CATEGORIES.includes(w.category) ? w.category : 'All');
+    setQuery(w.query);
+    setTimeout(() => handleSearch(null, 'torrent'), 60);
+  };
+  const checkWatchlist = async () => {
+    if (watchlistChecking || watchlist.length === 0) return;
+    setWatchlistChecking(true);
+    let newFinds = 0;
+    const updated = [...watchlist];
+    for (let i = 0; i < updated.length; i++) {
+      const w = updated[i];
+      try {
+        const cat = (w.category && w.category !== 'All') ? w.category : 'Movies';
+        const res = await fetchWithCredentials(`/api/search?q=${encodeURIComponent(w.query)}&category=${encodeURIComponent(cat)}`);
+        const data = await res.json();
+        const cachedNow = Array.isArray(data) ? data.filter(r => r.cached).length : 0;
+        if (w.cachedCount !== null && cachedNow > w.cachedCount) newFinds++;
+        updated[i] = { ...w, cachedCount: cachedNow, lastChecked: Date.now() };
+      } catch { /* skip this entry */ }
+    }
+    persistWatchlist(updated);
+    setWatchlistChecking(false);
+    triggerToast(newFinds > 0 ? `${newFinds} watchlist title${newFinds > 1 ? 's have' : ' has'} new cached releases!` : 'Watchlist checked — no new cached releases.', newFinds > 0 ? 'success' : 'info');
   };
 
   // --- Custom Animated Toast System ---
   const [toast, setToast] = useState(null);
 
   const triggerToast = (message, type = 'success') => {
-    setToast({ message, type });
+    // Strip any decorative emoji from toast copy — the type icon conveys state now.
+    const clean = (message || '')
+      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    setToast({ message: clean, type });
   };
 
   useEffect(() => {
@@ -1620,7 +1709,7 @@ export default function App() {
         if (hasChanges) {
           setLibraryList(updatedLib);
           localStorage.setItem('premium_search_library', JSON.stringify(updatedLib));
-          triggerToast('🔄 Library cache status auto-synchronized!', 'success');
+          triggerToast('Library cache status auto-synchronized!', 'success');
         }
       }
     } catch (err) {
@@ -1730,7 +1819,7 @@ export default function App() {
       } else if (event.data && event.data.type === 'audio-ended') {
         const { link } = event.data;
         removeFromContinueWatching(link);
-        triggerToast("💿 Album / Audiobook completed! Progress cleared.", "success");
+        triggerToast("Album / Audiobook completed! Progress cleared.", "success");
       } else if (event.data && event.data.type === 'audio-player-ready') {
         const iframe = document.querySelector('.main-audio-frame');
         if (iframe && iframe.contentWindow) {
@@ -1767,7 +1856,7 @@ export default function App() {
       
       setAdultControlsUnlocked(unlocked => {
         const newState = !unlocked;
-        triggerToast(newState ? '🔑 Secret settings unlocked!' : '🔒 Secret settings locked!', 'success');
+        triggerToast(newState ? 'Secret settings unlocked!': 'Secret settings locked!', 'success');
         // Automatically hide adult options when locked
         if (!newState) {
           setHideAdult(true);
@@ -1800,31 +1889,31 @@ export default function App() {
           e.preventDefault();
           if (video.paused) {
             video.play();
-            triggerToast('▶️ Play', 'success');
+            triggerToast('▶ Play', 'success');
           } else {
             video.pause();
-            triggerToast('⏸️ Pause', 'success');
+            triggerToast('Pause', 'success');
           }
           break;
         case 'ArrowLeft': // Left Arrow - Seek Back 10s
           e.preventDefault();
           video.currentTime = Math.max(0, video.currentTime - 10);
-          triggerToast('⏪ -10s', 'success');
+          triggerToast('-10s', 'success');
           break;
         case 'ArrowRight': // Right Arrow - Seek Forward 10s
           e.preventDefault();
           video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
-          triggerToast('⏩ +10s', 'success');
+          triggerToast('+10s', 'success');
           break;
         case 'ArrowUp': // Up Arrow - Volume Up 10%
           e.preventDefault();
           video.volume = Math.min(1, video.volume + 0.1);
-          triggerToast(`🔊 Volume ${Math.round(video.volume * 100)}%`, 'success');
+          triggerToast(` Volume ${Math.round(video.volume * 100)}%`, 'success');
           break;
         case 'ArrowDown': // Down Arrow - Volume Down 10%
           e.preventDefault();
           video.volume = Math.max(0, video.volume - 0.1);
-          triggerToast(`🔉 Volume ${Math.round(video.volume * 100)}%`, 'success');
+          triggerToast(` Volume ${Math.round(video.volume * 100)}%`, 'success');
           break;
         case 's':
         case 'S': // 's' / 'S' - Toggle Subtitle Visibility
@@ -1833,9 +1922,9 @@ export default function App() {
             const track = video.textTracks[0];
             const isShowing = track.mode === 'showing';
             track.mode = isShowing ? 'disabled' : 'showing';
-            triggerToast(isShowing ? '🚫 Subtitles Off' : '💬 Subtitles On', 'success');
+            triggerToast(isShowing ? 'Subtitles Off': 'Subtitles On', 'success');
           } else {
-            triggerToast('⚠️ No subtitle track loaded', 'error');
+            triggerToast('No subtitle track loaded', 'error');
           }
           break;
         case 'f':
@@ -1845,12 +1934,12 @@ export default function App() {
             video.requestFullscreen().catch(err => {
               console.error('Fullscreen request failed:', err.message);
             });
-            triggerToast('📺 Fullscreen On', 'success');
+            triggerToast('Fullscreen On', 'success');
           } else {
             document.exitFullscreen().catch(err => {
               console.error('Exit fullscreen failed:', err.message);
             });
-            triggerToast('📺 Fullscreen Off', 'success');
+            triggerToast('Fullscreen Off', 'success');
           }
           break;
         default:
@@ -1876,7 +1965,7 @@ export default function App() {
       try {
         let fetchUrl = `/api/proxy-subtitle?url=${encodeURIComponent(selectedSubtitleFile.link)}`;
         if (aiTranslateLanguage && aiToken && aiEnabled) {
-          triggerToast(`🔮 Translating subtitle to ${aiTranslateLanguage}...`, 'info');
+          triggerToast(` Translating subtitle to ${aiTranslateLanguage}...`, 'info');
           fetchUrl += `&translateTo=${encodeURIComponent(aiTranslateLanguage)}&token=${encodeURIComponent(aiToken)}&model=${encodeURIComponent(aiModel)}`;
         }
 
@@ -1897,12 +1986,12 @@ export default function App() {
         setSubtitleTrackUrl(objectUrl);
 
         if (aiTranslateLanguage && aiToken && aiEnabled) {
-          triggerToast(`✨ Subtitle successfully translated to ${aiTranslateLanguage}!`, 'success');
+          triggerToast(` Subtitle successfully translated to ${aiTranslateLanguage}!`, 'success');
         }
       } catch (err) {
         console.error('Subtitle compiler failed:', err.message);
         if (aiTranslateLanguage && aiToken && aiEnabled) {
-          triggerToast('❌ AI Subtitle translation failed. Loaded original.', 'error');
+          triggerToast('AI Subtitle translation failed. Loaded original.', 'error');
         }
       }
     };
@@ -2039,7 +2128,7 @@ export default function App() {
     const video = document.querySelector('.main-video-player');
     if (video && introSegment) {
       video.currentTime = introSegment.end;
-      triggerToast("⏭️ Skipped intro!", "success");
+      triggerToast("Skipped intro!", "success");
       setIntroSegment(null);
       setShowSkipButton(false);
     }
@@ -2113,7 +2202,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     } else if (showAutoplayOverlay && autoplayCountdown === 0) {
       setShowAutoplayOverlay(false);
       if (nextEpisodeFile) {
-        triggerToast(`🍿 Autoplaying next episode: ${nextEpisodeFile.name.split('/').pop()}`, 'success');
+        triggerToast(` Autoplaying next episode: ${nextEpisodeFile.name.split('/').pop()}`, 'success');
         setSelectedVideoFile(nextEpisodeFile);
       }
     }
@@ -2148,7 +2237,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     const isNzb = file.name.toLowerCase().endsWith('.nzb');
     
     if (!isTorrent && !isNzb) {
-      triggerToast('⚠️ Only .torrent and .nzb files are supported for import!', 'error');
+      triggerToast('Only .torrent and .nzb files are supported for import!', 'error');
       return;
     }
 
@@ -2206,7 +2295,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             publishDate: new Date().toISOString(),
             cached: isCached
           }]);
-          triggerToast('✨ Torrent imported successfully and CDN cache status checked!', 'success');
+          triggerToast('Torrent imported successfully and CDN cache status checked!', 'success');
         } else if (data.type === 'usenet') {
           setSearchMode('usenet');
           setResults([]);
@@ -2227,10 +2316,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             category: category,
             indexer: 'Imported NZB File'
           }]);
-          triggerToast('⚡ NZB imported successfully! Ready for 1-click cloud transfer.', 'success');
+          triggerToast('NZB imported successfully! Ready for 1-click cloud transfer.', 'success');
         }
       } catch (err) {
-        triggerToast(`⚠️ Import failed: ${err.message}`, 'error');
+        triggerToast(` Import failed: ${err.message}`, 'error');
       } finally {
         setLoading(false);
       }
@@ -2257,7 +2346,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     
     const isMagnet = magnetInput.trim().toLowerCase().startsWith('magnet:?');
     if (!isMagnet) {
-      triggerToast('⚠️ Provided input is not a valid magnet link!', 'error');
+      triggerToast('Provided input is not a valid magnet link!', 'error');
       return;
     }
 
@@ -2308,10 +2397,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           cached: isCached
         }]);
         setMagnetInput('');
-        triggerToast('✨ Magnet link imported and CDN cache status checked!', 'success');
+        triggerToast('Magnet link imported and CDN cache status checked!', 'success');
       }
     } catch (err) {
-      triggerToast(`⚠️ Import failed: ${err.message}`, 'error');
+      triggerToast(` Import failed: ${err.message}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -2330,9 +2419,9 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     const activeSearchMode = forcedMode || searchMode;
 
     if (!userPmKey) {
-      triggerToast('⚠️ Premiumize API Key is missing. Showing simulated mock results. Configure in Settings.', 'warning');
+      triggerToast('Premiumize API Key is missing. Showing simulated mock results. Configure in Settings.', 'warning');
     } else if (activeSearchMode === 'torrent' && !userJackettUrl) {
-      triggerToast('⚠️ Jackett URL is missing. Showing simulated mock torrents. Configure in Settings.', 'warning');
+      triggerToast('Jackett URL is missing. Showing simulated mock torrents. Configure in Settings.', 'warning');
     }
 
     // STRICT PRIVACY COMPLIANCE RULE:
@@ -2356,7 +2445,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             if (metaData.status === 'success' && metaData.metadata) {
               const allowed = isRatingAllowed(metaData.metadata.certification, category, activeProf);
               if (!allowed) {
-                triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be searched.`, 'error');
+                triggerToast(` Blocked: "${metaData.metadata.title}"is rated ${metaData.metadata.certification || 'Unrated'} and cannot be searched.`, 'error');
                 setLoading(false);
                 return;
               }
@@ -2386,7 +2475,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   // Trigger Download to Premiumize (With fallback to .torrent file URL)
   const triggerDownload = async (torrent) => {
     if (!userPmKey) {
-      triggerToast('⚠️ Premiumize API Key is required to download files. Please configure it in onboarding/settings.', 'error');
+      triggerToast('Premiumize API Key is required to download files. Please configure it in onboarding/settings.', 'error');
       setShowOnboarding(true);
       setOnboardingStep(1);
       return;
@@ -2408,7 +2497,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           if (metaData.status === 'success' && metaData.metadata) {
             const allowed = isRatingAllowed(metaData.metadata.certification, activeCat, activeProf);
             if (!allowed) {
-              triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be added.`, 'error');
+              triggerToast(` Blocked: "${metaData.metadata.title}"is rated ${metaData.metadata.certification || 'Unrated'} and cannot be added.`, 'error');
               return;
             }
           }
@@ -2500,13 +2589,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
     // If it's a direct cloud link or HTTP resource, download/open it directly
     if (torrent.isCloudFile || (downloadSource && (downloadSource.startsWith('http://') || downloadSource.startsWith('https://')) && !downloadSource.includes('magnet:'))) {
-      triggerToast(`📥 Downloading: ${torrent.title || torrent.name || 'Cloud File'}`, 'success');
+      triggerToast(` Downloading: ${torrent.title || torrent.name || 'Cloud File'}`, 'success');
       window.open(downloadSource, '_blank');
       return;
     }
 
     setPlayerLoading(true);
-    triggerToast('🚀 Fetching direct high-speed CDN links...', 'success');
+    triggerToast('Fetching direct high-speed CDN links...', 'success');
 
     try {
       const res = await fetchWithCredentials('/api/stream-links', {
@@ -2524,10 +2613,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         
         if (targetFiles.length === 1) {
           const dlLink = targetFiles[0].link;
-          triggerToast(`📥 Downloading: ${targetFiles[0].name}`, 'success');
+          triggerToast(` Downloading: ${targetFiles[0].name}`, 'success');
           window.open(dlLink, '_blank');
         } else if (targetFiles.length > 1) {
-          triggerToast(`📥 Starting batch download for ${targetFiles.length} files...`, 'success');
+          triggerToast(` Starting batch download for ${targetFiles.length} files...`, 'success');
           targetFiles.forEach((file, index) => {
             // Stagger window.open slightly to bypass browser pop-up blockers
             setTimeout(() => {
@@ -2551,7 +2640,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   // Trigger Instant Stream Playback
   const startStreaming = async (torrent, seekTimeSec = 0, resumeFileName = null) => {
     if (!userPmKey) {
-      triggerToast('⚠️ Premiumize API Key is required to stream files. Please configure it in onboarding/settings.', 'error');
+      triggerToast('Premiumize API Key is required to stream files. Please configure it in onboarding/settings.', 'error');
       setShowOnboarding(true);
       setOnboardingStep(1);
       return;
@@ -2573,7 +2662,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           if (metaData.status === 'success' && metaData.metadata) {
             const allowed = isRatingAllowed(metaData.metadata.certification, activeCat, activeProf);
             if (!allowed) {
-              triggerToast(`🚫 Blocked: "${metaData.metadata.title}" is rated ${metaData.metadata.certification || 'Unrated'} and cannot be played.`, 'error');
+              triggerToast(` Blocked: "${metaData.metadata.title}"is rated ${metaData.metadata.certification || 'Unrated'} and cannot be played.`, 'error');
               return;
             }
           }
@@ -3057,7 +3146,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       if (currentSecs >= introSegment.start && currentSecs <= introSegment.end) {
         if (autoSkipEnabled) {
           video.currentTime = introSegment.end;
-          triggerToast("⏭️ Auto-skipped intro!", "success");
+          triggerToast("Auto-skipped intro!", "success");
           setIntroSegment(null);
           setShowSkipButton(false);
         } else if (!showSkipButton && skipTimer === 0) {
@@ -3133,7 +3222,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       const currentIndex = videos.findIndex(v => v.link === selectedVideoFile.link);
       const nextVideo = (currentIndex !== -1 && currentIndex < videos.length - 1) ? videos[currentIndex + 1] : null;
       if (nextVideo) {
-        triggerToast(`🍿 Playing next episode: ${nextVideo.name.split('/').pop()}`, 'success');
+        triggerToast(` Playing next episode: ${nextVideo.name.split('/').pop()}`, 'success');
         setSelectedVideoFile(nextVideo);
       }
     }
@@ -3283,7 +3372,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     setResumeAudioTime(0);
     
     try {
-      triggerToast("🔄 Resolving latest Premiumize CDN links for playlist...", "success");
+      triggerToast("Resolving latest Premiumize CDN links for playlist...", "success");
       
       // 1. Identify all unique parent torrents in the playlist
       const uniqueTorrentsMap = {};
@@ -3387,7 +3476,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     setContinueWatchingList([]);
     setLibraryList([]);
     setCopilotMessages([
-      { role: 'assistant', content: '👋 Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?' }
+      { role: 'assistant', content: 'Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?'}
     ]);
     
     try {
@@ -3452,7 +3541,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       return;
     }
     setLoading(true);
-    triggerToast('🔮 AI is interpreting your search phrase...', 'info');
+    triggerToast('AI is interpreting your search phrase...', 'info');
     try {
       const systemPrompt = "You are a movie and TV show search assistant. The user will give you a conceptual description, recommendation request, or search phrase.\nYour job is to translate it into one or more exact, clean movie or TV show titles.\nIf the request is for a single movie/show (e.g., 'the nolan movie about dreams'), output just the clean title (e.g., 'Inception').\nIf the request implies multiple movies/shows (e.g., 'top 5 horror movies this year' or 'recommend 3 sci-fi movies'), determine the matching list of titles, and output them separated by '|||' (e.g., 'A Quiet Place: Day One ||| Smile 2 ||| Heretic ||| Longlegs ||| Oddity').\nOutput ONLY the title(s) separated by '|||' if multiple. No extra text, no markdown, no explanations, no numbering, and no quotes. Keep it strictly to the exact titles.";
       const messages = [
@@ -3490,7 +3579,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       if (titles.length === 1) {
         const singleTitle = titles[0];
         setQuery(singleTitle);
-        triggerToast(`✨ Translated to: "${singleTitle}"`, 'success');
+        triggerToast(` Translated to: "${singleTitle}"`, 'success');
         handleSearch(null, null, singleTitle);
       } else {
         // Multi-search mode!
@@ -3498,7 +3587,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         setQuery(friendlyQuery);
         setSearched(true);
         setResults([]);
-        triggerToast(`🔍 Searching for ${titles.length} titles concurrently: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? '...' : ''}`, 'info');
+        triggerToast(` Searching for ${titles.length} titles concurrently: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? '...': ''}`, 'info');
 
         const activeSearchMode = searchMode;
         const fetchPromises = titles.map(async (title) => {
@@ -3531,7 +3620,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         const finalResults = Array.from(uniqueResultsMap.values());
 
         setResults(finalResults);
-        triggerToast(`✨ Found ${finalResults.length} releases across all ${titles.length} searches!`, 'success');
+        triggerToast(` Found ${finalResults.length} releases across all ${titles.length} searches!`, 'success');
       }
     } catch (err) {
       console.error(err);
@@ -3573,7 +3662,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       if (cleaned) {
         const sanitized = cleaned.replace(/^["']|["']$/g, '').trim();
         setNameCallback(sanitized);
-        triggerToast('✨ Filename cleaned by AI!', 'success');
+        triggerToast('Filename cleaned by AI!', 'success');
       } else {
         throw new Error('Empty response from AI');
       }
@@ -3627,7 +3716,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
              
           if (curatedFiles.length > 0) {
             setPendingPlaylistFiles(curatedFiles);
-            triggerToast(`✨ AI Playlist Curation applied: Kept ${curatedFiles.length} of ${pendingPlaylistFiles.length} items!`, 'success');
+            triggerToast(` AI Playlist Curation applied: Kept ${curatedFiles.length} of ${pendingPlaylistFiles.length} items!`, 'success');
             setShowAICurateInput(false);
           } else {
             triggerToast('AI curation returned 0 matching files.', 'warning');
@@ -3695,7 +3784,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       }
     } catch (err) {
       console.error(err);
-      const errorHistory = [...updatedMessages, { role: 'assistant', content: '❌ Sorry, I encountered an error connecting to the Premiumize AI service. Please check your token in the settings.' }];
+      const errorHistory = [...updatedMessages, { role: 'assistant', content: 'Sorry, I encountered an error connecting to the Premiumize AI service. Please check your token in the settings.'}];
       setCopilotMessages(errorHistory);
     } finally {
       setAiLoading(false);
@@ -3893,7 +3982,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         setPinTargetProfile(null);
                       } else {
                         setPinError(true);
-                        triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                        triggerToast('Incorrect PIN. Please try again.', 'error');
                         setTimeout(() => {
                           setPinInput('');
                           setPinError(false);
@@ -3928,7 +4017,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                               setPinTargetProfile(null);
                             } else {
                               setPinError(true);
-                              triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                              triggerToast('Incorrect PIN. Please try again.', 'error');
                               setTimeout(() => {
                                 setPinInput('');
                                 setPinError(false);
@@ -4000,7 +4089,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             setPinTargetProfile(null);
                           } else {
                             setPinError(true);
-                            triggerToast('❌ Incorrect PIN. Please try again.', 'error');
+                            triggerToast('Incorrect PIN. Please try again.', 'error');
                             setTimeout(() => {
                               setPinInput('');
                               setPinError(false);
@@ -4049,7 +4138,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       cursor: 'pointer'
                     }}
                   >
-                    ⌫
+                    <Icon name="backspace" size={20} />
                   </button>
                 </div>
               </div>
@@ -4057,7 +4146,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               // Edit/Create Profile Form
               <div className="profile-edit-card glass-panel" style={{ padding: '2rem', borderRadius: '16px', position: 'relative', textAlign: 'left' }}>
                 <h2 style={{ marginTop: '0', marginBottom: '1.5rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px' }}>
-                  {editingProfile.id === 'new' ? '➕ Create Profile' : '✏️ Edit Profile'}
+                  {editingProfile.id === 'new'? 'Create Profile': 'Edit Profile'}
                 </h2>
                 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -4160,7 +4249,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
-                        <h4 style={{ margin: '0', fontSize: '0.9rem' }}>👶 Kids Mode (Parental Controls)</h4>
+                        <h4 style={{ margin: '0', fontSize: '0.9rem'}}> Kids Mode (Parental Controls)</h4>
                         <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           Hides adult content, applies strict keyword filters, disables dev tools, and restricts trackers.
                         </p>
@@ -4217,7 +4306,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                     }
                                   }}
                                 />
-                                ⚡ {idx.name}
+                                 {idx.name}
                               </label>
                             );
                           })}
@@ -4292,7 +4381,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '12px', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
-                        <h4 style={{ margin: '0', fontSize: '0.9rem' }}>🔒 Profile PIN Lock</h4>
+                        <h4 style={{ margin: '0', fontSize: '0.9rem'}}> Profile PIN Lock</h4>
                         <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           Requires a 4-digit PIN to access this profile.
                         </p>
@@ -4346,7 +4435,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           }}
                           style={{ padding: '8px 16px', fontSize: '0.9rem' }}
                         >
-                          🗑️ Delete Profile
+                           Delete Profile
                         </button>
                       )}
                     </div>
@@ -4448,7 +4537,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                               color: 'white'
                             }}
                           >
-                            ✏️
+                            <Icon name="pencil" size={22} />
                           </div>
                         )}
                       </div>
@@ -4538,7 +4627,9 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Toast Notification Banner */}
       {toast && (
         <div className={`toast-notification toast-${toast.type}`}>
-          <div className="toast-icon">{toast.type === 'success' ? '✨' : '⚠️'}</div>
+          <div className="toast-icon">
+            <Icon name={toast.type === 'success' ? 'check' : toast.type === 'info' ? 'info' : 'alert-triangle'} size={18} />
+          </div>
           <div className="toast-text">{toast.message}</div>
         </div>
       )}
@@ -4546,8 +4637,6 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Header Panel */}
       <header className="app-header">
         <div className="logo-group" onClick={handleLogoClick} style={{ cursor: 'pointer' }} title="Premio">
-          <div className="logo-glow-sphere"></div>
-          <div className="logo-bolt">⚡</div>
           <h1>Premio</h1>
         </div>
         <p className="app-tagline">Real-Time Premiumize & Usenet (Newznab) Aggregator • Personal Cloud Media Center</p>
@@ -4646,7 +4735,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         {p.avatar}
                       </span>
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {p.name} {p.isKids && '👶'}
+                        {p.name} {p.isKids && ''}
                       </span>
                     </button>
                   ))}
@@ -4671,7 +4760,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         fontWeight: '500'
                       }}
                     >
-                      <span>👥</span> Manage Profiles
+                      <Icon name="users" size={16} style={{ display: 'inline-block', verticalAlign: '-3px', marginRight: '4px' }} /> Manage Profiles
                     </button>
                   </div>
                 </div>
@@ -4692,10 +4781,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               className="theme-dropdown-select"
               title="Switch Ambient UI Theme Preset"
             >
-              <option value="midnight-nebula">🌌 Midnight Nebula</option>
-              <option value="nordic-frost">🧊 Nordic Frost</option>
-              <option value="retro-synthwave">🍊 Retro Synthwave</option>
-              <option value="obsidian-slate">🪵 Obsidian Slate</option>
+              <option value="midnight-nebula"> Midnight Nebula</option>
+              <option value="nordic-frost"> Nordic Frost</option>
+              <option value="retro-synthwave"> Retro Synthwave</option>
+              <option value="obsidian-slate"> Obsidian Slate</option>
             </select>
           </div>
 
@@ -4705,7 +4794,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             disabled={isSyncing}
             title="Sync your Library and checkpoints with Premiumize Cloud"
           >
-            {isSyncing ? '🔄 Syncing...' : lastSynced ? '☁️ Cloud Synced' : '☁️ Cloud Sync'}
+            {isSyncing
+              ? <><Icon name="refresh" size={16} className="spin" /> Syncing...</>
+              : lastSynced
+                ? <><Icon name="check" size={16} /> Cloud Synced</>
+                : <><Icon name="cloud-up" size={16} /> Cloud Sync</>}
           </button>
           
           <button 
@@ -4717,32 +4810,38 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             aria-label="Toggle Settings"
             id="btn-settings"
           >
-            ⚙️ Settings
+            <Icon name="settings" size={16} /> Settings
           </button>
         </div>
       </header>
 
       {/* Core Room Navigation Tabs */}
       <nav className="room-navigation glass-panel">
-        <button 
+        <button
           className={`nav-tab ${activeTab === 'search' ? 'active' : ''}`}
           onClick={() => setActiveTab('search')}
         >
-          🔍 Searcher
+          <Icon name="search" size={18} /> <span className="nav-tab-label">Search</span>
         </button>
-        <button 
+        <button
           className={`nav-tab ${activeTab === 'library' ? 'active' : ''}`}
           onClick={() => setActiveTab('library')}
         >
-          ⭐ My Library <span className="nav-badge">{libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length}</span>
+          <Icon name="bookmark" size={18} /> <span className="nav-tab-label">Library</span> <span className="nav-badge">{libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length}</span>
         </button>
-        <button 
+        <button
           className={`nav-tab ${activeTab === 'progress' ? 'active' : ''}`}
           onClick={() => setActiveTab('progress')}
         >
-          ⏱️ Continue... <span className="nav-badge">{continueWatchingList.length}</span>
+          <Icon name="player-play" size={18} /> <span className="nav-tab-label">Continue</span> <span className="nav-badge">{continueWatchingList.length}</span>
         </button>
-        <button 
+        <button
+          className={`nav-tab ${activeTab === 'watchlist' ? 'active' : ''}`}
+          onClick={() => setActiveTab('watchlist')}
+        >
+          <Icon name="bell" size={18} /> <span className="nav-tab-label">Watchlist</span> <span className="nav-badge">{watchlist.length}</span>
+        </button>
+        <button
           className={`nav-tab ${activeTab === 'cloud' ? 'active' : ''}`}
           onClick={() => {
             setActiveTab('cloud');
@@ -4750,13 +4849,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             fetchAccountQuota();
           }}
         >
-          📊 Cloud Files
+          <Icon name="folder" size={18} /> <span className="nav-tab-label">Cloud</span>
         </button>
-        <button 
+        <button
           className={`nav-tab ${activeTab === 'transfers' ? 'active' : ''}`}
           onClick={() => setActiveTab('transfers')}
         >
-          ⚡ Active Downloads
+          <Icon name="cloud-up" size={18} /> <span className="nav-tab-label">Transfers</span>
         </button>
       </nav>
 
@@ -4766,7 +4865,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {showSettings && (
           <section className="settings-card glass-panel fade-in" id="settings-panel">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
-              <h2 style={{ margin: 0 }}>⚙️ Control Panel</h2>
+              <h2 style={{ margin: 0 }} className="heading-ico"><Icon name="settings" size={20} /> Control Panel</h2>
               <button 
                 type="button" 
                 className="action-btn" 
@@ -4785,7 +4884,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   setOnboardingStep(1);
                 }}
               >
-                💡 Run Setup Guide / Onboarding
+                 Run Setup Guide / Onboarding
               </button>
             </div>
             <div className="settings-grid">
@@ -4863,7 +4962,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       className="settings-text-input"
                     />
                     <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      To find this: Log in to <b>premiumize.ai</b>, open browser Developer Tools (F12) ➡️ Network ➡️ send a chat message ➡️ look at request headers ➡️ copy the <b>authorization</b> value.
+                      To find this: Log in to <b>premiumize.ai</b>, open browser Developer Tools (F12) Network send a chat message look at request headers copy the <b>authorization</b> value.
                     </p>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', width: '100%' }}>
                       <select 
@@ -4887,7 +4986,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         onClick={fetchAiModels}
                         disabled={fetchingModels}
                       >
-                        {fetchingModels ? '🔄 Fetching...' : '🔄 Fetch Models'}
+                        {fetchingModels ? 'Fetching...': 'Fetch Models'}
                       </button>
                     </div>
                   </div>
@@ -4930,11 +5029,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => setShowJackettGuide(!showJackettGuide)}
                   style={{ marginTop: '6px', fontSize: '0.75rem', alignSelf: 'flex-start' }}
                 >
-                  {showJackettGuide ? '📖 Hide Setup Guide' : '📖 How do I set up Jackett?'}
+                  {showJackettGuide ? 'Hide Setup Guide': 'How do I set up Jackett?'}
                 </button>
                 {showJackettGuide && (
                   <div className="onboarding-guide-box glass-panel fade-in" style={{ marginTop: '10px', padding: '10px', fontSize: '0.8rem', color: 'var(--text-muted)', borderLeft: '3px solid var(--color-primary)' }}>
-                    <p style={{ margin: '0 0 6px 0', fontWeight: 'bold', color: 'var(--text-primary)' }}>🔌 Quick Start Guide: Setting Up Jackett</p>
+                    <p style={{ margin: '0 0 6px 0', fontWeight: 'bold', color: 'var(--text-primary)'}}> Quick Start Guide: Setting Up Jackett</p>
                     <ol style={{ margin: '0', paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <li>Download & install Jackett for your operating system (from the <a href="https://github.com/Jackett/Jackett/releases" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Official Releases Page</a>).</li>
                       <li>Open Jackett in your browser (usually at <a href="http://localhost:9117" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)' }}>http://localhost:9117</a>).</li>
@@ -4958,7 +5057,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div className="indexers-list" style={{ display: 'flex', flexDirection: 'column', gap: '6px', margin: '8px 0', width: '100%' }}>
                     {userIndexers.map((idx, index) => (
                       <div key={index} className="indexer-row glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', fontSize: '0.8rem' }}>
-                        <span>🟢 <b>{idx.name}</b> ({idx.url})</span>
+                        <span> <b>{idx.name}</b> ({idx.url})</span>
                         <button 
                           type="button" 
                           className="danger-btn text-only"
@@ -4969,7 +5068,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             triggerToast(`Removed indexer: ${idx.name}`, 'success');
                           }}
                         >
-                          ✕ Remove
+                           Remove
                         </button>
                       </div>
                     ))}
@@ -4978,7 +5077,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
                 {/* Add New Indexer Panel */}
                 <div className="add-indexer-panel" style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--glass-border)', marginTop: '8px' }}>
-                  <span style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>➕ Add Custom Indexer</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 'bold'}}> Add Custom Indexer</span>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     <input 
                       type="text" 
@@ -5028,7 +5127,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         triggerToast('Custom indexer added successfully!', 'success');
                       }}
                     >
-                      💾 Add Indexer
+                       Add Indexer
                     </button>
                   </div>
                   
@@ -5045,7 +5144,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         triggerToast('NZBFinder preset filled! Please enter your free API key to save.', 'success');
                       }}
                     >
-                      🔍 NZBFinder Free (25 Daily hits)
+                       NZBFinder Free (25 Daily hits)
                     </button>
                     <button 
                       type="button"
@@ -5057,7 +5156,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         triggerToast('Usenet-Crawler preset filled! Please enter your free API key to save.', 'success');
                       }}
                     >
-                      🕷️ Usenet-Crawler
+                       Usenet-Crawler
                     </button>
                   </div>
                 </div>
@@ -5089,7 +5188,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Delete recent searches, saved library items, and playback progress logs.</p>
                 </div>
                 <button className="danger-btn" onClick={clearHistory} id="btn-clear-history">
-                  🗑️ Clear Logs
+                   Clear Logs
                 </button>
               </div>
 
@@ -5105,7 +5204,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   disabled={isSyncing}
                   id="btn-manual-sync"
                 >
-                  {isSyncing ? '🔄 Syncing...' : '☁️ Sync Storage Now'}
+                  {isSyncing ? 'Syncing...': 'Sync Storage Now'}
                 </button>
               </div>
             </div>
@@ -5113,14 +5212,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             {/* Privacy Shield Active note (Only visible if secretly unlocked and adult content is enabled) */}
             {!isKids && adultControlsUnlocked && !hideAdult && (
               <div className="settings-note">
-                <span className="badge-shield">🛡️ Privacy Shield Active</span>
+                <span className="badge-shield"> Privacy Shield Active</span>
                 <p>Adult content searches, library additions, and playback progress metrics are strictly excluded from history lists and local browser storage logs, regardless of settings.</p>
               </div>
             )}
           </section>
         )}
 
-        {/* 🔍 tab: Torrent Searcher */}
+        {/* tab: Torrent Searcher */}
         {activeTab === 'search' && (
           <>
             {/* Warning Banner when keys are missing */}
@@ -5142,7 +5241,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                  <span style={{ display: 'flex', color: '#f59e0b' }}><Icon name="alert-triangle" size={18} /></span>
                   <div style={{ color: 'var(--text-muted)' }}>
                     {!userPmKey && !userJackettUrl ? (
                       <>
@@ -5173,7 +5272,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     background: 'linear-gradient(135deg, var(--color-primary) 0%, #4f46e5 100%)'
                   }}
                 >
-                  Configure Now ➔
+                  Configure Now
                 </button>
               </div>
             )}
@@ -5186,7 +5285,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               {isDragging && (
                 <div className="drag-drop-overlay">
                   <div className="overlay-content">
-                    <div className="overlay-icon">📂</div>
+                    <div className="overlay-icon"><Icon name="upload" size={40} /></div>
                     <h3>Drop your Torrent or NZB file here</h3>
                     <p>Premio will parse it, check Premiumize CDN cache status instantly, and present it inside the search list!</p>
                   </div>
@@ -5204,16 +5303,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       onClick={() => setCategory(cat)}
                       id={`cat-pill-${cat.toLowerCase()}`}
                     >
-                      {cat === 'Movies' && '🎬'}
-                      {cat === 'TV' && '📺'}
-                      {cat === 'Music' && '🎵'}
-                      {cat === 'Audiobooks' && '🎧'}
-                      {cat === 'Ebooks' && '📚'}
-                      {cat === 'Software' && '💾'}
-                      {cat === 'VST' && '🎛️'}
-                      {cat === 'Adult' && '🔞'}
-                      {cat === 'Other' && '📦'}
-                      {cat === 'Retro Games' && '🎮'}
+                      <Icon name={cat === 'All' ? 'app' : cat === 'Movies' ? 'movie' : cat === 'TV' ? 'device-tv' : cat === 'Music' ? 'music' : cat === 'Audiobooks' ? 'headphones' : cat === 'Ebooks' ? 'book' : cat === 'Software' ? 'app' : cat === 'VST' ? 'music' : cat === 'Retro Games' ? 'device-gamepad' : 'folder'} size={15} />
                       <span className="pill-text">{cat}</span>
                     </button>
                   ))}
@@ -5231,7 +5321,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       }
                     }}
                   >
-                    🟢 Torrents (PM CDN Cache)
+                    <Icon name="database" size={14} /> Torrents (PM CDN Cache)
                   </button>
                   <button
                     type="button"
@@ -5243,7 +5333,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       }
                     }}
                   >
-                    ⚡ Usenet (Double Points Cost)
+                    <Icon name="bolt" size={14} fill /> Usenet (Double Points Cost)
                   </button>
                   <button
                     type="button"
@@ -5255,11 +5345,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     }}
                     title="Toggle Usenet Fair-Use points caution panel"
                   >
-                    {hideUsenetWarning ? '💡 Show Info' : '💡 Hide Info'}
+                    <Icon name="bulb" size={14} /> {hideUsenetWarning ? 'Show Info' : 'Hide Info'}
                   </button>
                 </div>
 
-                {/* 📂 Drag-and-Drop & Paste Importer Panel */}
+                {/* Drag-and-Drop & Paste Importer Panel */}
                 <div className="importer-inline-bar">
                   <div className="importer-divider">
                     <span>— OR IMPORT DIRECTLY —</span>
@@ -5267,7 +5357,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div className="importer-controls">
                     <div className="file-uploader-wrapper">
                       <label className="file-uploader-btn">
-                        📥 Upload Torrent or NZB File
+                        <Icon name="upload" size={15} /> Upload Torrent or NZB File
                         <input
                           type="file"
                           accept=".torrent,.nzb"
@@ -5281,7 +5371,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         type="text"
                         value={magnetInput}
                         onChange={(e) => setMagnetInput(e.target.value)}
-                        placeholder="🔗 Paste Magnet Link..."
+                        placeholder="Paste Magnet Link..."
                         className="magnet-input-field"
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
@@ -5295,7 +5385,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         onClick={handleImportMagnet}
                         className="magnet-submit-btn"
                       >
-                        ⚡ Parse & Check Cache
+                        <Icon name="bolt" size={14} fill /> Parse & Check Cache
                       </button>
                     </div>
                   </div>
@@ -5304,7 +5394,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 {/* Input and Search Button */}
                 <div className="search-row">
                   <div className="input-container">
-                    <span className="input-search-icon">🔍</span>
+                    <span className="input-search-icon"><Icon name="search" size={18} /></span>
                     <input
                       type="text"
                       value={query}
@@ -5323,8 +5413,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       id="search-input-field"
                     />
                     {query && (
-                      <button type="button" className="clear-input-btn" onClick={() => setQuery('')}>
-                        ✕
+                      <button type="button" className="clear-input-btn" onClick={() => setQuery('')} aria-label="Clear search">
+                        <Icon name="x" size={16} />
                       </button>
                     )}
                   </div>
@@ -5338,7 +5428,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     }}
                     title="Filters and Sorting Settings"
                   >
-                    🎛️ Filters
+                    <Icon name="filter" size={16} /> Filters
                   </button>
 
                   {aiEnabled && (
@@ -5349,7 +5439,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       onClick={handleAiSemanticSearch}
                       title="AI Semantic Search: Translate conceptual query into clean title and search"
                     >
-                      🪄 AI Search
+                      <Icon name="wand" size={15} /> AI Search
                     </button>
                   )}
 
@@ -5382,7 +5472,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           onClick={(e) => deleteHistoryItem(e, q)}
                           title={`Remove "${q}" from history`}
                         >
-                          ✕
+                          <Icon name="x" size={13} />
                         </button>
                       </div>
                     ))}
@@ -5393,7 +5483,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               {/* Advanced Collapsible Filters and Sorting Drawer */}
               {showFilters && (
                 <div className="filters-drawer glass-inner-panel fade-in">
-                  <h3>🎛️ Search Filters & Sorting</h3>
+                  <h3 className="heading-ico"><Icon name="filter" size={18} /> Search Filters & Sorting</h3>
                   <div className="filters-grid">
                     
                     {/* 1. Quality dropdown */}
@@ -5423,8 +5513,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       >
                         <option value="cached-seeders">Cached + Seeders (Default)</option>
                         <option value="seeders">Seeders count</option>
-                        <option value="size-desc">Size: Large → Small</option>
-                        <option value="size-asc">Size: Small → Large</option>
+                        <option value="size-desc">Size: Large Small</option>
+                        <option value="size-asc">Size: Small Large</option>
                         <option value="date">Age: Newest first</option>
                       </select>
                     </div>
@@ -5496,17 +5586,17 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         triggerToast('Filters reset.', 'success');
                       }}
                     >
-                      🔄 Reset Filters
+                       Reset Filters
                     </button>
                   </div>
                 </div>
               )}
             </section>
 
-            {/* ⚠️ Usenet Fair-Use points caution banner */}
+            {/* Usenet Fair-Use points caution banner */}
             {searchMode === 'usenet' && !hideUsenetWarning && (
               <div className="usenet-points-warning glass-panel fade-in">
-                <div className="warning-icon-col">⚠️</div>
+                <div className="warning-icon-col"><Icon name="alert-triangle" size={28} /></div>
                 <div className="warning-text-col">
                   <h3>Usenet Fair-Use Points Notice</h3>
                   <p>
@@ -5524,7 +5614,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     </li>
                   </ul>
                   <p className="warning-tip">
-                    Prioritize free cached torrents (marked with glowing 🟢 Instant DL badges) to conserve your daily points balance!
+                    Prioritize free cached torrents (marked with glowing Instant DL badges) to conserve your daily points balance!
                   </p>
                 </div>
                 <button
@@ -5533,11 +5623,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => {
                     setHideUsenetWarning(true);
                     localStorage.setItem('premio_hide_usenet_warning', 'true');
-                    triggerToast('Usenet point warning dismissed. Review at any time by toggling the 💡 button.', 'success');
+                    triggerToast('Usenet point warning dismissed. Review at any time by toggling the button.', 'success');
                   }}
                   title="Dismiss warning permanently"
                 >
-                  ✕
+                  <Icon name="x" size={16} />
                 </button>
               </div>
             )}
@@ -5562,13 +5652,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 <div className="results-list">
                   <div className="results-header-row">
                     <div className="results-header">
-                      <h2>🔍 Search Results ({processedResults.length})</h2>
+                      <h2 className="heading-ico"><Icon name="search" size={20} /> Search Results ({processedResults.length})</h2>
                       <span className="results-subtitle">
                         Sorted by: <strong>{
                           sortBy === 'cached-seeders' ? (searchMode === 'usenet' ? 'NZB Grabs' : 'Instant Cached first, then Seeders') :
                           sortBy === 'seeders' ? (searchMode === 'usenet' ? 'NZB Grabs' : 'Health / Seeders') :
-                          sortBy === 'size-desc' ? 'Size (Large → Small)' :
-                          sortBy === 'size-asc' ? 'Size (Small → Large)' : 'Release Age (Newest)'
+                          sortBy === 'size-desc'? 'Size (Large Small)':
+                          sortBy === 'size-asc'? 'Size (Small Large)': 'Release Age (Newest)'
                         }</strong>
                       </span>
                     </div>
@@ -5576,16 +5666,16 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <div className="stats-badges">
                       {searchMode === 'usenet' ? (
                         <span className="stat-badge stat-badge-usenet">
-                          ⚡ {processedResults.length} Usenet NZB Releases
+                          <Icon name="bolt" size={14} fill /> {processedResults.length} Usenet NZB Releases
                         </span>
                       ) : (
                         <>
                           <span className="stat-badge stat-badge-cached">
-                            ⚡ {cachedCount} Cached
+                            <Icon name="bolt" size={14} fill /> {cachedCount} Cached
                           </span>
                           {processedResults.length !== results.length && (
                             <span className="stat-badge stat-badge-filtered">
-                              ⚠️ {results.length - processedResults.length} Filtered
+                              <Icon name="alert-triangle" size={14} /> {results.length - processedResults.length} Filtered
                             </span>
                           )}
                         </>
@@ -5596,7 +5686,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Inline Usenet Suggestion Banner (when no torrents are cached) */}
                   {searchMode === 'torrent' && cachedCount === 0 && (
                     <div className="usenet-suggestion-banner glass-panel fade-in">
-                      <span className="suggestion-icon">💡</span>
+                      <span className="suggestion-icon"><Icon name="bulb" size={22} /></span>
                       <div className="suggestion-text">
                         <h4>No globally cached torrents found for this search</h4>
                         <p>
@@ -5612,14 +5702,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           setTimeout(() => handleSearch(null, 'usenet'), 50);
                         }}
                       >
-                        ⚡ Search Usenet (Indexers)
+                        <Icon name="bolt" size={15} fill /> Search Usenet (Indexers)
                       </button>
                     </div>
                   )}
                   
                   {processedResults.length === 0 ? (
                     <div className="empty-state glass-panel">
-                      <div className="empty-icon">🎛️</div>
+                      <div className="empty-icon"><Icon name="filter" size={40} /></div>
                       <h2>No items match active filters</h2>
                       <p>Try adjusting your parameters in the filters panel above.</p>
                     </div>
@@ -5644,25 +5734,35 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             {hasPoster && (
                               <div className="card-poster-col" onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } })}>
                                 <img src={posterSrc} alt="" className="card-poster-img" loading="lazy" />
+                                {meta?.voteAverage ? (
+                                  <span className="poster-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span>
+                                ) : null}
+                                <span className="poster-hover-play"><Icon name="player-play" fill size={20} /></span>
                               </div>
                             )}
                             <div className="card-content-col">
                             <div className="card-top">
-                              <h3 className="result-title" title={item.title}>
-                                {item.title}
-                              </h3>
-                              {meta && (
-                                <div className="meta-info-row">
-                                  {meta.voteAverage && <span className="meta-rating-badge" title="TMDb Rating">⭐ {meta.voteAverage.toFixed(1)}</span>}
-                                  {meta.rating && <span className="meta-rating-badge" title="Rating">⭐ {meta.rating}</span>}
-                                  {meta.genres && meta.genres.length > 0 && meta.genres.slice(0, 2).map((g, gi) => (
-                                    <span key={gi} className="meta-genre-tag">{g}</span>
+                              <div className="card-title-row">
+                                <h3 className="result-title" title={item.title}>
+                                  {item.title}
+                                </h3>
+                                {meta?.year && <span className="title-year">{meta.year}</span>}
+                                {item.detectedType && (
+                                  <span className="type-badge" title="Detected content type">{item.detectedType}</span>
+                                )}
+                              </div>
+                              {meta && (meta.voteAverage || meta.rating || meta.genres?.length || meta.artist || meta.author || meta.runtime) && (
+                                <div className="meta-line">
+                                  {meta.voteAverage ? <span className="meta-rating"><Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)}</span> : null}
+                                  {meta.rating ? <span className="meta-rating"><Icon name="star" fill size={13} /> {meta.rating}</span> : null}
+                                  {meta.genres && meta.genres.slice(0, 2).map((g, gi) => (
+                                    <span key={gi} className="meta-genre">{g}</span>
                                   ))}
-                                  {meta.artist && <span className="meta-artist-tag">🎤 {meta.artist}</span>}
-                                  {meta.author && <span className="meta-artist-tag">✍️ {meta.author}</span>}
-                                  {meta.year && <span className="meta-year-tag">📅 {meta.year}</span>}
-                                  <button className="meta-info-btn" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: meta }); }} title="View full metadata details">
-                                    ℹ️ Info
+                                  {meta.artist && <span className="meta-sub">{meta.artist}</span>}
+                                  {meta.author && <span className="meta-sub">{meta.author}</span>}
+                                  {meta.runtime ? <span className="meta-sub"><Icon name="clock" size={13} /> {Math.floor(meta.runtime / 60)}h {meta.runtime % 60}m</span> : null}
+                                  <button className="meta-details-link" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: meta }); }} title="View full details">
+                                    <Icon name="info" size={14} /> Details
                                   </button>
                                 </div>
                               )}
@@ -5681,39 +5781,39 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             <div className="card-middle">
                               <div className="stats-row">
                                 <span className="stat-item" title="Size">
-                                  💾 {formatBytes(item.size)}
+                                  <Icon name="database" size={14} /> {formatBytes(item.size)}
                                 </span>
                                 {isUsenetItem ? (
                                   <>
                                     <span className={`stat-item ${item.ageDays > 3000 ? 'text-red' : 'text-purple'}`} title="Usenet Age">
-                                      📅 {item.ageDays} days old {item.ageDays > 3000 && <span className="extreme-age-badge" title="Retention limit warn">⚠️ Old</span>}
+                                      <Icon name="clock" size={14} /> {item.ageDays}d {item.ageDays > 3000 && <span className="extreme-age-badge" title="Retention limit warn">old</span>}
                                     </span>
                                     <span className="stat-item text-blue" title="NZB Grabs">
-                                      📥 {item.grabs} grabs
+                                      <Icon name="download" size={14} /> {item.grabs} grabs
                                     </span>
                                     {item.password && (
                                       <span className="stat-item text-amber" title={`Password: ${item.password}`}>
-                                        🔑 PW: {item.password}
+                                        <Icon name="bolt" size={14} /> PW: {item.password}
                                       </span>
                                     )}
                                   </>
                                 ) : (
                                   <>
                                     <span className="stat-item text-green" title="Seeders">
-                                      🟢 {item.seeders} <span className="stat-label">seeds</span>
+                                      <Icon name="arrow-up" size={14} /> {item.seeders} <span className="stat-label">seeds</span>
                                     </span>
                                     <span className="stat-item text-grey" title="Peers">
-                                      🔵 {item.peers} <span className="stat-label">peers</span>
+                                      {item.peers} <span className="stat-label">peers</span>
                                     </span>
                                   </>
                                 )}
                               </div>
 
-                              {/* 🩺 Usenet Health Predictor Widget */}
+                              {/* Usenet Health Predictor Widget */}
                               {isUsenetItem && item.health !== undefined && (
                                 <div className="health-predict-bar-container" title={`Usenet Completion Health: ${item.health}% (${item.health >= 90 ? 'Excellent' : item.health >= 70 ? 'Moderate' : 'Risk of Incomplete'})`}>
                                   <div className="health-predict-label">
-                                    <span>🩺 Usenet Health:</span>
+                                    <span> Usenet Health:</span>
                                     <span className={`health-value ${item.health >= 90 ? 'green' : item.health >= 70 ? 'amber' : 'red'}`}>{item.health}%</span>
                                   </div>
                                   <div className="health-progress-bg">
@@ -5723,149 +5823,101 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                     ></div>
                                   </div>
                                   <span className="health-tooltip-text">
-                                    {item.health >= 90 ? '🟢 High completion likelihood. Grab counts verify stability.' : 
-                                     item.health >= 70 ? '🟡 Moderate completion likelihood. Older post or lower grabs.' : 
-                                     '🔴 Risk of incomplete blocks. Password or retention takedown danger.'}
+                                    {item.health >= 90 ? 'High completion likelihood. Grab counts verify stability.':
+                                     item.health >= 70 ? 'Moderate completion likelihood. Older post or lower grabs.':
+                                     'Risk of incomplete blocks. Password or retention takedown danger.'}
                                   </span>
                                 </div>
                               )}
 
                               <div className="meta-row">
                                 <span className="tracker-name">
-                                  {isUsenetItem ? `⚡ ${item.indexer || 'Usenet'}` : `🏷️ ${item.tracker}`}
+                                  {isUsenetItem ? (item.indexer || 'Usenet') : item.tracker}
                                 </span>
                                 {!isUsenetItem && item.publishDate && (
                                   <span className="publish-date">
-                                    📅 {new Date(item.publishDate).toLocaleDateString()}
+                                    {new Date(item.publishDate).toLocaleDateString()}
                                   </span>
                                 )}
                               </div>
                             </div>
  
                             <div className="card-actions">
-                              
-                              {/* Add / Remove from My Library */}
-                              <button
-                                className={`cache-badge badge-library ${inLib ? 'active' : ''}`}
-                                onClick={() => toggleLibraryItem(item)}
-                                title={inLib ? "Remove from Library" : "Add to Library"}
-                              >
-                                {inLib ? '⭐ In Library' : '☆ Add to Library'}
-                              </button>
- 
-                              {/* Playback triggers (Torrents cached hits only!) */}
-                              {!isUsenetItem && item.cached && (
-                                (category === 'Retro Games' || getEmulatorSystem(item.title) || item.category === 'Retro Games') ? (
+                              {/* Cache status pill */}
+                              {isUsenetItem ? (
+                                item.cached && <span className="status-pill cached"><Icon name="check" size={13} /> In cloud</span>
+                              ) : item.cached ? (
+                                <span className="status-pill cached"><Icon name="bolt" size={13} /> Instant</span>
+                              ) : (
+                                <span className="status-pill uncached"><Icon name="cloud-up" size={13} /> Not cached</span>
+                              )}
+
+                              <div className="action-cluster">
+                                {/* Add / Remove from My Library */}
+                                <button
+                                  className={`icon-ghost ${inLib ? 'active' : ''}`}
+                                  onClick={() => toggleLibraryItem(item)}
+                                  title={inLib ? "Remove from Library" : "Add to Library"}
+                                  aria-label={inLib ? "Remove from Library" : "Add to Library"}
+                                >
+                                  <Icon name={inLib ? 'check' : 'plus'} size={18} />
+                                </button>
+
+                                <button
+                                  className={`icon-ghost ${isInWatchlist(item) ? 'active-watch' : ''}`}
+                                  onClick={() => toggleWatchlist(item)}
+                                  title={isInWatchlist(item) ? "In watchlist" : "Add to watchlist"}
+                                  aria-label="Toggle watchlist"
+                                >
+                                  <Icon name="bell" size={18} />
+                                </button>
+
+                                {/* Push a cached torrent to Premiumize cloud (secondary) */}
+                                {!isUsenetItem && item.cached && (
                                   <button
-                                    className="cache-badge badge-arcade hover-action"
-                                    onClick={() => startRetroPlayer(item)}
-                                    disabled={playerLoading}
-                                    title="Instant play retro game in browser arcade"
-                                    id={`btn-arcade-${idx}`}
+                                    className="icon-ghost"
+                                    onClick={() => triggerDownload(item)}
+                                    disabled={isDownloading}
+                                    title="Also save to Premiumize cloud storage"
+                                    aria-label="Save to Premiumize cloud"
                                   >
-                                    🎮 Play Retro ROM
+                                    {isDownloading ? <span className="spinner-micro"></span> : <Icon name="cloud-up" size={18} />}
                                   </button>
-                                ) : (category === 'Ebooks' || item.category === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) ? (
-                                  <button
-                                    className="cache-badge badge-ebook hover-action"
-                                    onClick={() => startEbookPlayer(item)}
-                                    disabled={playerLoading}
-                                    title="Open ebook in direct browser reader"
-                                    id={`btn-ebook-${idx}`}
-                                  >
-                                    📖 Read Book
-                                  </button>
-                                ) : (category === 'Audiobooks' || category === 'Music' || item.category === 'Audiobooks' || item.category === 'Music') ? (
-                                  <button
-                                    className="cache-badge badge-listen hover-action"
-                                    onClick={() => startAudioPlayer(item)}
-                                    disabled={playerLoading}
-                                    title="Open audio track in direct browser player"
-                                    id={`btn-audio-${idx}`}
-                                  >
-                                    🎧 Listen Now
-                                  </button>
-                                ) : (category === 'Software' || category === 'Other' || category === 'VST' || item.category === 'Software' || item.category === 'Other' || item.category === 'VST') ? (
-                                  <button
-                                    className="cache-badge badge-download hover-action"
-                                    onClick={() => triggerDirectDownload(item)}
-                                    disabled={playerLoading}
-                                    title="Download directly from high-speed Premiumize CDN without using cloud storage space"
-                                    id={`btn-direct-dl-${idx}`}
-                                  >
-                                    📥 Direct CDN Download
+                                )}
+
+                                {/* Primary action */}
+                                {!isUsenetItem && item.cached ? (
+                                  (category === 'Retro Games' || getEmulatorSystem(item.title) || item.category === 'Retro Games') ? (
+                                    <button className="btn-primary hover-action" onClick={() => startRetroPlayer(item)} disabled={playerLoading} title="Instant play retro game in browser arcade" id={`btn-arcade-${idx}`}>
+                                      <Icon name="device-gamepad" size={16} /> Play
+                                    </button>
+                                  ) : (category === 'Ebooks' || item.category === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) ? (
+                                    <button className="btn-primary hover-action" onClick={() => startEbookPlayer(item)} disabled={playerLoading} title="Open ebook in direct browser reader" id={`btn-ebook-${idx}`}>
+                                      <Icon name="book" size={16} /> Read
+                                    </button>
+                                  ) : (category === 'Audiobooks' || category === 'Music' || item.category === 'Audiobooks' || item.category === 'Music') ? (
+                                    <button className="btn-primary hover-action" onClick={() => startAudioPlayer(item)} disabled={playerLoading} title="Open audio track in direct browser player" id={`btn-audio-${idx}`}>
+                                      <Icon name="headphones" size={16} /> Listen
+                                    </button>
+                                  ) : (category === 'Software' || category === 'Other' || category === 'VST' || item.category === 'Software' || item.category === 'Other' || item.category === 'VST') ? (
+                                    <button className="btn-primary hover-action" onClick={() => triggerDirectDownload(item)} disabled={playerLoading} title="Download directly from high-speed Premiumize CDN" id={`btn-direct-dl-${idx}`}>
+                                      <Icon name="download" size={16} /> Download
+                                    </button>
+                                  ) : (
+                                    <button className="btn-primary hover-action" onClick={() => startStreaming(item)} disabled={playerLoading} title="Instant stream video in web browser or VLC" id={`btn-stream-${idx}`}>
+                                      <Icon name="player-play" fill size={15} /> Play
+                                    </button>
+                                  )
+                                ) : isUsenetItem ? (
+                                  <button className="btn-primary subtle hover-action" onClick={() => triggerDownload(item)} disabled={isDownloading} title={`Send this Usenet NZB to your Premiumize cloud queue (~${Math.round(item.size / (1024*1024*1024))} Fair-Use points).`} id={`btn-dl-usenet-${idx}`}>
+                                    {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="bolt" size={15} /> {item.cached ? 'Re-add' : 'Add to cloud'}</>}
                                   </button>
                                 ) : (
-                                  <button
-                                    className="cache-badge badge-stream hover-action"
-                                    onClick={() => startStreaming(item)}
-                                    disabled={playerLoading}
-                                    title="Instant stream video in web browser or VLC"
-                                    id={`btn-stream-${idx}`}
-                                  >
-                                    🎬 Play Stream
+                                  <button className="btn-primary subtle hover-action" onClick={() => triggerDownload(item)} disabled={isDownloading} title={downloadSource ? "Add to Premiumize downloader queue" : "No download URL available"} id={`btn-dl-uncached-${idx}`}>
+                                    {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="cloud-up" size={15} /> Add</>}
                                   </button>
-                                )
-                              )}
- 
-                              {/* Premiumize Cache Status / Usenet Cloud Add Dispatcher */}
-                              {isUsenetItem ? (
-                                <button
-                                  className="cache-badge badge-usenet hover-action"
-                                  onClick={() => triggerDownload(item)}
-                                  disabled={isDownloading}
-                                  title={`Click to send this Usenet NZB release to your Premiumize cloud queue. Consumes ${Math.round(item.size / (1024*1024*1024))} Fair-Use points.`}
-                                  id={`btn-dl-usenet-${idx}`}
-                                >
-                                  {isDownloading ? (
-                                    <span className="spinner-micro white"></span>
-                                  ) : item.cached ? (
-                                    <>
-                                      <span className="badge-bullet">🟢</span>
-                                      <span className="badge-main-text">Added to Cloud</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span className="badge-bullet">⚡</span>
-                                      <span className="badge-main-text">Add Usenet to Cloud</span>
-                                    </>
-                                  )}
-                                </button>
-                              ) : item.cached ? (
-                                <button
-                                  className="cache-badge badge-cached hover-action"
-                                  onClick={() => triggerDownload(item)}
-                                  disabled={isDownloading}
-                                  title="Cached! Click to instantly send to Premiumize cloud storage"
-                                  id={`btn-dl-cached-${idx}`}
-                                >
-                                  {isDownloading ? (
-                                    <span className="spinner-micro white"></span>
-                                  ) : (
-                                    <>
-                                      <span className="badge-bullet">🟢</span>
-                                      <span className="badge-main-text">Instant Cached DL</span>
-                                    </>
-                                  )}
-                                </button>
-                              ) : (
-                                <button
-                                  className="cache-badge badge-uncached"
-                                  onClick={() => triggerDownload(item)}
-                                  disabled={isDownloading}
-                                  title={downloadSource ? "Not Cached. Click to add to Premiumize downloader queue" : "No download URL available"}
-                                  id={`btn-dl-uncached-${idx}`}
-                                >
-                                  {isDownloading ? (
-                                    <span className="spinner-micro white"></span>
-                                  ) : (
-                                    <>
-                                      <span className="badge-bullet">⚪</span>
-                                      <span className="badge-main-text">Add to Premiumize</span>
-                                    </>
-                                  )}
-                                </button>
-                              )}
+                                )}
+                              </div>
                             </div>
                             </div>{/* close card-content-col */}
                           </article>
@@ -5876,12 +5928,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 </div>
               ) : searched ? (
                 <div className="empty-state glass-panel usenet-fallback-panel">
-                  <div className="empty-icon">📭</div>
+                  <div className="empty-icon"><Icon name="search" size={40} /></div>
                   <h2>No results found</h2>
                   <p>No indexers returned matching releases for "{query}".</p>
                   {searchMode === 'torrent' && (
                     <div className="usenet-fallback-card glass-inner-panel fade-in">
-                      <h3>🔍 Search Usenet Indexers?</h3>
+                      <h3> Search Usenet Indexers?</h3>
                       <p>
                         Usenet is a massive alternative repository that might have this release! 
                         Note: NZB Usenet downloads use Premiumize Fair-Use Points (2 pts/GB total download + stream).
@@ -5894,7 +5946,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           setTimeout(() => handleSearch(null, 'usenet'), 50);
                         }}
                       >
-                        ⚡ Switch and Search Usenet
+                         Switch and Search Usenet
                       </button>
                     </div>
                   )}
@@ -5902,7 +5954,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               ) : (
                 /* Initial welcome guide */
                 <div className="welcome-card glass-panel">
-                  <h2>⚡ Welcome to Premio</h2>
+                  <h2 className="heading-ico"><Icon name="bolt" size={20} fill /> Welcome to Premio</h2>
                   <p>Search torrent databases and Usenet indexers instantly, check Premiumize cached state on-the-fly, and stream at blazing speed.</p>
                   
                   <div className="instructions-grid">
@@ -5914,7 +5966,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <div className="instruction-step">
                       <div className="step-num">2</div>
                       <h4>Stream or Download</h4>
-                      <p>Click <strong>🎬 Play Stream</strong> to watch instantly, or add Usenet NZBs to your cloud in 1-click!</p>
+                      <p>Click <strong> Play Stream</strong> to watch instantly, or add Usenet NZBs to your cloud in 1-click!</p>
                     </div>
                     <div className="instruction-step">
                       <div className="step-num">3</div>
@@ -5925,7 +5977,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
                   {recentDownloads.length > 0 && (
                     <div className="recent-downloads-section">
-                      <h3>📥 Recent Transfers Sent to Cloud</h3>
+                      <h3> Recent Transfers Sent to Cloud</h3>
                       <div className="recent-dl-list">
                         {recentDownloads.map((dl, idx) => (
                           <div key={idx} className="recent-dl-item">
@@ -5933,8 +5985,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                               {dl.title}
                             </div>
                             <div className="recent-dl-details">
-                              <span>💾 {formatBytes(dl.size)}</span>
-                              <span>⏱️ {new Date(dl.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                              <span> {formatBytes(dl.size)}</span>
+                              <span> {new Date(dl.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                             </div>
                           </div>
                         ))}
@@ -5947,12 +5999,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           </>
         )}
 
-        {/* ⭐ Tab: My Library Bookshelf */}
+        {/* Tab: My Library Bookshelf */}
         {activeTab === 'library' && (
           <section className="library-section fade-in">
             <div className="results-header-row">
               <div className="results-header">
-                <h2>⭐ My Library bookshelves ({librarySubTab === 'Playlists' ? playlists.length : filteredLibraryList.length})</h2>
+                <h2 className="heading-ico"><Icon name="star" size={20} fill /> My Library bookshelves ({librarySubTab === 'Playlists' ? playlists.length : filteredLibraryList.length})</h2>
                 <span className="results-subtitle">Saved releases and custom playlists</span>
               </div>
             </div>
@@ -5963,78 +6015,78 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 className={`sub-tab ${librarySubTab === 'All' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('All')}
               >
-                📂 All ({libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length})
+                 All ({libraryList.filter(item => !(item.category === 'Adult'&& (!adultControlsUnlocked || hideAdult))).length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Movies' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Movies')}
               >
-                🎬 Movies ({libraryList.filter(item => item.category === 'Movies').length})
+                 Movies ({libraryList.filter(item => item.category === 'Movies').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'TV' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('TV')}
               >
-                📺 TV Shows ({libraryList.filter(item => item.category === 'TV').length})
+                 TV Shows ({libraryList.filter(item => item.category === 'TV').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Retro Games' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Retro Games')}
               >
-                🎮 Retro Games ({libraryList.filter(item => item.category === 'Retro Games').length})
+                 Retro Games ({libraryList.filter(item => item.category === 'Retro Games').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Audiobooks' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Audiobooks')}
               >
-                🎧 Audiobooks ({libraryList.filter(item => item.category === 'Audiobooks').length})
+                 Audiobooks ({libraryList.filter(item => item.category === 'Audiobooks').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Ebooks' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Ebooks')}
               >
-                📚 Ebooks ({libraryList.filter(item => item.category === 'Ebooks').length})
+                 Ebooks ({libraryList.filter(item => item.category === 'Ebooks').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Software' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Software')}
               >
-                💾 Software ({libraryList.filter(item => item.category === 'Software').length})
+                 Software ({libraryList.filter(item => item.category === 'Software').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'VST' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('VST')}
               >
-                🎛️ VST ({libraryList.filter(item => item.category === 'VST').length})
+                 VST ({libraryList.filter(item => item.category === 'VST').length})
               </button>
               <button 
                 className={`sub-tab ${librarySubTab === 'Other' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Other')}
               >
-                📦 Other ({libraryList.filter(item => item.category === 'Other' || item.category === 'Music').length})
+                 Other ({libraryList.filter(item => item.category === 'Other'|| item.category === 'Music').length})
               </button>
               {!isKids && adultControlsUnlocked && !hideAdult && (
                 <button 
                   className={`sub-tab ${librarySubTab === 'Adult' ? 'active' : ''}`}
                   onClick={() => setLibrarySubTab('Adult')}
                 >
-                  🔞 Adult ({libraryList.filter(item => item.category === 'Adult').length})
+                   Adult ({libraryList.filter(item => item.category === 'Adult').length})
                 </button>
               )}
               <button 
                 className={`sub-tab ${librarySubTab === 'Playlists' ? 'active' : ''}`}
                 onClick={() => setLibrarySubTab('Playlists')}
               >
-                🎵 Playlists ({playlists.length})
+                 Playlists ({playlists.length})
               </button>
             </div>
 
             {librarySubTab === 'Playlists' ? (
               playlists.length === 0 ? (
                 <div className="empty-state glass-panel" style={{ marginTop: '1rem' }}>
-                  <div className="empty-icon">🎵</div>
+                  <div className="empty-icon"><Icon name="music" size={44} /></div>
                   <h2>No Playlists Found</h2>
-                  <p>Create a playlist by playing an album/audiobook search result, opening the audio player, and clicking the ➕ icon next to any track!</p>
+                  <p>Create a playlist by playing an album/audiobook search result, opening the audio player, and clicking the icon next to any track!</p>
                 </div>
               ) : (
                 <div className="playlists-grid">
@@ -6044,7 +6096,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       <div key={plIdx} className="playlist-card glass-panel fade-in">
                         <div className="playlist-card-header">
                           <div className="playlist-header-left">
-                            <h3 className="playlist-title">🎵 {pl.name}</h3>
+                            <h3 className="playlist-title"> {pl.name}</h3>
                             <span className="playlist-meta-badge">
                               {pl.tracks.length} track{pl.tracks.length !== 1 ? 's' : ''} • {formatBytes(totalSize)}
                             </span>
@@ -6055,14 +6107,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                               onClick={() => playPlaylist(pl)}
                               title="Stream entire playlist sequentially"
                             >
-                              ▶️ Play All
+                              ▶ Play All
                             </button>
                             <button 
                               className="playlist-delete-btn" 
                               onClick={() => deletePlaylist(pl.name)}
                               title="Delete playlist"
                             >
-                              🗑️ Delete
+                               Delete
                             </button>
                           </div>
                         </div>
@@ -6076,7 +6128,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                   <span className="track-title" title={track.name}>{track.name}</span>
                                   {track.torrent?.title && (
                                     <span className="track-parent-torrent" title={track.torrent.title}>
-                                      💿 {track.torrent.title}
+                                       {track.torrent.title}
                                     </span>
                                   )}
                                 </div>
@@ -6088,7 +6140,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                   onClick={() => removeTrackFromPlaylist(pl.name, trackIdx)}
                                   title="Remove from playlist"
                                 >
-                                  ✕
+                                  <Icon name="x" size={14} />
                                 </button>
                               </div>
                             </div>
@@ -6101,142 +6153,47 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               )
             ) : libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length === 0 ? (
               <div className="empty-state glass-panel" style={{ marginTop: '1rem' }}>
-                <div className="empty-icon">⭐</div>
+                <div className="empty-icon"><Icon name="star" size={44} /></div>
                 <h2>Your Library is empty</h2>
-                <p>Click "☆ Add to Library" on any search result to populate this bookshelves page and keep track of files you want to watch!</p>
+                <p>Click "Add to Library"on any search result to populate this bookshelves page and keep track of files you want to watch!</p>
               </div>
             ) : filteredLibraryList.length === 0 ? (
               <div className="empty-state glass-panel" style={{ marginTop: '1rem' }}>
-                <div className="empty-icon">📂</div>
+                <div className="empty-icon"><Icon name="folder" size={44} /></div>
                 <h2>No items on this shelf</h2>
                 <p>Add releases in the "{librarySubTab}" category to see them inside your library shelf.</p>
               </div>
             ) : (
-              <div className="results-grid">
+              <div className="library-grid">
                 {filteredLibraryList.map((item, idx) => {
-                  const qualityTags = extractQuality(item.title);
-                  const isDownloading = activeDownloadId === (item.magnet || item.torrentFile);
                   const meta = getMetadata(item);
-
+                  const poster = meta?.poster || item.coverurl;
+                  const cat = item.category || 'Other';
+                  const typeIcon = cat === 'TV' ? 'device-tv' : (cat === 'Music' ? 'music' : (cat === 'Audiobooks' ? 'headphones' : (cat === 'Ebooks' ? 'book' : (cat === 'Retro Games' ? 'device-gamepad' : ((cat === 'Software' || cat === 'VST') ? 'app' : 'movie')))));
+                  const hue = hashHue(item.title);
+                  const playItem = (e) => {
+                    e.stopPropagation();
+                    if (!item.cached) { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); return; }
+                    if (cat === 'Retro Games' || getEmulatorSystem(item.title)) startRetroPlayer(item);
+                    else if (cat === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) startEbookPlayer(item);
+                    else if (cat === 'Audiobooks' || cat === 'Music') startAudioPlayer(item);
+                    else if (cat === 'Software' || cat === 'Other' || cat === 'VST') triggerDirectDownload(item);
+                    else startStreaming(item);
+                  };
                   return (
-                    <article key={idx} className={`result-card glass-panel ${item.cached ? 'cached-hit' : 'cached-miss'} ${meta?.poster ? 'has-poster' : ''}`}>
-                      {meta?.poster && (
-                        <div className="card-poster-col" onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta })}>
-                          <img src={meta.poster} alt="" className="card-poster-img" loading="lazy" />
-                        </div>
-                      )}
-                      <div className="card-content-col">
-                      <div className="card-top">
-                        <h3 className="result-title" title={item.title}>
-                          {item.title}
-                        </h3>
-                        {meta && (
-                          <div className="meta-info-row">
-                            {meta.voteAverage && <span className="meta-rating-badge" title="TMDb Rating">⭐ {meta.voteAverage.toFixed(1)}</span>}
-                            {meta.rating && <span className="meta-rating-badge" title="Rating">⭐ {meta.rating}</span>}
-                            {meta.genres && meta.genres.length > 0 && meta.genres.slice(0, 2).map((g, gi) => (
-                              <span key={gi} className="meta-genre-tag">{g}</span>
-                            ))}
-                            {meta.artist && <span className="meta-artist-tag">🎤 {meta.artist}</span>}
-                            {meta.author && <span className="meta-artist-tag">✍️ {meta.author}</span>}
-                            {meta.year && <span className="meta-year-tag">📅 {meta.year}</span>}
-                            <button className="meta-info-btn" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: meta }); }} title="View full metadata details">
-                              ℹ️ Info
-                            </button>
-                          </div>
-                        )}
-                        
-                        {qualityTags.length > 0 && (
-                          <div className="quality-tags">
-                            {qualityTags.map((tag, tagIdx) => (
-                              <span key={tagIdx} className={`quality-badge q-${tag.type}`}>
-                                {tag.text}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="card-middle">
-                        <div className="stats-row">
-                          <span className="stat-item">💾 {formatBytes(item.size)}</span>
-                          <span className="stat-item text-green">🟢 {item.seeders} <span className="stat-label">seeds</span></span>
-                        </div>
-                        <div className="meta-row">
-                          <span className="tracker-name">🏷️ {item.tracker}</span>
+                    <div key={idx} className="lib-tile" onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } })} title={item.title}>
+                      <div className="lib-poster" style={poster ? { backgroundImage: `url(${poster})` } : { background: `linear-gradient(150deg, hsl(${hue}, 42%, 26%), hsl(${(hue + 35) % 360}, 48%, 15%))` }}>
+                        {!poster && <span className="lib-poster-icon"><Icon name={typeIcon} size={34} /></span>}
+                        {meta?.voteAverage ? <span className="lib-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span> : null}
+                        {item.cached && <span className="lib-instant" title="Instantly available"><Icon name="bolt" size={12} /></span>}
+                        <div className="lib-hover">
+                          <button className="lib-remove" onClick={(e) => { e.stopPropagation(); toggleLibraryItem(item); }} aria-label="Remove from Library" title="Remove from Library"><Icon name="x" size={15} /></button>
+                          <button className="lib-play" onClick={playItem} aria-label="Play" title="Play"><Icon name="player-play" fill size={20} /></button>
                         </div>
                       </div>
-
-                      <div className="card-actions">
-                        <button
-                          className="cache-badge badge-library active"
-                          onClick={() => toggleLibraryItem(item)}
-                          title="Remove from Library"
-                        >
-                          ⭐ Remove
-                        </button>
-
-                        {item.cached && (
-                          (item.category === 'Retro Games' || getEmulatorSystem(item.title)) ? (
-                            <button
-                              className="cache-badge badge-arcade hover-action"
-                              onClick={() => startRetroPlayer(item)}
-                              title="Instant play retro game"
-                            >
-                              🎮 Play ROM
-                            </button>
-                          ) : (item.category === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) ? (
-                            <button
-                              className="cache-badge badge-ebook hover-action"
-                              onClick={() => startEbookPlayer(item)}
-                              title="Read ebook in direct browser reader"
-                            >
-                              📖 Read Book
-                            </button>
-                          ) : (item.category === 'Audiobooks' || item.category === 'Music') ? (
-                            <button
-                              className="cache-badge badge-listen hover-action"
-                              onClick={() => startAudioPlayer(item)}
-                              title="Read or listen in direct browser player"
-                            >
-                              🎧 Listen
-                            </button>
-                          ) : (item.category === 'Software' || item.category === 'Other' || item.category === 'VST') ? (
-                            <button
-                              className="cache-badge badge-download hover-action"
-                              onClick={() => triggerDirectDownload(item)}
-                              title="Direct high-speed CDN download"
-                            >
-                              📥 Direct DL
-                            </button>
-                          ) : (
-                            <button
-                              className="cache-badge badge-stream hover-action"
-                              onClick={() => startStreaming(item)}
-                              title="Instant play stream"
-                            >
-                              🎬 Stream
-                            </button>
-                          )
-                        )}
-
-                        <button
-                          className={`cache-badge ${item.cached ? 'badge-cached' : 'badge-uncached'} hover-action`}
-                          onClick={() => triggerDownload(item)}
-                          disabled={isDownloading}
-                          title={item.cached ? "Instant transfer to Cloud" : "Add to download queue"}
-                        >
-                          {isDownloading ? (
-                            <span className="spinner-micro white"></span>
-                          ) : item.cached ? (
-                            '🟢 Instant DL'
-                          ) : (
-                            '⚪ Add to PM'
-                          )}
-                        </button>
-                      </div>
-                      </div>{/* close card-content-col */}
-                    </article>
+                      <div className="lib-title" title={item.title}>{meta?.title || item.title}</div>
+                      <div className="lib-sub">{meta?.year || item.category}</div>
+                    </div>
                   );
                 })}
               </div>
@@ -6244,7 +6201,52 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           </section>
         )}
 
-        {/* ⏱️ Tab: Continue... Dashboard */}
+        {/* Tab: Watchlist */}
+        {activeTab === 'watchlist' && (
+          <section className="watchlist-section fade-in">
+            <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
+              <div className="results-header">
+                <h2>Watchlist ({watchlist.length})</h2>
+                <span className="results-subtitle">Track titles and check when a new cached release appears</span>
+              </div>
+              {watchlist.length > 0 && (
+                <button className="btn-primary subtle" onClick={checkWatchlist} disabled={watchlistChecking} style={{ alignSelf: 'center' }}>
+                  {watchlistChecking ? <span className="spinner-micro"></span> : <Icon name="refresh" size={15} />} Check for cached
+                </button>
+              )}
+            </div>
+
+            {watchlist.length === 0 ? (
+              <div className="empty-state glass-panel">
+                <div className="empty-icon"><Icon name="bell" size={40} /></div>
+                <h2>Your watchlist is empty</h2>
+                <p>Tap the bell on any search result or detail page to track a title. Use &quot;Check for cached&quot; here to see when an instant release shows up.</p>
+              </div>
+            ) : (
+              <div className="library-grid">
+                {watchlist.map((w, idx) => {
+                  const hue = hashHue(w.title);
+                  return (
+                    <div key={idx} className="lib-tile" onClick={() => findWatchlistItem(w)} title={`Find releases for ${w.title}`}>
+                      <div className="lib-poster" style={w.poster ? { backgroundImage: `url(${w.poster})` } : { background: `linear-gradient(150deg, hsl(${hue}, 42%, 26%), hsl(${(hue + 35) % 360}, 48%, 15%))` }}>
+                        {!w.poster && <span className="lib-poster-icon"><Icon name="bell" size={30} /></span>}
+                        {w.cachedCount > 0 && <span className="watch-count" title={`${w.cachedCount} cached release(s) found`}><Icon name="bolt" size={11} /> {w.cachedCount}</span>}
+                        <div className="lib-hover">
+                          <button className="lib-remove" onClick={(e) => { e.stopPropagation(); persistWatchlist(watchlist.filter(x => x.key !== w.key)); }} aria-label="Remove from watchlist" title="Remove from watchlist"><Icon name="x" size={15} /></button>
+                          <button className="lib-play" onClick={(e) => { e.stopPropagation(); findWatchlistItem(w); }} aria-label="Find releases" title="Find releases"><Icon name="search" size={20} /></button>
+                        </div>
+                      </div>
+                      <div className="lib-title" title={w.title}>{w.title}</div>
+                      <div className="lib-sub">{(w.cachedCount !== null && w.cachedCount !== undefined) ? `${w.cachedCount} cached now` : (w.year || w.category)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Tab: Continue... Dashboard */}
         {activeTab === 'progress' && (() => {
           const moviesProgress = continueWatchingList.filter(item => {
             const cat = item.category || (item.torrent && item.torrent.category) || 'Movies';
@@ -6271,18 +6273,54 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             return cat === 'Ebooks';
           });
 
+          const hashHue = (str) => { let h = 0; for (let i = 0; i < (str || '').length; i++) h = (h * 31 + str.charCodeAt(i)) % 360; return h; };
+          const renderProgressCard = (item, idx) => {
+            const cat = item.category || (item.torrent && item.torrent.category) || 'Movies';
+            const meta = getMetadata({ title: item.parentTitle, category: cat }) || getMetadata({ title: item.title, category: cat });
+            const bg = meta?.backdrop || meta?.poster;
+            const hue = hashHue(item.parentTitle || item.title);
+            const isBook = cat === 'Ebooks';
+            const pct = Math.round(item.percent || 0);
+            const remainMin = (item.duration && item.currentTime) ? Math.max(0, Math.round((item.duration - item.currentTime) / 60)) : null;
+            const resume = () => {
+              removeFromContinueWatching(item.link);
+              if (cat === 'Music' || cat === 'Audiobooks') startAudioPlayer(item.torrent, item.link, item.currentTime);
+              else if (cat === 'Ebooks') startEbookPlayer(item.torrent, item.link, item.chapterIndex !== undefined ? item.chapterIndex : (item.currentTime - 1), item.scrollTop !== undefined ? item.scrollTop : null);
+              else startStreaming(item.torrent, item.currentTime, item.title);
+            };
+            return (
+              <article key={idx} className="resume-card" onClick={resume} title={`Resume ${item.title}`}>
+                <div className="resume-hero" style={bg ? { backgroundImage: `url(${bg})` } : { background: `linear-gradient(135deg, hsl(${hue}, 45%, 22%), hsl(${(hue + 45) % 360}, 55%, 30%))` }}>
+                  <div className="resume-scrim"></div>
+                  <button className="resume-remove" onClick={(e) => { e.stopPropagation(); removeFromContinueWatching(item.link); }} aria-label="Remove from Continue Watching"><Icon name="x" size={15} /></button>
+                  <span className="resume-play-fab"><Icon name="player-play" fill size={22} /></span>
+                  <div className="resume-meta">
+                    <div className="resume-title" title={item.title}>{item.title}</div>
+                    <div className="resume-sub">
+                      {item.parentTitle ? <span className="resume-parent">{item.parentTitle}</span> : null}
+                      {isBook
+                        ? <span className="resume-left"><Icon name="book" size={12} /> Ch {item.currentTime}/{item.duration}</span>
+                        : (remainMin !== null ? <span className="resume-left"><Icon name="clock" size={12} /> {remainMin}m left</span> : null)}
+                    </div>
+                  </div>
+                  <div className="resume-progress"><div className="resume-progress-fill" style={{ width: `${pct}%` }}></div></div>
+                </div>
+              </article>
+            );
+          };
+
           return (
             <section className="progress-section fade-in">
               <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
                 <div className="results-header">
-                  <h2>⏱️ Continue... ({continueWatchingList.length})</h2>
+                  <h2 className="heading-ico"><Icon name="player-play" size={20} fill /> Continue Watching ({continueWatchingList.length})</h2>
                   <span className="results-subtitle">Resume your active video streams, audiobooks, music, or ebooks right where you left off</span>
                 </div>
               </div>
 
               {continueWatchingList.length === 0 ? (
                 <div className="empty-state glass-panel">
-                  <div className="empty-icon">⏱️</div>
+                  <div className="empty-icon"><Icon name="player-play" size={44} /></div>
                   <h2>No media currently in progress</h2>
                   <p>Start any movie stream, TV show, audiobook, music album, or ebook from your search results. Your progress will be dynamically recorded here for instant resumption.</p>
                 </div>
@@ -6294,37 +6332,37 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       className={`sub-tab ${continueSubTab === 'All' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('All')}
                     >
-                      📂 All ({continueWatchingList.length})
+                       All ({continueWatchingList.length})
                     </button>
                     <button 
                       className={`sub-tab ${continueSubTab === 'Movies' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('Movies')}
                     >
-                      🎬 Movies ({moviesProgress.length})
+                       Movies ({moviesProgress.length})
                     </button>
                     <button 
                       className={`sub-tab ${continueSubTab === 'TV' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('TV')}
                     >
-                      📺 TV Shows ({tvProgress.length})
+                       TV Shows ({tvProgress.length})
                     </button>
                     <button 
                       className={`sub-tab ${continueSubTab === 'Music' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('Music')}
                     >
-                      🎵 Music ({musicProgress.length})
+                       Music ({musicProgress.length})
                     </button>
                     <button 
                       className={`sub-tab ${continueSubTab === 'Audiobooks' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('Audiobooks')}
                     >
-                      🎧 Audiobooks ({audiobooksProgress.length})
+                       Audiobooks ({audiobooksProgress.length})
                     </button>
                     <button 
                       className={`sub-tab ${continueSubTab === 'Ebooks' ? 'active' : ''}`}
                       onClick={() => setContinueSubTab('Ebooks')}
                     >
-                      📚 EBooks ({ebooksProgress.length})
+                       EBooks ({ebooksProgress.length})
                     </button>
                   </div>
 
@@ -6332,35 +6370,35 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {/* Category-specific empty states */}
                     {continueSubTab === 'Movies' && moviesProgress.length === 0 && (
                       <div className="empty-state glass-panel" style={{ padding: '3rem 2rem' }}>
-                        <div className="empty-icon">🎬</div>
+                        <div className="empty-icon"><Icon name="movie" size={44} /></div>
                         <h2>No movies currently in progress</h2>
                         <p>Start playing any movie release. Your active progress will automatically be saved here.</p>
                       </div>
                     )}
                     {continueSubTab === 'TV' && tvProgress.length === 0 && (
                       <div className="empty-state glass-panel" style={{ padding: '3rem 2rem' }}>
-                        <div className="empty-icon">📺</div>
+                        <div className="empty-icon"><Icon name="device-tv" size={44} /></div>
                         <h2>No TV shows currently in progress</h2>
                         <p>Start playing any TV show episode. Your active progress will automatically be saved here.</p>
                       </div>
                     )}
                     {continueSubTab === 'Music' && musicProgress.length === 0 && (
                       <div className="empty-state glass-panel" style={{ padding: '3rem 2rem' }}>
-                        <div className="empty-icon">🎵</div>
+                        <div className="empty-icon"><Icon name="music" size={44} /></div>
                         <h2>No music albums currently in progress</h2>
                         <p>Start listening to any music album. Your active progress will automatically be saved here.</p>
                       </div>
                     )}
                     {continueSubTab === 'Audiobooks' && audiobooksProgress.length === 0 && (
                       <div className="empty-state glass-panel" style={{ padding: '3rem 2rem' }}>
-                        <div className="empty-icon">🎧</div>
+                        <div className="empty-icon"><Icon name="headphones" size={44} /></div>
                         <h2>No audiobooks currently in progress</h2>
                         <p>Start listening to any audiobook track to see it here.</p>
                       </div>
                     )}
                     {continueSubTab === 'Ebooks' && ebooksProgress.length === 0 && (
                       <div className="empty-state glass-panel" style={{ padding: '3rem 2rem' }}>
-                        <div className="empty-icon">📚</div>
+                        <div className="empty-icon"><Icon name="book" size={44} /></div>
                         <h2>No eBooks currently in progress</h2>
                         <p>Open any EPUB or PDF book in the reader. Your bookmarks will be saved here automatically.</p>
                       </div>
@@ -6370,35 +6408,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {(continueSubTab === 'All' || continueSubTab === 'Movies') && moviesProgress.length > 0 && (
                       <div className="continue-shelf" style={{ marginBottom: '2.5rem' }}>
                         <h3 className="shelf-title" style={{ fontSize: '1.25rem', color: 'var(--color-primary)', marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
-                          🎬 Continue Watching Movies ({moviesProgress.length})
+                           Continue Watching Movies ({moviesProgress.length})
                         </h3>
                         <div className="progress-grid">
-                          {moviesProgress.map((item, idx) => (
-                            <article key={idx} className="progress-card glass-panel">
-                              <div className="progress-card-header">
-                                <h3 className="progress-card-title" title={item.title}>
-                                  {item.title}
-                                </h3>
-                                <p className="progress-parent-title">From: {item.parentTitle}</p>
-                              </div>
-                              <div className="progress-bar-container">
-                                <div className="progress-bar-track">
-                                  <div className="progress-bar-fill" style={{ width: `${item.percent}%` }}></div>
-                                </div>
-                                <div className="progress-time-readout">
-                                  <span>⏱️ {Math.floor(item.currentTime / 60)}m / {Math.floor(item.duration / 60)}m</span>
-                                  <span>{Math.round(item.percent)}% completed</span>
-                                </div>
-                              </div>
-                              <div className="progress-actions">
-                                <button className="danger-btn text-only" onClick={() => removeFromContinueWatching(item.link)}>✕ Remove</button>
-                                <button className="cache-badge badge-stream hover-action" onClick={() => {
-                                  removeFromContinueWatching(item.link);
-                                  startStreaming(item.torrent, item.currentTime, item.title);
-                                }}>▶️ Resume Movie</button>
-                              </div>
-                            </article>
-                          ))}
+                          {moviesProgress.map((item, idx) => renderProgressCard(item, idx))}
                         </div>
                       </div>
                     )}
@@ -6407,35 +6420,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {(continueSubTab === 'All' || continueSubTab === 'TV') && tvProgress.length > 0 && (
                       <div className="continue-shelf" style={{ marginBottom: '2.5rem' }}>
                         <h3 className="shelf-title" style={{ fontSize: '1.25rem', color: '#3b82f6', marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
-                          📺 Continue Watching TV Shows ({tvProgress.length})
+                           Continue Watching TV Shows ({tvProgress.length})
                         </h3>
                         <div className="progress-grid">
-                          {tvProgress.map((item, idx) => (
-                            <article key={idx} className="progress-card glass-panel">
-                              <div className="progress-card-header">
-                                <h3 className="progress-card-title" title={item.title}>
-                                  {item.title}
-                                </h3>
-                                <p className="progress-parent-title">From: {item.parentTitle}</p>
-                              </div>
-                              <div className="progress-bar-container">
-                                <div className="progress-bar-track">
-                                  <div className="progress-bar-fill" style={{ width: `${item.percent}%`, background: '#3b82f6' }}></div>
-                                </div>
-                                <div className="progress-time-readout">
-                                  <span>⏱️ {Math.floor(item.currentTime / 60)}m / {Math.floor(item.duration / 60)}m</span>
-                                  <span>{Math.round(item.percent)}% completed</span>
-                                </div>
-                              </div>
-                              <div className="progress-actions">
-                                <button className="danger-btn text-only" onClick={() => removeFromContinueWatching(item.link)}>✕ Remove</button>
-                                <button className="cache-badge badge-stream hover-action" style={{ background: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.4)', color: '#60a5fa' }} onClick={() => {
-                                  removeFromContinueWatching(item.link);
-                                  startStreaming(item.torrent, item.currentTime, item.title);
-                                }}>▶️ Resume Episode</button>
-                              </div>
-                            </article>
-                          ))}
+                          {tvProgress.map((item, idx) => renderProgressCard(item, idx))}
                         </div>
                       </div>
                     )}
@@ -6444,35 +6432,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {(continueSubTab === 'All' || continueSubTab === 'Music') && musicProgress.length > 0 && (
                       <div className="continue-shelf" style={{ marginBottom: '2.5rem' }}>
                         <h3 className="shelf-title" style={{ fontSize: '1.25rem', color: '#ec4899', marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
-                          🎵 Continue Listening to Music ({musicProgress.length})
+                           Continue Listening to Music ({musicProgress.length})
                         </h3>
                         <div className="progress-grid">
-                          {musicProgress.map((item, idx) => (
-                            <article key={idx} className="progress-card glass-panel">
-                              <div className="progress-card-header">
-                                <h3 className="progress-card-title" title={item.title}>
-                                  {item.title}
-                                </h3>
-                                <p className="progress-parent-title">From: {item.parentTitle}</p>
-                              </div>
-                              <div className="progress-bar-container">
-                                <div className="progress-bar-track">
-                                  <div className="progress-bar-fill" style={{ width: `${item.percent}%`, background: '#ec4899' }}></div>
-                                </div>
-                                <div className="progress-time-readout">
-                                  <span>⏱️ {Math.floor(item.currentTime / 60)}m / {Math.floor(item.duration / 60)}m</span>
-                                  <span>{Math.round(item.percent)}% completed</span>
-                                </div>
-                              </div>
-                              <div className="progress-actions">
-                                <button className="danger-btn text-only" onClick={() => removeFromContinueWatching(item.link)}>✕ Remove</button>
-                                <button className="cache-badge badge-listen hover-action" style={{ background: 'rgba(236, 72, 153, 0.15)', borderColor: 'rgba(236, 72, 153, 0.4)', color: '#f472b6' }} onClick={() => {
-                                  removeFromContinueWatching(item.link);
-                                  startAudioPlayer(item.torrent, item.link, item.currentTime);
-                                }}>▶️ Resume Album</button>
-                              </div>
-                            </article>
-                          ))}
+                          {musicProgress.map((item, idx) => renderProgressCard(item, idx))}
                         </div>
                       </div>
                     )}
@@ -6481,35 +6444,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {(continueSubTab === 'All' || continueSubTab === 'Audiobooks') && audiobooksProgress.length > 0 && (
                       <div className="continue-shelf" style={{ marginBottom: '2.5rem' }}>
                         <h3 className="shelf-title" style={{ fontSize: '1.25rem', color: '#fbbf24', marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
-                          🎧 Continue Listening to Audiobooks ({audiobooksProgress.length})
+                           Continue Listening to Audiobooks ({audiobooksProgress.length})
                         </h3>
                         <div className="progress-grid">
-                          {audiobooksProgress.map((item, idx) => (
-                            <article key={idx} className="progress-card glass-panel">
-                              <div className="progress-card-header">
-                                <h3 className="progress-card-title" title={item.title}>
-                                  {item.title}
-                                </h3>
-                                <p className="progress-parent-title">From: {item.parentTitle}</p>
-                              </div>
-                              <div className="progress-bar-container">
-                                <div className="progress-bar-track">
-                                  <div className="progress-bar-fill" style={{ width: `${item.percent}%` }}></div>
-                                </div>
-                                <div className="progress-time-readout">
-                                  <span>⏱️ {Math.floor(item.currentTime / 60)}m / {Math.floor(item.duration / 60)}m</span>
-                                  <span>{Math.round(item.percent)}% completed</span>
-                                </div>
-                              </div>
-                              <div className="progress-actions">
-                                <button className="danger-btn text-only" onClick={() => removeFromContinueWatching(item.link)}>✕ Remove</button>
-                                <button className="cache-badge badge-listen hover-action" onClick={() => {
-                                  removeFromContinueWatching(item.link);
-                                  startAudioPlayer(item.torrent, item.link, item.currentTime);
-                                }}>▶️ Resume Audiobook</button>
-                              </div>
-                            </article>
-                          ))}
+                          {audiobooksProgress.map((item, idx) => renderProgressCard(item, idx))}
                         </div>
                       </div>
                     )}
@@ -6518,35 +6456,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {(continueSubTab === 'All' || continueSubTab === 'Ebooks') && ebooksProgress.length > 0 && (
                       <div className="continue-shelf" style={{ marginBottom: '2.5rem' }}>
                         <h3 className="shelf-title" style={{ fontSize: '1.25rem', color: '#10b981', marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
-                          📚 Continue Reading ({ebooksProgress.length})
+                           Continue Reading ({ebooksProgress.length})
                         </h3>
                         <div className="progress-grid">
-                          {ebooksProgress.map((item, idx) => (
-                            <article key={idx} className="progress-card glass-panel">
-                              <div className="progress-card-header">
-                                <h3 className="progress-card-title" title={item.title}>
-                                  {item.title}
-                                </h3>
-                                <p className="progress-parent-title">From: {item.parentTitle}</p>
-                              </div>
-                              <div className="progress-bar-container">
-                                <div className="progress-bar-track">
-                                  <div className="progress-bar-fill" style={{ width: `${item.percent}%`, background: '#10b981' }}></div>
-                                </div>
-                                <div className="progress-time-readout">
-                                  <span>📖 Chapter {item.currentTime} / {item.duration}</span>
-                                  <span>{Math.round(item.percent)}% read</span>
-                                </div>
-                              </div>
-                              <div className="progress-actions">
-                                <button className="danger-btn text-only" onClick={() => removeFromContinueWatching(item.link)}>✕ Remove</button>
-                                <button className="cache-badge badge-ebook hover-action" onClick={() => {
-                                  removeFromContinueWatching(item.link);
-                                  startEbookPlayer(item.torrent, item.link, item.chapterIndex !== undefined ? item.chapterIndex : (item.currentTime - 1), item.scrollTop !== undefined ? item.scrollTop : null);
-                                }}>📖 Resume Reading</button>
-                              </div>
-                            </article>
-                          ))}
+                          {ebooksProgress.map((item, idx) => renderProgressCard(item, idx))}
                         </div>
                       </div>
                     )}
@@ -6557,12 +6470,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           );
         })()}
 
-        {/* 📊 Tab: Cloud Storage Manager */}
+        {/* Tab: Cloud Storage Manager */}
         {activeTab === 'cloud' && (
           <section className="cloud-section fade-in">
             <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
               <div className="results-header">
-                <h2>📊 Premiumize Cloud Storage Manager</h2>
+                <h2 className="heading-ico"><Icon name="database" size={20} /> Premiumize Cloud Storage Manager</h2>
                 <span className="results-subtitle">Browse, stream, rename, and organize your personal cloud storage</span>
               </div>
             </div>
@@ -6580,7 +6493,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               return (
                 <div className="quota-card glass-panel fade-in">
                   <div className="quota-header-row">
-                    <span className="quota-title">💾 Cloud Space Status</span>
+                    <span className="quota-title heading-ico"><Icon name="database" size={15} /> Cloud Space Status</span>
                     <span className="quota-details">
                       {usedGb.toFixed(2)} GB / 1000 GB Used ({Math.round(percentUsed)}%)
                     </span>
@@ -6601,7 +6514,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       className="text-only hover-action" 
                       style={{ cursor: 'pointer' }}
                     >
-                      🔄 Refresh Storage Info
+                       Refresh Storage Info
                     </button>
                   </div>
                 </div>
@@ -6615,7 +6528,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 onClick={() => fetchCloudFolder(null)}
                 style={{ cursor: 'pointer', color: 'var(--color-primary)', fontWeight: 'bold' }}
               >
-                ☁️ Cloud
+                 Cloud
               </button>
               {cloudBreadcrumbs && cloudBreadcrumbs.map((crumb, idx) => (
                 <Fragment key={crumb.id || idx}>
@@ -6634,7 +6547,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             {/* Cloud Browser Action Row (Local filtering + refresh) */}
             <div className="search-row" style={{ marginBottom: '1.5rem', gap: '1rem' }}>
               <div className="input-container" style={{ flex: 1 }}>
-                <span className="input-search-icon">🔍</span>
+                <span className="input-search-icon"><Icon name="search" size={18} /></span>
                 <input
                   type="text"
                   placeholder={`Search files in "${cloudFolderName}"...`}
@@ -6650,7 +6563,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 onClick={() => fetchCloudFolder(cloudFolderId)}
                 disabled={cloudLoading}
               >
-                🔄 Refresh
+                 Refresh
               </button>
               {cloudFolderId && (
                 <button 
@@ -6670,7 +6583,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => buildFolderPlaylist(cloudFolderId, cloudFolderName)}
                   disabled={cloudLoading || cloudPlaylistLoading}
                 >
-                  🎬 Play All
+                   Play All
                 </button>
               )}
             </div>
@@ -6678,7 +6591,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             {cloudPlaylistLoading ? (
               <div className="loading-state glass-panel" style={{ padding: '4rem 2rem' }}>
                 <div className="spinner"></div>
-                <h2>🎬 Building "Play All" Playlist...</h2>
+                <h2 className="heading-ico"><Icon name="player-play" size={20} fill /> Building "Play All" Playlist...</h2>
                 <p style={{ marginTop: '0.75rem', color: 'var(--color-primary)', fontWeight: 'bold', fontSize: '1.1rem' }}>
                   {cloudPlaylistStatus}
                 </p>
@@ -6694,7 +6607,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               </div>
             ) : cloudError ? (
               <div className="empty-state glass-panel" style={{ padding: '3rem 2rem', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
-                <div className="empty-icon" style={{ color: 'rgba(239, 68, 68, 0.7)' }}>⚠️</div>
+                <div className="empty-icon"><Icon name="alert-triangle" size={40} style={{ color: 'rgba(239, 68, 68, 0.8)' }} /></div>
                 <h2>Failed to Load Cloud Contents</h2>
                 <p>{cloudError}</p>
                 <button 
@@ -6702,7 +6615,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   style={{ marginTop: '1rem', border: 'none', cursor: 'pointer' }}
                   onClick={() => fetchCloudFolder(cloudFolderId)}
                 >
-                  🔄 Retry Connection
+                   Retry Connection
                 </button>
               </div>
             ) : (
@@ -6719,7 +6632,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 if (filteredContents.length === 0) {
                   return (
                     <div className="empty-state glass-panel" style={{ padding: '4rem 2rem' }}>
-                      <div className="empty-icon">📁</div>
+                      <div className="empty-icon"><Icon name="folder" size={44} /></div>
                       <h2>No files or folders found</h2>
                       <p>{cloudFilter ? 'No items match your local search query.' : 'This cloud folder is currently empty.'}</p>
                       {cloudFolderId && (
@@ -6731,7 +6644,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             fetchCloudFolder(parentId);
                           }}
                         >
-                          ⬅️ Go Back Up
+                           Go Back Up
                         </button>
                       )}
                     </div>
@@ -6744,26 +6657,24 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {/* Render Folders Grid if folders exist */}
                     {folders.length > 0 && (
                       <div className="cloud-folders-section">
-                        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--color-primary)' }}>📁 Folders ({folders.length})</h3>
+                        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--color-primary)'}} className="heading-ico"><Icon name="folder" size={18} /> Folders ({folders.length})</h3>
                         <div className="results-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
                           {folders.map((folder) => {
                             const isEditing = cloudRenameId === folder.id;
                             return (
-                              <div 
-                                key={folder.id} 
-                                className="torrent-card glass-panel fade-in hover-glow" 
-                                style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '1rem', cursor: 'pointer' }}
+                              <div
+                                key={folder.id}
+                                className="cloud-card is-folder fade-in"
                                 onClick={(e) => {
-                                  // Skip if clicking inputs or action buttons
-                                  if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT' && !isEditing) {
+                                  if (e.target.tagName !== 'INPUT' && !e.target.closest('button') && !isEditing) {
                                     fetchCloudFolder(folder.id);
                                   }
                                 }}
                               >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
-                                  <span style={{ fontSize: '1.75rem', flexShrink: 0 }}>📁</span>
+                                <div className="cloud-card-head">
+                                  <span className="cloud-card-thumb"><Icon name="folder" size={22} /></span>
                                   {isEditing ? (
-                                    <div style={{ display: 'flex', gap: '0.25rem', width: '100%' }} onClick={e => e.stopPropagation()}>
+                                    <div className="cloud-rename-row" onClick={e => e.stopPropagation()}>
                                       <input
                                         type="text"
                                         value={cloudRenameName}
@@ -6775,73 +6686,70 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                       {aiEnabled && (
                                         <button
                                           type="button"
-                                          className="cache-badge badge-stream hover-action"
-                                          style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                          className="cloud-act icon-only"
                                           onClick={() => handleAICleanName(folder.name, setCloudRenameName)}
                                           title="Clean folder name with Premiumize AI"
                                           disabled={aiLoading}
                                         >
-                                          {aiLoading ? '⏳' : '🪄 Clean'}
+                                          <Icon name="wand" size={14} />
                                         </button>
                                       )}
-                                      <button 
-                                        className="cache-badge badge-cached hover-action" 
-                                        style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
+                                      <button
+                                        className="cloud-act primary icon-only"
+                                        title="Save"
                                         onClick={() => handleCloudRename(folder.id, 'folder', cloudRenameName)}
                                       >
-                                        ✓
+                                        <Icon name="check" size={14} />
                                       </button>
-                                      <button 
-                                        className="cache-badge badge-uncached hover-action" 
-                                        style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
+                                      <button
+                                        className="cloud-act icon-only"
+                                        title="Cancel"
                                         onClick={() => setCloudRenameId(null)}
                                       >
-                                        ✕
+                                        <Icon name="x" size={14} />
                                       </button>
                                     </div>
                                   ) : (
-                                    <div style={{ flex: 1, overflow: 'hidden' }}>
-                                      <h4 className="torrent-title" style={{ fontSize: '1rem', margin: 0, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={folder.name}>
-                                        {folder.name}
-                                      </h4>
-                                      <span style={{ fontSize: '0.75rem', color: 'var(--color-muted)' }}>Created: {new Date(folder.created_at * 1000).toLocaleDateString()}</span>
+                                    <div className="cloud-card-meta">
+                                      <h4 title={folder.name}>{folder.name}</h4>
+                                      <div className="cloud-card-sub"><Icon name="clock" size={12} /> Created {new Date(folder.created_at * 1000).toLocaleDateString()}</div>
                                     </div>
                                   )}
                                 </div>
 
                                 {!isEditing && (
-                                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem', borderTop: '1px solid var(--glass-border)', paddingTop: '0.75rem' }} onClick={e => e.stopPropagation()}>
-                                    <button 
-                                      className="danger-btn text-only" 
-                                      style={{ padding: '4px 8px', fontSize: '0.8rem' }}
-                                      onClick={() => handleCloudDelete(folder.id, 'folder', folder.name)}
+                                  <div className="cloud-card-actions" onClick={e => e.stopPropagation()}>
+                                    <button
+                                      className="cloud-act primary"
+                                      onClick={() => buildFolderPlaylist(folder.id, folder.name)}
                                     >
-                                      🗑️ Delete
+                                      <Icon name="player-play" size={13} fill /> Play All
                                     </button>
-                                    <button 
-                                      className="cache-badge badge-ebook hover-action" 
-                                      style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '0.8rem' }}
+                                    <span className="cloud-act-spacer" />
+                                    <button
+                                      className="cloud-act icon-only"
+                                      title="Bookmark folder"
+                                      onClick={() => bookmarkCloudItem(folder)}
+                                    >
+                                      <Icon name="bookmark" size={15} />
+                                    </button>
+                                    <button
+                                      className="cloud-act icon-only"
+                                      title="Rename folder"
                                       onClick={() => {
                                         setCloudRenameId(folder.id);
                                         setCloudRenameName(folder.name);
                                         setCloudRenameType('folder');
                                       }}
                                     >
-                                      ✏️ Rename
+                                      <Icon name="pencil" size={15} />
                                     </button>
-                                    <button 
-                                      className="cache-badge badge-listen hover-action" 
-                                      style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '0.8rem' }}
-                                      onClick={() => bookmarkCloudItem(folder)}
+                                    <button
+                                      className="cloud-act icon-only danger"
+                                      title="Delete folder"
+                                      onClick={() => handleCloudDelete(folder.id, 'folder', folder.name)}
                                     >
-                                      ⭐ Bookmark
-                                    </button>
-                                    <button 
-                                      className="cache-badge badge-stream hover-action" 
-                                      style={{ border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '0.8rem' }}
-                                      onClick={() => buildFolderPlaylist(folder.id, folder.name)}
-                                    >
-                                      🎬 Play All
+                                      <Icon name="trash" size={15} />
                                     </button>
                                   </div>
                                 )}
@@ -6855,49 +6763,54 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {/* Render Files Grid if files exist */}
                     {files.length > 0 && (
                       <div className="cloud-files-section">
-                        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--color-primary)' }}>📄 Files ({files.length})</h3>
+                        <h3 style={{ fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--color-primary)'}} className="heading-ico"><Icon name="file" size={18} /> Files ({files.length})</h3>
                         <div className="results-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
                           {files.map((file) => {
                             const isEditing = cloudRenameId === file.id;
                             const ext = file.name.split('.').pop().toLowerCase();
                             
                             // Map icon according to file extension
-                            let fileIcon = '📄';
-                            let actionLabel = '📥 CDN Download';
+                            let fileIcon = 'file';
+                            let actionLabel = 'CDN Download';
                             let actionColorClass = 'badge-download';
-                            
+                            let actionIcon = 'download';
+
                             if (['mkv', 'mp4', 'avi'].includes(ext)) {
-                              fileIcon = '🎬';
-                              actionLabel = '🎬 Play Stream';
+                              fileIcon = 'movie';
+                              actionLabel = 'Play Stream';
                               actionColorClass = 'badge-stream';
+                              actionIcon = 'player-play';
                             } else if (['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma'].includes(ext)) {
-                              fileIcon = '🎵';
-                              actionLabel = '🎧 Ambient Listen';
+                              fileIcon = 'music';
+                              actionLabel = 'Ambient Listen';
                               actionColorClass = 'badge-listen';
+                              actionIcon = 'headphones';
                             } else if (['m4b'].includes(ext)) {
-                              fileIcon = '🎧';
-                              actionLabel = '🎧 Listen Audiobook';
+                              fileIcon = 'headphones';
+                              actionLabel = 'Listen Audiobook';
                               actionColorClass = 'badge-listen';
+                              actionIcon = 'headphones';
                             } else if (['epub', 'pdf'].includes(ext)) {
-                              fileIcon = '📚';
-                              actionLabel = '📖 Read Book';
+                              fileIcon = 'book';
+                              actionLabel = 'Read Book';
                               actionColorClass = 'badge-ebook';
+                              actionIcon = 'book';
                             } else if (getEmulatorSystem(file.name)) {
-                              fileIcon = '🎮';
-                              actionLabel = '🎮 Play Game';
+                              fileIcon = 'device-gamepad';
+                              actionLabel = 'Play Game';
                               actionColorClass = 'badge-game';
+                              actionIcon = 'device-gamepad';
                             }
 
                             return (
-                              <div 
-                                key={file.id} 
-                                className="torrent-card glass-panel fade-in hover-glow" 
-                                style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '1rem' }}
+                              <div
+                                key={file.id}
+                                className="cloud-card fade-in"
                               >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
-                                  <span style={{ fontSize: '1.75rem', flexShrink: 0 }}>{fileIcon}</span>
+                                <div className="cloud-card-head">
+                                  <span className="cloud-card-thumb"><Icon name={fileIcon} size={22} /></span>
                                   {isEditing ? (
-                                    <div style={{ display: 'flex', gap: '0.25rem', width: '100%' }}>
+                                    <div className="cloud-rename-row">
                                       <input
                                         type="text"
                                         value={cloudRenameName}
@@ -6909,84 +6822,77 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                       {aiEnabled && (
                                         <button
                                           type="button"
-                                          className="cache-badge badge-stream hover-action"
-                                          style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                          className="cloud-act icon-only"
                                           onClick={() => handleAICleanName(file.name, setCloudRenameName)}
                                           title="Clean file name with Premiumize AI"
                                           disabled={aiLoading}
                                         >
-                                          {aiLoading ? '⏳' : '🪄 Clean'}
+                                          <Icon name="wand" size={14} />
                                         </button>
                                       )}
-                                      <button 
-                                        className="cache-badge badge-cached hover-action" 
-                                        style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
+                                      <button
+                                        className="cloud-act primary icon-only"
+                                        title="Save"
                                         onClick={() => handleCloudRename(file.id, 'file', cloudRenameName)}
                                       >
-                                        ✓
+                                        <Icon name="check" size={14} />
                                       </button>
-                                      <button 
-                                        className="cache-badge badge-uncached hover-action" 
-                                        style={{ border: 'none', cursor: 'pointer', padding: '0 0.5rem' }}
+                                      <button
+                                        className="cloud-act icon-only"
+                                        title="Cancel"
                                         onClick={() => setCloudRenameId(null)}
                                       >
-                                        ✕
+                                        <Icon name="x" size={14} />
                                       </button>
                                     </div>
                                   ) : (
-                                    <div style={{ flex: 1, overflow: 'hidden' }}>
-                                      <h4 className="torrent-title" style={{ fontSize: '0.95rem', margin: '0 0 4px 0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={file.name}>
-                                        {file.name}
-                                      </h4>
-                                      <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.7rem', color: 'var(--color-muted)' }}>
-                                        <span>Size: {formatBytes(file.size)}</span>
+                                    <div className="cloud-card-meta">
+                                      <h4 title={file.name}>{file.name}</h4>
+                                      <div className="cloud-card-sub">
+                                        <span>{formatBytes(file.size)}</span>
                                         <span>•</span>
-                                        <span>Added: {new Date(file.created_at * 1000).toLocaleDateString()}</span>
+                                        <span>Added {new Date(file.created_at * 1000).toLocaleDateString()}</span>
                                       </div>
                                     </div>
                                   )}
                                 </div>
 
                                 {!isEditing && (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1rem', borderTop: '1px solid var(--glass-border)', paddingTop: '0.75rem' }}>
-                                    {/* Primary Media Streaming Action Button */}
-                                    <button 
-                                      className={`cache-badge ${actionColorClass} hover-action`} 
-                                      style={{ border: 'none', cursor: 'pointer', padding: '8px 12px', fontSize: '0.85rem', fontWeight: 'bold', width: '100%', textAlign: 'center' }}
+                                  <div className="cloud-card-actions" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '0.5rem' }}>
+                                    <button
+                                      className="cloud-act primary"
+                                      style={{ width: '100%' }}
                                       onClick={() => handleCloudStream(file)}
                                     >
-                                      {actionLabel}
+                                      <Icon name={actionIcon} size={14} fill={actionIcon === 'player-play'} /> {actionLabel}
                                     </button>
-                                    
-                                    {/* Secondary Organizing Action Buttons */}
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.25rem', width: '100%' }}>
-                                      <button 
-                                        className="danger-btn text-only" 
-                                        style={{ padding: '2px 4px', fontSize: '0.75rem' }}
+                                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                      <button
+                                        className="cloud-act icon-only"
+                                        title="Bookmark file"
+                                        onClick={() => bookmarkCloudItem(file)}
+                                      >
+                                        <Icon name="bookmark" size={15} />
+                                      </button>
+                                      <button
+                                        className="cloud-act icon-only"
+                                        title="Rename file"
+                                        onClick={() => {
+                                          setCloudRenameId(file.id);
+                                          setCloudRenameName(file.name);
+                                          setCloudRenameType('file');
+                                        }}
+                                      >
+                                        <Icon name="pencil" size={15} />
+                                      </button>
+                                      <span className="cloud-act-spacer" />
+                                      <button
+                                        className="cloud-act icon-only danger"
+                                        title="Delete file"
                                         onClick={() => handleCloudDelete(file.id, 'file', file.name)}
                                       >
-                                        🗑️ Delete
+                                        <Icon name="trash" size={15} />
                                       </button>
-                                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                        <button 
-                                          className="cache-badge badge-ebook hover-action" 
-                                          style={{ border: 'none', cursor: 'pointer', padding: '2px 6px', fontSize: '0.75rem' }}
-                                          onClick={() => {
-                                            setCloudRenameId(file.id);
-                                            setCloudRenameName(file.name);
-                                            setCloudRenameType('file');
-                                          }}
-                                        >
-                                          ✏️ Rename
-                                        </button>
-                                        <button 
-                                          className="cache-badge badge-listen hover-action" 
-                                          style={{ border: 'none', cursor: 'pointer', padding: '2px 6px', fontSize: '0.75rem' }}
-                                          onClick={() => bookmarkCloudItem(file)}
-                                        >
-                                          ⭐ Bookmark
-                                        </button>
-                                      </div>
                                     </div>
                                   </div>
                                 )}
@@ -7003,12 +6909,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             )}
           </section>
         )}
-        {/* ⚡ Tab: Active Downloads Transfer Manager */}
+        {/* Tab: Active Downloads Transfer Manager */}
         {activeTab === 'transfers' && (
           <section className="transfers-section fade-in">
             <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
               <div className="results-header">
-                <h2>⚡ Real-Time Active Downloads</h2>
+                <h2 className="heading-ico"><Icon name="download" size={20} /> Real-Time Active Downloads</h2>
                 <span className="results-subtitle">Monitor and manage torrent transfers downloading to your cloud</span>
               </div>
               <button 
@@ -7016,7 +6922,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 className="action-btn"
                 title="Refresh Active Transfers List"
               >
-                🔄 Refresh Queue
+                 Refresh Queue
               </button>
             </div>
 
@@ -7027,7 +6933,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               </div>
             ) : transfers.length === 0 ? (
               <div className="player-error-container" style={{ margin: '4rem 0', padding: '3rem', textAlign: 'center' }}>
-                <p style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>📭 Transfer Queue Empty</p>
+                <p style={{ fontSize: '1.5rem', marginBottom: '0.5rem'}}> Transfer Queue Empty</p>
                 <p style={{ color: 'var(--text-muted)' }}>There are currently no active or queued downloads in your Premiumize account.</p>
               </div>
             ) : (
@@ -7066,7 +6972,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           style={{ fontSize: '0.8rem', padding: '4px 8px', cursor: 'pointer' }}
                           onClick={() => cancelTransfer(item.id, item.name)}
                         >
-                          🗑️ Cancel & Remove
+                           Cancel & Remove
                         </button>
                       </div>
                     </div>
@@ -7082,7 +6988,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           <div className="player-modal-backdrop">
             <div className="player-modal glass-panel fade-in">
               <div className="player-header">
-                <h2>🎬 PremiumPlayer</h2>
+                <h2 className="heading-ico"><Icon name="movie" size={22} /> PremiumPlayer</h2>
                 <button 
                   className="close-player-btn" 
                   onClick={() => {
@@ -7094,7 +7000,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   }}
                   id="btn-close-player"
                 >
-                  ✕ Close
+                   Close
                 </button>
               </div>
 
@@ -7148,7 +7054,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           transition: 'all 0.2s ease'
                         }}
                       >
-                        <span>⏭️ Skip Intro</span>
+                        <span> Skip Intro</span>
                         <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>{skipTimer}s</span>
                       </button>
                     )}
@@ -7171,18 +7077,18 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                 if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
                               }}
                             >
-                              ✕ Cancel
+                               Cancel
                             </button>
                             <button 
                               className="autoplay-play-now-btn"
                               onClick={() => {
                                 setShowAutoplayOverlay(false);
                                 if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
-                                triggerToast(`🍿 Playing next episode: ${nextEpisodeFile.name.split('/').pop()}`, 'success');
+                                triggerToast(` Playing next episode: ${nextEpisodeFile.name.split('/').pop()}`, 'success');
                                 setSelectedVideoFile(nextEpisodeFile);
                               }}
                             >
-                              ▶️ Play Now
+                              ▶ Play Now
                             </button>
                           </div>
                         </div>
@@ -7197,7 +7103,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {activePlayerTorrent && activePlayerTorrent.category === 'TV' && (
                       <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderRadius: '8px', border: '1px solid var(--glass-border)', background: 'rgba(255, 255, 255, 0.02)', marginBottom: '1.25rem' }}>
                         <div>
-                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-primary)', display: 'block', textAlign: 'left' }}>⏭️ Auto-Skip TV Intros</span>
+                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-primary)', display: 'block', textAlign: 'left'}}> Auto-Skip TV Intros</span>
                           <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', textAlign: 'left', marginTop: '2px' }}>Automatically fast-forward past intros matching IntroDB timestamps.</span>
                         </div>
                         <label className="switch">
@@ -7207,7 +7113,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             onChange={(e) => {
                               setAutoSkipEnabled(e.target.checked);
                               localStorage.setItem('premium_search_auto_skip_intro', e.target.checked ? 'true' : 'false');
-                              triggerToast(e.target.checked ? "⏭️ Auto-skip intros enabled!" : "⏭️ Auto-skip intros disabled.", "success");
+                              triggerToast(e.target.checked ? "Auto-skip intros enabled!": "Auto-skip intros disabled.", "success");
                             }}
                           />
                           <span className="slider round"></span>
@@ -7223,7 +7129,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           className="ai-recap-toggle-btn"
                           onClick={handleToggleRecap}
                         >
-                          <span className="recap-title-text">📺 {recapOpen ? 'Hide' : 'Show'} "Previously On..." AI Recap</span>
+                          <span className="recap-title-text"> {recapOpen ? 'Hide': 'Show'} "Previously On..."AI Recap</span>
                           <span className="recap-toggle-icon">{recapOpen ? '▲' : '▼'}</span>
                         </button>
                         
@@ -7235,7 +7141,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                 <span className="recap-loading-text">Generating recap for S{showDetails.season}E{showDetails.episode}...</span>
                               </div>
                             ) : recapError ? (
-                              <p className="recap-error-text">⚠️ {recapError}</p>
+                              <p className="recap-error-text"> {recapError}</p>
                             ) : recapText ? (
                               <ul className="recap-bullets-list">
                                 {recapText.split('\n').filter(line => line.trim()).map((line, idx) => (
@@ -7253,7 +7159,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     )}
 
                     <div className="audio-notice-box">
-                      <span className="badge-notice">ℹ️ Multi-Language Audio Info</span>
+                      <span className="badge-notice">ℹ Multi-Language Audio Info</span>
                       <p>Web browsers do not support switching audio tracks for raw video streams. To play this file in other languages or switch tracks, click the orange <strong>Open in VLC Player</strong> button below!</p>
                     </div>
 
@@ -7350,13 +7256,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     {/* AI Subtitle Translation language select */}
                     {selectedSubtitleFile && (
                       <div className="player-select-group">
-                        <label htmlFor="select-subtitle-translation">🪄 AI Translate Subtitles:</label>
+                        <label htmlFor="select-subtitle-translation"> AI Translate Subtitles:</label>
                         <select
                           id="select-subtitle-translation"
                           value={aiTranslateLanguage}
                           onChange={(e) => {
                             if (!aiEnabled || !aiToken) {
-                              triggerToast('⚠️ Please enable Premiumize AI and set a token in Settings first.', 'warning');
+                              triggerToast('Please enable Premiumize AI and set a token in Settings first.', 'warning');
                               return;
                             }
                             const val = e.target.value;
@@ -7397,7 +7303,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       className="vlc-stream-btn"
                       title="Open this direct network stream inside your VLC Media Player"
                     >
-                      🍿 Open in VLC Player
+                       Open in VLC Player
                     </a>
 
                     {/* Copy Stream Link */}
@@ -7410,20 +7316,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       }}
                       title="Copy direct streaming link for other players (like IINA or MPV)"
                     >
-                      📋 Copy Stream Link
+                       Copy Stream Link
                     </button>
                   </div>
 
                   {/* Playing info */}
                   <div className="player-file-info">
                     <p className="playing-title"><strong>Playing:</strong> {selectedVideoFile.name}</p>
-                    <p className="playing-size">💾 Size: {formatBytes(selectedVideoFile.size)}</p>
+                    <p className="playing-size"> Size: {formatBytes(selectedVideoFile.size)}</p>
                   </div>
 
                 </div>
               ) : (
                 <div className="player-error-container">
-                  <p>⚠️ No streamable video tracks could be extracted from this torrent.</p>
+                  <p> No streamable video tracks could be extracted from this torrent.</p>
                 </div>
               )}
             </div>
@@ -7435,7 +7341,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           <div className="player-modal-backdrop">
             <div className="player-modal glass-panel fade-in">
               <div className="player-header">
-                <h2>🎮 Retro Arcade Console</h2>
+                <h2 className="heading-ico"><Icon name="device-gamepad" size={22} /> Retro Arcade Console</h2>
                 <button 
                   className="close-player-btn" 
                   onClick={() => {
@@ -7447,7 +7353,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   }}
                   id="btn-close-retro"
                 >
-                  ✕ Close Arcade
+                   Close Arcade
                 </button>
               </div>
 
@@ -7484,7 +7390,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <div className="player-controls-row" style={{ marginTop: '1rem', width: '100%', flexDirection: 'column', gap: '0.5rem' }}>
                       <div className="retro-search-box">
                         <label htmlFor="search-retro-rom" style={{ color: 'var(--color-arcade)', fontWeight: '700', display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                          🎮 Search & Select Game from Pack (Alphabetical):
+                           Search & Select Game from Pack (Alphabetical):
                         </label>
                         <input 
                           type="text"
@@ -7507,7 +7413,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             }}
                             title={file.displayName}
                           >
-                            <span className="game-icon">🎮</span>
+                            <span className="game-icon"><Icon name="device-gamepad" size={20} /></span>
                             <span className="game-name">{file.displayName}</span>
                             <span className="game-size">{formatBytes(file.size)}</span>
                           </button>
@@ -7523,7 +7429,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
                   {/* Controller & Inputs Guide HUD */}
                   <div className="player-meta-pane">
-                    <h3>🕹️ Arcade Control Guide</h3>
+                    <h3> Arcade Control Guide</h3>
                     <div className="controller-guide-grid">
                       <div className="guide-group">
                         <h4>Keyboard Bindings</h4>
@@ -7550,13 +7456,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Playing info */}
                   <div className="player-file-info">
                     <p className="playing-title"><strong>Playing:</strong> {selectedRetroRomFile.name}</p>
-                    <p className="playing-size">💾 Size: {formatBytes(selectedRetroRomFile.size)}</p>
+                    <p className="playing-size"> Size: {formatBytes(selectedRetroRomFile.size)}</p>
                   </div>
 
                 </div>
               ) : (
                 <div className="player-error-container">
-                  <p>⚠️ No compatible retro ROM or Zip files could be extracted from this release.</p>
+                  <p> No compatible retro ROM or Zip files could be extracted from this release.</p>
                 </div>
               )}
             </div>
@@ -7568,7 +7474,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           <div className="player-modal-backdrop">
             <div className="player-modal glass-panel fade-in">
               <div className="player-header">
-                <h2>📖 EBook Reader Panel</h2>
+                <h2 className="heading-ico"><Icon name="book" size={22} /> EBook Reader Panel</h2>
                 <button 
                   className="close-player-btn" 
                   onClick={() => {
@@ -7580,7 +7486,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   }}
                   id="btn-close-ebook"
                 >
-                  ✕ Close Reader
+                   Close Reader
                 </button>
               </div>
 
@@ -7616,7 +7522,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <div className="player-controls-row" style={{ marginTop: '1rem', width: '100%', flexDirection: 'column', gap: '0.5rem' }}>
                       <div className="retro-search-box">
                         <label htmlFor="search-ebook" style={{ color: 'var(--color-primary)', fontWeight: '700', display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                          📖 Search & Select Book from Pack (Alphabetical):
+                           Search & Select Book from Pack (Alphabetical):
                         </label>
                         <input 
                           type="text"
@@ -7640,7 +7546,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             }}
                             title={file.displayName}
                           >
-                            <span className="game-icon">📖</span>
+                            <span className="game-icon"><Icon name="book" size={20} /></span>
                             <span className="game-name">{file.displayName}</span>
                             <span className="game-size">{formatBytes(file.size)}</span>
                           </button>
@@ -7657,13 +7563,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Reading Info pane */}
                   <div className="player-file-info">
                     <p className="playing-title"><strong>Reading:</strong> {selectedEbookFile.name}</p>
-                    <p className="playing-size">💾 Size: {formatBytes(selectedEbookFile.size)}</p>
+                    <p className="playing-size"> Size: {formatBytes(selectedEbookFile.size)}</p>
                   </div>
 
                 </div>
               ) : (
                 <div className="player-error-container">
-                  <p>⚠️ No compatible eBook files (.epub, .pdf) could be extracted from this release.</p>
+                  <p> No compatible eBook files (.epub, .pdf) could be extracted from this release.</p>
                 </div>
               )}
             </div>
@@ -7675,7 +7581,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           <div className="player-modal-backdrop">
             <div className="player-modal glass-panel fade-in">
               <div className="player-header">
-                <h2>🎧 Audio WebPlayer</h2>
+                <h2 className="heading-ico"><Icon name="headphones" size={22} /> Audio WebPlayer</h2>
                 <button 
                   className="close-player-btn" 
                   onClick={() => {
@@ -7688,7 +7594,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   }}
                   id="btn-close-audio"
                 >
-                  ✕ Close Player
+                   Close Player
                 </button>
               </div>
 
@@ -7720,7 +7626,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <div className="player-controls-row" style={{ marginTop: '1rem', width: '100%', flexDirection: 'column', gap: '0.5rem' }}>
                       <div className="retro-search-box">
                         <label htmlFor="search-audio" style={{ color: '#f59e0b', fontWeight: '700', display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                          🎧 Search & Select Track from Album (Alphabetical):
+                           Search & Select Track from Album (Alphabetical):
                         </label>
                         <input 
                           type="text"
@@ -7750,7 +7656,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                 background: selectedAudioFile?.link === file.link ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.02)'
                               }}
                             >
-                              <span className="game-icon" style={{ color: '#f59e0b' }}>🎧</span>
+                              <span className="game-icon" style={{ color: '#f59e0b' }}><Icon name="music" size={20} /></span>
                               <span className="game-name">{file.displayName}</span>
                               <span className="game-size">{formatBytes(file.size)}</span>
                             </button>
@@ -7760,7 +7666,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                               onClick={() => setPlaylistSelectionTrack(file)}
                               title="Add this track to a custom playlist"
                             >
-                              ➕
+                              <Icon name="plus" size={16} />
                             </button>
                           </div>
                         ))}
@@ -7776,33 +7682,33 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Playing Info pane */}
                   <div className="player-file-info">
                     <p className="playing-title"><strong>Track:</strong> {selectedAudioFile.name}</p>
-                    <p className="playing-size">💾 Size: {formatBytes(selectedAudioFile.size)}</p>
+                    <p className="playing-size"> Size: {formatBytes(selectedAudioFile.size)}</p>
                   </div>
 
                 </div>
               ) : (
                 <div className="player-error-container">
-                  <p>⚠️ No compatible audio files (.mp3, .m4b, .flac, .wav, .m4a) could be extracted from this release.</p>
+                  <p> No compatible audio files (.mp3, .m4b, .flac, .wav, .m4a) could be extracted from this release.</p>
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* ➕ Custom Playlist Selection Modal Overlay */}
+        {/* Custom Playlist Selection Modal Overlay */}
         {playlistSelectionTrack && (
           <div className="player-modal-backdrop" style={{ zIndex: 3000 }}>
             <div className="playlist-selector-modal glass-panel fade-in" style={{ maxWidth: '480px', width: '90%', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span>➕</span> Add Track to Playlist
+                  <Icon name="music" size={18} /> Add Track to Playlist
                 </h3>
                 <button 
-                  className="close-player-btn" 
+                  className="close-player-btn"
                   onClick={() => setPlaylistSelectionTrack(null)}
                   style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem', minWidth: 'auto', padding: 0 }}
                 >
-                  ✕
+                  <Icon name="x" size={20} />
                 </button>
               </div>
 
@@ -7825,7 +7731,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         className="playlist-select-item-btn"
                         onClick={() => addTrackToPlaylist(pl.name, playlistSelectionTrack)}
                       >
-                        <span style={{ color: '#f59e0b' }}>🎵</span>
+                        <span style={{ color: '#f59e0b', display: 'flex' }}><Icon name="music" size={16} /></span>
                         <span style={{ flex: 1, textAlign: 'left', fontWeight: '500' }}>{pl.name}</span>
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{pl.tracks.length} track(s)</span>
                       </button>
@@ -7864,7 +7770,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             </div>
           </div>
         )}
-        {/* 🎨 Metadata Detail Drawer */}
+        {/* Metadata Detail Drawer */}
         {metadataDrawerItem && metadataDrawerItem._metadata && (() => {
           const meta = metadataDrawerItem._metadata;
           const itemCat = metadataDrawerItem.category || category;
@@ -7879,7 +7785,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   </div>
                 )}
                 
-                <button className="metadata-drawer-close" onClick={() => setMetadataDrawerItem(null)} title="Close">✕</button>
+                <button className="metadata-drawer-close" onClick={() => setMetadataDrawerItem(null)} title="Close" aria-label="Close"><Icon name="x" size={18} /></button>
 
                 <div className="metadata-drawer-body">
                   {/* Poster + Core Info */}
@@ -7891,21 +7797,23 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     )}
                     <div className="metadata-core-info">
                       <h2 className="metadata-title">{meta.title || metadataDrawerItem.title}</h2>
-                      
+                      {meta.tagline && <p className="metadata-tagline">{meta.tagline}</p>}
+
                       <div className="metadata-badges-row">
                         {meta.voteAverage && (
                           <span className="metadata-rating-pill tmdb-rating">
-                            ⭐ {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
+                            <Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
                           </span>
                         )}
                         {meta.rating && (
                           <span className="metadata-rating-pill book-rating">
-                            ⭐ {meta.rating}{meta.ratingsCount ? ` (${meta.ratingsCount})` : ''} <span className="rating-source">Rating</span>
+                            <Icon name="star" fill size={13} /> {meta.rating}{meta.ratingsCount ? ` (${meta.ratingsCount})` : ''} <span className="rating-source">Rating</span>
                           </span>
                         )}
-                        {meta.year && <span className="metadata-year-pill">📅 {meta.year}</span>}
-                        {meta.trackCount && <span className="metadata-tracks-pill">💿 {meta.trackCount} tracks</span>}
-                        {meta.pageCount && <span className="metadata-tracks-pill">📄 {meta.pageCount} pages</span>}
+                        {meta.year && <span className="metadata-year-pill">{meta.year}</span>}
+                        {meta.runtime ? <span className="metadata-year-pill">{Math.floor(meta.runtime / 60)}h {meta.runtime % 60}m</span> : null}
+                        {meta.trackCount && <span className="metadata-tracks-pill">{meta.trackCount} tracks</span>}
+                        {meta.pageCount && <span className="metadata-tracks-pill">{meta.pageCount} pages</span>}
                       </div>
 
                       {/* Genres */}
@@ -7927,9 +7835,42 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       )}
 
                       {/* Artist / Author */}
-                      {meta.artist && <p className="metadata-artist">🎤 <strong>{meta.artist}</strong></p>}
-                      {meta.author && <p className="metadata-artist">✍️ <strong>{meta.author}</strong></p>}
-                      {meta.genre && <p className="metadata-genre-line">🎶 {meta.genre}</p>}
+                      {meta.artist && <p className="metadata-artist"><Icon name="headphones" size={15} /> <strong>{meta.artist}</strong></p>}
+                      {meta.author && <p className="metadata-artist"><Icon name="book" size={15} /> <strong>{meta.author}</strong></p>}
+                      {meta.genre && <p className="metadata-genre-line"><Icon name="music" size={14} /> {meta.genre}</p>}
+
+                      <div className="metadata-actions">
+                        {metadataDrawerItem.cached ? (() => {
+                          const it = metadataDrawerItem;
+                          const c = it.category || itemCat;
+                          const isBook = c === 'Ebooks' || it.title.toLowerCase().endsWith('.epub') || it.title.toLowerCase().endsWith('.pdf');
+                          const isAudio = c === 'Audiobooks' || c === 'Music';
+                          const isRetro = c === 'Retro Games' || getEmulatorSystem(it.title);
+                          const isDl = c === 'Software' || c === 'Other' || c === 'VST';
+                          const label = isBook ? 'Read' : isAudio ? 'Listen' : isRetro ? 'Play' : isDl ? 'Download' : 'Play';
+                          const ic = isBook ? 'book' : isAudio ? 'headphones' : isRetro ? 'device-gamepad' : isDl ? 'download' : 'player-play';
+                          const onPlay = () => {
+                            setMetadataDrawerItem(null);
+                            if (isRetro) startRetroPlayer(it);
+                            else if (isBook) startEbookPlayer(it);
+                            else if (isAudio) startAudioPlayer(it);
+                            else if (isDl) triggerDirectDownload(it);
+                            else startStreaming(it);
+                          };
+                          return <button className="btn-primary hover-action" onClick={onPlay}><Icon name={ic} fill={ic === 'player-play'} size={16} /> {label}</button>;
+                        })() : (
+                          <button className="btn-primary subtle hover-action" onClick={() => triggerDownload(metadataDrawerItem)}><Icon name="cloud-up" size={16} /> Add to Premiumize</button>
+                        )}
+                        <button className={`icon-ghost ${isItemInLibrary(metadataDrawerItem) ? 'active' : ''}`} onClick={() => toggleLibraryItem(metadataDrawerItem)} aria-label="Toggle library" title={isItemInLibrary(metadataDrawerItem) ? 'In Library' : 'Add to Library'}>
+                          <Icon name={isItemInLibrary(metadataDrawerItem) ? 'check' : 'plus'} size={18} />
+                        </button>
+                        <button className={`icon-ghost ${isInWatchlist(metadataDrawerItem) ? 'active-watch' : ''}`} onClick={() => toggleWatchlist(metadataDrawerItem)} aria-label="Toggle watchlist" title={isInWatchlist(metadataDrawerItem) ? 'In watchlist' : 'Add to watchlist'}>
+                          <Icon name="bell" size={18} />
+                        </button>
+                        {metadataDrawerItem.cached && (
+                          <button className="icon-ghost" onClick={() => triggerDownload(metadataDrawerItem)} aria-label="Save to Premiumize cloud" title="Save to Premiumize cloud"><Icon name="cloud-up" size={18} /></button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -7937,7 +7878,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {meta.overview && (
                     <div className="metadata-overview-section">
                       <h4 className="metadata-section-title">
-                        {(itemCat === 'Movies' || itemCat === 'TV') ? '📝 Plot' : '📝 Description'}
+                        {(itemCat === 'Movies' || itemCat === 'TV') ? 'Plot' : 'Description'}
                       </h4>
                       <p className="metadata-overview-text">{meta.overview}</p>
                     </div>
@@ -7946,7 +7887,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Track List (Music) */}
                   {itemCat === 'Music' && meta.tracks && meta.tracks.length > 0 && (
                     <div className="metadata-tracks-section">
-                      <h4 className="metadata-section-title">💿 Track List</h4>
+                      <h4 className="metadata-section-title">Track list</h4>
                       <div className="metadata-tracks-list">
                         {meta.tracks.map((track, ti) => {
                           const formatDuration = (ms) => {
@@ -7970,14 +7911,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   {/* Cast (Movies/TV) */}
                   {meta.cast && meta.cast.length > 0 && (
                     <div className="metadata-cast-section">
-                      <h4 className="metadata-section-title">🎭 Cast</h4>
+                      <h4 className="metadata-section-title">Cast</h4>
                       <div className="metadata-cast-grid">
                         {meta.cast.map((c, ci) => (
                           <div key={ci} className="metadata-cast-card">
                             {c.profilePath ? (
                               <img src={c.profilePath} alt="" className="cast-headshot" loading="lazy" />
                             ) : (
-                              <div className="cast-headshot-placeholder">👤</div>
+                              <div className="cast-headshot-placeholder"><Icon name="users" size={20} /></div>
                             )}
                             <div className="cast-info">
                               <span className="cast-name">{c.name}</span>
@@ -7993,22 +7934,22 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div className="metadata-links-section">
                     {meta.trailer && (
                       <a href={`https://www.youtube.com/watch?v=${meta.trailer}`} target="_blank" rel="noopener noreferrer" className="metadata-ext-link trailer-link">
-                        ▶️ Watch Trailer
+                        <Icon name="player-play" fill size={15} /> Watch trailer
                       </a>
                     )}
                     {meta.iTunesUrl && (
                       <a href={meta.iTunesUrl} target="_blank" rel="noopener noreferrer" className="metadata-ext-link itunes-link">
-                        🎵 View on iTunes
+                        <Icon name="external-link" size={14} /> iTunes
                       </a>
                     )}
                     {meta.goodreadsUrl && (
                       <a href={meta.goodreadsUrl} target="_blank" rel="noopener noreferrer" className="metadata-ext-link goodreads-link">
-                        📚 Goodreads
+                        <Icon name="external-link" size={14} /> Goodreads
                       </a>
                     )}
                     {meta.googleBooksUrl && (
                       <a href={meta.googleBooksUrl} target="_blank" rel="noopener noreferrer" className="metadata-ext-link gbooks-link">
-                        📖 Google Books
+                        <Icon name="external-link" size={14} /> Google Books
                       </a>
                     )}
                   </div>
@@ -8021,16 +7962,16 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       </main>
 
       <footer className="app-footer">
-        <p>Premio — Built by BioHapHazard • <button type="button" className="link-button footer-disclaimer-btn" onClick={() => setShowLegalDisclaimer(true)}>⚖️ Legal Disclaimer & TOS</button></p>
+        <p>Premio — Built by BioHapHazard • <button type="button"className="link-button footer-disclaimer-btn"onClick={() => setShowLegalDisclaimer(true)}> Legal Disclaimer & TOS</button></p>
         <p className="sub-footer">Stateless, fast, and secure API-driven interface</p>
       </footer>
 
-      {/* ⚖️ Terms of Service & Legal Disclaimer Modal */}
+      {/* Terms of Service & Legal Disclaimer Modal */}
       {showLegalDisclaimer && (
         <div className="modal-overlay legal-modal-overlay fade-in">
           <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
             <div className="modal-header">
-              <h2>⚖️ Legal Disclaimer & Terms of Service</h2>
+              <h2> Legal Disclaimer & Terms of Service</h2>
             </div>
             <div className="modal-body" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '12px', lineHeight: '1.4' }}>
               <p>
@@ -8085,11 +8026,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 id="btn-agree-tos"
                 onClick={() => {
                   if (localStorage.getItem('premio_legal_acknowledged') !== 'true') {
-                    triggerToast('⚠️ Please check the agreement box to proceed.', 'error');
+                    triggerToast('Please check the agreement box to proceed.', 'error');
                     return;
                   }
                   setShowLegalDisclaimer(false);
-                  triggerToast('⚖️ Terms of Service acknowledged.', 'success');
+                  triggerToast('Terms of Service acknowledged.', 'success');
                   if (localStorage.getItem('premio_onboarding_completed') !== 'true') {
                     setShowOnboarding(true);
                     setOnboardingStep(1);
@@ -8103,12 +8044,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         </div>
       )}
 
-      {/* 💡 Onboarding Wizard Modal */}
+      {/* Onboarding Wizard Modal */}
       {showOnboarding && (
         <div className="modal-overlay legal-modal-overlay fade-in">
           <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto' }}>
             <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2>🚀 Setup Guide (Step {onboardingStep} of 3)</h2>
+              <h2> Setup Guide (Step {onboardingStep} of 3)</h2>
               <button 
                 type="button" 
                 className="close-btn" 
@@ -8119,14 +8060,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 }}
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}
               >
-                ✕
+                <Icon name="x" size={20} />
               </button>
             </div>
             
             <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {onboardingStep === 1 && (
                 <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <h3 style={{ color: '#fff', margin: 0 }}>🔌 Connect your Premiumize Account</h3>
+                  <h3 style={{ color: '#fff', margin: 0 }}> Connect your Premiumize Account</h3>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
                     Premio is completely client-side and serverless. To check file cache status, create downloads, and stream files, you must connect your Premiumize.me account.
                   </p>
@@ -8134,7 +8075,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid var(--color-primary)', fontSize: '0.8rem' }}>
                     <strong>Don&apos;t have a Premiumize account?</strong><br />
                     <a href={PM_SIGNUP_URL} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline', display: 'inline-block', marginTop: '4px', fontWeight: 'bold' }}>
-                      Click here to visit Premiumize.me & Sign Up ➔
+                      Click here to visit Premiumize.me & Sign Up
                     </a>
                   </div>
 
@@ -8162,13 +8103,45 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                       You can find your API key by logging into your account page at <a href="https://www.premiumize.me/account" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>premiumize.me/account</a> (click &quot;Show API Key&quot;).
                     </span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!userPmKey) { triggerToast('Enter your Premiumize API key first.', 'warning'); return; }
+                        triggerToast('Testing connection…', 'info');
+                        try {
+                          const res = await fetchWithCredentials('/api/account/info');
+                          const data = await res.json().catch(() => ({}));
+                          if (res.ok && data.status === 'success') {
+                            triggerToast('Premiumize key works — account connected!', 'success');
+                          } else {
+                            triggerToast('Key was rejected by Premiumize. Double-check it.', 'error');
+                          }
+                        } catch (e) {
+                          triggerToast('Could not verify key (network error).', 'error');
+                        }
+                      }}
+                      style={{
+                        marginTop: '4px',
+                        alignSelf: 'flex-start',
+                        padding: '8px 14px',
+                        background: 'rgba(45, 212, 191, 0.12)',
+                        border: '1px solid rgba(45, 212, 191, 0.4)',
+                        borderRadius: '8px',
+                        color: '#5eead4',
+                        fontSize: '0.8rem',
+                        fontWeight: 700,
+                        cursor: 'pointer'
+                      }}
+                    >
+                       Test connection
+                    </button>
                   </div>
                 </div>
               )}
 
               {onboardingStep === 2 && (
                 <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <h3 style={{ color: '#fff', margin: 0 }}>🔍 Configure Jackett (Optional)</h3>
+                  <h3 style={{ color: '#fff', margin: 0 }}> Configure Jackett (Optional)</h3>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
                     To search public torrent indexes, connect Premio to a local or remote Jackett or Prowlarr instance. If you only plan to stream cached direct files or use Usenet, you can skip this step.
                   </p>
@@ -8222,14 +8195,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   </div>
 
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
-                    💡 Set up trackers (e.g. LimeTorrents, EZTV) inside your Jackett dashboard so search queries return cached media.
+                     Set up trackers (e.g. LimeTorrents, EZTV) inside your Jackett dashboard so search queries return cached media.
                   </p>
                 </div>
               )}
 
               {onboardingStep === 3 && (
                 <div className="onboarding-step fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <h3 style={{ color: '#fff', margin: 0 }}>🎬 Fetch Metadata & TMDb (Optional)</h3>
+                  <h3 style={{ color: '#fff', margin: 0 }}> Fetch Metadata & TMDb (Optional)</h3>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0, lineHeight: '1.4' }}>
                     Optionally configure a free TMDb v3 API key to load posters, backdrops, cast info, and ratings directly in your browser.
                   </p>
@@ -8261,7 +8234,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   </div>
 
                   <div style={{ background: 'rgba(74, 222, 128, 0.05)', borderLeft: '3px solid #4ade80', padding: '10px', borderRadius: '6px', fontSize: '0.8rem', color: '#4ade80', marginTop: '10px' }}>
-                    🎉 Setup Complete! You can edit these keys or add Usenet indexers inside the Control Panel at any time.
+                     Setup Complete! You can edit these keys or add Usenet indexers inside the Control Panel at any time.
                   </div>
                 </div>
               )}
@@ -8284,7 +8257,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   className="action-btn"
                   onClick={() => {
                     if (onboardingStep === 1 && !userPmKey.trim()) {
-                      triggerToast('💡 Note: You skipped adding a Premiumize key. The app will run in Developer Mock Mode.', 'warning');
+                      triggerToast('Note: You skipped adding a Premiumize key. The app will run in Developer Mock Mode.', 'warning');
                     }
                     setOnboardingStep(prev => prev + 1);
                   }}
@@ -8299,10 +8272,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => {
                     setShowOnboarding(false);
                     localStorage.setItem('premio_onboarding_completed', 'true');
-                    triggerToast('🎉 Onboarding completed! You are ready to search.', 'success');
+                    triggerToast('Onboarding completed! You are ready to search.', 'success');
                   }}
                 >
-                  🚀 Finish & Start Searching
+                   Finish & Start Searching
                 </button>
               )}
             </div>
@@ -8310,12 +8283,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         </div>
       )}
 
-      {/* 🎬 Playlist Choice Modal */}
+      {/* Playlist Choice Modal */}
       {showPlaylistChoiceModal && (
         <div className="modal-overlay legal-modal-overlay fade-in">
           <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '520px', width: '90%' }}>
             <div className="modal-header">
-              <h2 style={{ background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>🎬 Choose Playback Mode</h2>
+              <h2 style={{ background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'}}> Choose Playback Mode</h2>
             </div>
             
             <div className="modal-body" style={{ fontSize: '0.95rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '12px', lineHeight: '1.4' }}>
@@ -8329,12 +8302,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               
               {hasAviOrMkvInPending && (
                 <div style={{ background: 'rgba(239, 68, 68, 0.08)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #ef4444', fontSize: '0.82rem', color: '#fca5a5', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <span style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}>⚠️ Browser Codec Compatibility Warning:</span>
+                  <span style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px'}}> Browser Codec Compatibility Warning:</span>
                   <span>
                     This video is in <strong>.avi</strong> or <strong>.mkv</strong> format (or contains codecs like DivX/XviD). Modern web browsers (Chrome, Safari, Edge) do not natively support these formats and will display a black screen or fail to load.
                   </span>
                   <span style={{ fontSize: '0.78rem', opacity: 0.9, marginTop: '2px' }}>
-                    💡 Premiumize retired their public transcoding API, but their official website still transcodes files automatically when played in their web player.
+                     Premiumize retired their public transcoding API, but their official website still transcodes files automatically when played in their web player.
                   </span>
                 </div>
               )}
@@ -8346,7 +8319,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               {aiEnabled && pendingPlaylistFiles.length > 1 && (
                 <div style={{ marginTop: '8px', border: '1px solid var(--glass-border)', padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    ✨ Curate Playlist with Premiumize AI
+                     Curate Playlist with Premiumize AI
                   </span>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
                     <input 
@@ -8364,7 +8337,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       onClick={handleAICuratePlaylist}
                       disabled={aiLoading}
                     >
-                      {aiLoading ? '⏳ Curating...' : '🪄 Apply AI Curation'}
+                      {aiLoading ? 'Curating...': 'Apply AI Curation'}
                     </button>
                   </div>
                 </div>
@@ -8394,7 +8367,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   color: '#ffffff'
                 }}
               >
-                📥 {pendingPlaylistFiles.length > 1 ? 'Download M3U Playlist (Recommended for VLC)' : 'Download M3U Stream File (Recommended for VLC)'}
+                 {pendingPlaylistFiles.length > 1 ? 'Download M3U Playlist (Recommended for VLC)': 'Download M3U Stream File (Recommended for VLC)'}
               </button>
 
               {/* Option 2: Stream on Premiumize.me website (if ID is available) */}
@@ -8424,7 +8397,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     boxSizing: 'border-box'
                   }}
                 >
-                  🚀 {pendingItemType === 'file' ? 'Play on Premiumize.me Web Player' : 'Open Folder on Premiumize.me Website'}
+                   {pendingItemType === 'file'? 'Play on Premiumize.me Web Player': 'Open Folder on Premiumize.me Website'}
                 </a>
               )}
               
@@ -8448,7 +8421,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   color: '#ffffff'
                 }}
               >
-                🌐 Try Playing in Web Browser (HTML5)
+                 Try Playing in Web Browser (HTML5)
               </button>
 
               {/* Close/Cancel Button */}
@@ -8466,14 +8439,14 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   marginTop: '4px'
                 }}
               >
-                ✕ Cancel
+                 Cancel
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 🤖 Premiumize AI Co-pilot Floating Button & Sidebar */}
+      {/* Premiumize AI Co-pilot Floating Button & Sidebar */}
       {aiEnabled && (
         <>
           {/* Floating Action Button */}
@@ -8501,7 +8474,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             }}
             title="Open Premio AI Co-pilot"
           >
-            {showAICopilot ? '✕' : '🤖'}
+            {showAICopilot ? '': ''}
           </button>
 
           {/* Slide-out Sidebar Panel */}
@@ -8527,16 +8500,16 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               {/* Sidebar Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem', borderBottom: '1px solid var(--glass-border)', background: 'rgba(0, 0, 0, 0.2)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '1.4rem' }}>🤖</span>
+                  <span style={{ display: 'flex', color: 'var(--color-primary)' }}><Icon name="wand" size={20} /></span>
                   <h3 style={{ margin: 0, background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: 'bold' }}>Premio Co-pilot</h3>
                 </div>
                 <button 
                   type="button" 
-                  className="text-only" 
+                  className="text-only"
                   onClick={() => setShowAICopilot(false)}
                   style={{ color: 'var(--text-muted)', fontSize: '1.2rem', padding: '4px', cursor: 'pointer', border: 'none', background: 'none' }}
                 >
-                  ✕
+                  <Icon name="x" size={20} />
                 </button>
               </div>
 
@@ -8590,7 +8563,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => { setCopilotInput("What TV shows can you recommend?"); }}
                   style={{ fontSize: '0.75rem', padding: '4px 10px' }}
                 >
-                  📺 Show Recommendations
+                   Show Recommendations
                 </button>
                 <button 
                   type="button" 
@@ -8598,7 +8571,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => { setCopilotInput("How do I use the AI Playlist Curator?"); }}
                   style={{ fontSize: '0.75rem', padding: '4px 10px' }}
                 >
-                  ✨ Curating Playlists
+                   Curating Playlists
                 </button>
                 <button 
                   type="button" 
@@ -8606,7 +8579,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   onClick={() => { setCopilotInput("Explain how the AI filename clean button works."); }}
                   style={{ fontSize: '0.75rem', padding: '4px 10px' }}
                 >
-                  🪄 Filename Cleaner
+                   Filename Cleaner
                 </button>
               </div>
 
@@ -8630,11 +8603,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   />
                   <button 
                     type="submit" 
-                    className="search-submit-btn" 
+                    className="search-submit-btn"
                     style={{ width: '42px', height: '42px', minWidth: 'auto', padding: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     disabled={aiLoading || !copilotInput.trim()}
                   >
-                    📤
+                    <Icon name="send" size={18} />
                   </button>
                 </form>
               </div>
