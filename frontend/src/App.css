@@ -2978,6 +2978,34 @@ textarea::placeholder {
   letter-spacing: 0.05em;
 }
 
+/* OMDb multi-source ratings (IMDb / Rotten Tomatoes / Metacritic) */
+.metadata-rating-pill.imdb-rating {
+  background: rgba(245, 197, 24, 0.12);
+  color: #f5c518;
+  border: 1px solid rgba(245, 197, 24, 0.3);
+}
+.metadata-rating-pill.rt-rating {
+  background: rgba(250, 60, 30, 0.12);
+  color: #ff6f54;
+  border: 1px solid rgba(250, 60, 30, 0.32);
+}
+.metadata-rating-pill.mc-rating {
+  background: rgba(108, 198, 74, 0.12);
+  color: #9fdb72;
+  border: 1px solid rgba(108, 198, 74, 0.32);
+}
+.rating-src-tag {
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #0d0f17;
+}
+.rating-src-tag.src-imdb { background: #f5c518; }
+.rating-src-tag.src-rt { background: #fa320a; color: #fff; }
+.rating-src-tag.src-mc { background: #6cc64a; }
+
 .metadata-year-pill,
 .metadata-tracks-pill {
   background: rgba(255, 255, 255, 0.06);
@@ -4158,6 +4186,22 @@ textarea::placeholder {
 
 /* --- Premiumize AI Co-pilot Styling --- */
 
+.copilot-floating-btn {
+  animation: copilotPulse 2.8s ease-in-out infinite;
+}
+
+/* Expanding "listening" ring — signals a live AI assistant */
+.copilot-floating-btn::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid var(--color-primary);
+  opacity: 0.5;
+  pointer-events: none;
+  animation: copilotRing 2.6s ease-out infinite;
+}
+
 .copilot-floating-btn:hover {
   transform: scale(1.1) rotate(5deg);
   box-shadow: 0 10px 30px rgba(139, 92, 246, 0.6), 0 0 20px var(--color-primary);
@@ -4165,6 +4209,33 @@ textarea::placeholder {
 
 .copilot-floating-btn:active {
   transform: scale(0.95);
+}
+
+/* Twinkling AI sparkle accent on the chatbot icon */
+.copilot-fab-spark {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  color: #fde68a;
+  filter: drop-shadow(0 0 4px rgba(253, 230, 138, 0.85));
+  animation: sparkTwinkle 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes copilotPulse {
+  0%, 100% { box-shadow: 0 8px 25px rgba(139, 92, 246, 0.4), 0 0 15px var(--color-primary-glow); }
+  50% { box-shadow: 0 8px 32px rgba(139, 92, 246, 0.7), 0 0 30px var(--color-primary); }
+}
+
+@keyframes copilotRing {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes sparkTwinkle {
+  0%, 100% { opacity: 0.95; transform: scale(1) rotate(0deg); }
+  50% { opacity: 0.45; transform: scale(0.78) rotate(20deg); }
 }
 
 .copilot-sidebar {

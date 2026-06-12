@@ -383,6 +383,9 @@ export default function App() {
   const [userTmdbKey, setUserTmdbKey] = useState(() => {
     return localStorage.getItem('premio_user_tmdb_key') || '';
   });
+  const [userOmdbKey, setUserOmdbKey] = useState(() => {
+    return localStorage.getItem('premio_user_omdb_key') || '';
+  });
   const [userJackettUrl, setUserJackettUrl] = useState(() => {
     return localStorage.getItem('premio_user_jackett_url') || '';
   });
@@ -533,6 +536,7 @@ export default function App() {
       const customHeaders = {
         'X-Premiumize-Key': userPmKey || '',
         'X-TMDb-Key': userTmdbKey || '',
+        'X-OMDb-Key': userOmdbKey || '',
         'X-Jackett-Url': userJackettUrl || '',
         'X-Jackett-Key': userJackettKey || '',
         'X-Usenet-Indexers': JSON.stringify(userIndexers || [])
@@ -4914,8 +4918,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <h3>TMDb API Key (v3)</h3>
                   <p>Optional. Used to fetch movie posters, overview texts, and rating details directly in your browser.</p>
                 </div>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={userTmdbKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -4923,6 +4927,25 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     localStorage.setItem('premio_user_tmdb_key', val);
                   }}
                   placeholder="Enter your TMDb v3 API Key..."
+                  className="settings-text-input"
+                />
+              </div>
+
+              {/* OMDb API Key Input */}
+              <div className="setting-item full-width-field">
+                <div className="setting-info">
+                  <h3>OMDb API Key</h3>
+                  <p>Optional. Adds IMDb, Rotten Tomatoes, and Metacritic ratings to movie &amp; TV detail pages (alongside TMDb). Free key at omdbapi.com.</p>
+                </div>
+                <input
+                  type="text"
+                  value={userOmdbKey}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUserOmdbKey(val);
+                    localStorage.setItem('premio_user_omdb_key', val);
+                  }}
+                  placeholder="Enter your OMDb API Key..."
                   className="settings-text-input"
                 />
               </div>
@@ -7805,6 +7828,21 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             <Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
                           </span>
                         )}
+                        {meta.ratings?.imdbRating && (
+                          <span className="metadata-rating-pill imdb-rating" title={meta.ratings.imdbVotes ? `${meta.ratings.imdbVotes} IMDb votes` : 'IMDb rating'}>
+                            <span className="rating-src-tag src-imdb">IMDb</span> {meta.ratings.imdbRating}
+                          </span>
+                        )}
+                        {meta.ratings?.rottenTomatoes && (
+                          <span className="metadata-rating-pill rt-rating" title="Rotten Tomatoes">
+                            <span className="rating-src-tag src-rt">RT</span> {meta.ratings.rottenTomatoes}
+                          </span>
+                        )}
+                        {meta.ratings?.metacritic && (
+                          <span className="metadata-rating-pill mc-rating" title="Metacritic">
+                            <span className="rating-src-tag src-mc">MC</span> {meta.ratings.metacritic}
+                          </span>
+                        )}
                         {meta.rating && (
                           <span className="metadata-rating-pill book-rating">
                             <Icon name="star" fill size={13} /> {meta.rating}{meta.ratingsCount ? ` (${meta.ratingsCount})` : ''} <span className="rating-source">Rating</span>
@@ -8468,13 +8506,22 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: '1.6rem',
+              color: '#fff',
               cursor: 'pointer',
               zIndex: 999,
               transition: 'all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
             }}
-            title="Open Premio AI Co-pilot"
+            title={showAICopilot ? 'Close AI Co-pilot' : 'Open Premio AI Co-pilot'}
+            aria-label={showAICopilot ? 'Close AI Co-pilot' : 'Open Premio AI Co-pilot'}
           >
-            {showAICopilot ? '': ''}
+            {showAICopilot ? (
+              <Icon name="x" size={24} />
+            ) : (
+              <>
+                <Icon name="message-chatbot" size={28} />
+                <span className="copilot-fab-spark"><Icon name="sparkles" size={13} fill /></span>
+              </>
+            )}
           </button>
 
           {/* Slide-out Sidebar Panel */}

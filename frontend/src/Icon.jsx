@@ -44,6 +44,8 @@ const PATHS = {
   pencil: 'M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4 M13.5 6.5l4 4',
   send: 'M10 14l11 -11 M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1z',
   file: 'M14 3v4a1 1 0 0 0 1 1h4 M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z',
+  'message-chatbot': 'M4 21v-13a3 3 0 0 1 3 -3h10a3 3 0 0 1 3 3v6a3 3 0 0 1 -3 3h-9l-4 4 M9.5 9h.01 M14.5 9h.01 M9.5 13a3.5 3.5 0 0 0 5 0h-5',
+  sparkles: 'M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7.5 1.5l1.5 -5l1.5 5l5 1.5l-5 1.5l-1.5 5l-1.5 -5l-5 -1.5z',
 };
 
 export default function Icon({ name, size = 20, fill = false, strokeWidth = 1.9, className = '', style, ariaLabel }) {

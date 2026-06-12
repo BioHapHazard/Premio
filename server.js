@@ -82,6 +82,7 @@ app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/proxy-rom',
 app.use((req, res, next) => {
   req.userPmKey = (req.headers['x-premiumize-key'] || '').trim();
   req.userTmdbKey = (req.headers['x-tmdb-key'] || '').trim();
+  req.userOmdbKey = (req.headers['x-omdb-key'] || '').trim();
   req.userJackettUrl = (req.headers['x-jackett-url'] || '').trim();
   req.userJackettKey = (req.headers['x-jackett-key'] || '').trim();
 
@@ -130,6 +131,50 @@ console.log('=============================================');
 // Premiumize account / quota / AI credits.
 const envKeysAllowed = () => process.env.ALLOW_ENV_KEYS === 'true';
 const sharedTmdbAllowed = () => envKeysAllowed() || process.env.ENABLE_SHARED_TMDB === 'true';
+
+// OMDb (omdbapi.com) — read-only IMDb / Rotten Tomatoes / Metacritic ratings.
+// Same trust model as TMDb: caller's header key first, owner env key only when shared metadata is allowed.
+const resolveOmdbKey = (req) => {
+  if (req.userOmdbKey) return req.userOmdbKey;
+  if (sharedTmdbAllowed() && process.env.OMDB_API_KEY) return process.env.OMDB_API_KEY.trim();
+  return '';
+};
+
+// Fetch IMDb / Rotten Tomatoes / Metacritic ratings for a known IMDb id.
+async function fetchOmdbRatings(imdbId, omdbKey) {
+  if (!imdbId || !omdbKey) return null;
+  let id = imdbId.toString().trim();
+  if (!/^tt\d+$/i.test(id)) id = 'tt' + id.replace(/^tt/i, '');
+  if (!/^tt\d+$/i.test(id)) return null;
+  try {
+    const url = `https://www.omdbapi.com/?apikey=${encodeURIComponent(omdbKey)}&i=${encodeURIComponent(id)}`;
+    const r = await fetchWithTimeout(url, {}, 8000);
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!d || d.Response === 'False') return null;
+    const src = {};
+    (d.Ratings || []).forEach(rt => {
+      if (rt.Source === 'Internet Movie Database') src.imdb = rt.Value;       // "8.5/10"
+      else if (rt.Source === 'Rotten Tomatoes') src.rt = rt.Value;            // "93%"
+      else if (rt.Source === 'Metacritic') src.meta = rt.Value;              // "78/100"
+    });
+    const clean = (v) => (v && v !== 'N/A' ? v : null);
+    const ratings = {
+      imdbRating: clean(d.imdbRating) || (src.imdb ? src.imdb.split('/')[0] : null),   // "8.5"
+      imdbVotes: clean(d.imdbVotes),
+      rottenTomatoes: src.rt || null,                                                  // "93%"
+      metacritic: (src.meta ? src.meta.split('/')[0] : clean(d.Metascore)),            // "78"
+      rated: clean(d.Rated),
+      awards: clean(d.Awards)
+    };
+    // Only return when at least one external rating was found.
+    if (ratings.imdbRating || ratings.rottenTomatoes || ratings.metacritic) return ratings;
+    return null;
+  } catch (e) {
+    console.error('❌ OMDb lookup failed:', e.message);
+    return null;
+  }
+}
 
 // Helper: Resolve Premiumize Key prioritizing user settings header
 const resolvePremiumizeKey = (req) => {
@@ -2286,8 +2331,22 @@ app.get('/api/metadata', async (req, res) => {
 
   // Check cache first
   if (metadataCache.has(cacheKey)) {
+    const cached = metadataCache.get(cacheKey);
+    // Backfill OMDb ratings onto a cached entry that predates the feature
+    // (or was cached before the user supplied an OMDb key).
+    if (cached && cached.status === 'success' && cached.metadata && cached.metadata.imdbId && !cached.metadata.ratings) {
+      const omdbKey = resolveOmdbKey(req);
+      if (omdbKey) {
+        const ratings = await fetchOmdbRatings(cached.metadata.imdbId, omdbKey);
+        if (ratings) {
+          cached.metadata.ratings = ratings;
+          setMetadataCache(cacheKey, cached);
+          console.log(`⭐ OMDb ratings backfilled onto cached "${cached.metadata.title}"`);
+        }
+      }
+    }
     console.log('⚡ Metadata cache hit.');
-    return res.json(metadataCache.get(cacheKey));
+    return res.json(cached);
   }
 
   try {
@@ -2315,6 +2374,18 @@ app.get('/api/metadata', async (req, res) => {
         result = await fetchEbookMetadata(parsed);
       } else {
         result = { status: 'not_found', metadata: null };
+      }
+    }
+
+    // Enrich Movie/TV results with OMDb multi-source ratings (IMDb / Rotten Tomatoes / Metacritic).
+    if (result && result.status === 'success' && result.metadata && result.metadata.imdbId) {
+      const omdbKey = resolveOmdbKey(req);
+      if (omdbKey) {
+        const ratings = await fetchOmdbRatings(result.metadata.imdbId, omdbKey);
+        if (ratings) {
+          result.metadata.ratings = ratings;
+          console.log(`⭐ OMDb ratings: IMDb ${ratings.imdbRating || '–'} · RT ${ratings.rottenTomatoes || '–'} · MC ${ratings.metacritic || '–'}`);
+        }
       }
     }
 
