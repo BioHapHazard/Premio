@@ -3,6 +3,8 @@ dns.setDefaultResultOrder('ipv4first');
 
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { Readable } from 'stream';
 import fs from 'node:fs';
@@ -38,9 +40,43 @@ try {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middlewares
-app.use(cors());
-app.use(express.json());
+// Behind Fly's proxy: trust the first hop so req.ip is the real client (rate limiting).
+app.set('trust proxy', 1);
+
+// Security headers. CSP/COEP/CORP are disabled because the player pages
+// (audio/reader/emulator) rely on inline scripts and cross-origin CDN/streamed
+// assets; revisit CSP with nonces later. HSTS + nosniff + frameguard still apply.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: false,
+  hsts: { maxAge: 31536000, includeSubDomains: true },
+}));
+
+// CORS: allow same-origin / non-browser (no Origin) requests and an explicit
+// allow-list of browser origins. Replaces the previous wildcard so a malicious
+// website can no longer drive the API from a victim's browser. Set
+// CORS_ALLOWED_ORIGINS (comma-separated) to your public origin in production.
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:5174')
+  .split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);                // curl / same-origin / server-side
+    return cb(null, allowedOrigins.includes(origin));  // disallowed -> no ACAO header
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Range', 'Authorization',
+    'X-Premiumize-Key', 'X-TMDb-Key', 'X-Jackett-Url', 'X-Jackett-Key', 'X-Usenet-Indexers'],
+}));
+
+app.use(express.json({ limit: '5mb' }));
+
+// Rate limiting (per-IP). Generous global cap, with a stricter cap on the
+// expensive, keyless, upstream-querying endpoints (search / metadata / proxy).
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
+const heavyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
+app.use('/api/', apiLimiter);
+app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/proxy-rom', '/api/proxy-subtitle'], heavyLimiter);
 
 // Header extraction middleware to support stateless webapp deployments
 app.use((req, res, next) => {
@@ -88,11 +124,75 @@ if (!process.env.NZBGEEK_API_KEY || process.env.NZBGEEK_API_KEY === 'your_nzbgee
 }
 console.log('=============================================');
 
+// Bring-your-own-key model: a request's own key (sent as a header) always wins.
+// The owner's .env keys are used ONLY when ALLOW_ENV_KEYS=true (local/sandbox dev),
+// never in public production — so anonymous visitors can never spend the owner's
+// Premiumize account / quota / AI credits.
+const envKeysAllowed = () => process.env.ALLOW_ENV_KEYS === 'true';
+const sharedTmdbAllowed = () => envKeysAllowed() || process.env.ENABLE_SHARED_TMDB === 'true';
+
 // Helper: Resolve Premiumize Key prioritizing user settings header
 const resolvePremiumizeKey = (req) => {
   if (req.userPmKey) return req.userPmKey;
-  return process.env.PREMIUMIZE_API_KEY ? process.env.PREMIUMIZE_API_KEY.trim() : '';
+  if (envKeysAllowed() && process.env.PREMIUMIZE_API_KEY) return process.env.PREMIUMIZE_API_KEY.trim();
+  return '';
 };
+
+// --- SSRF guard ---------------------------------------------------------------
+// The subtitle / ROM proxy endpoints fetch a user-supplied URL. Without a guard a
+// visitor could make the server reach internal addresses (Fly 6PN, cloud metadata
+// 169.254.169.254, localhost services, etc.). assertPublicHttpUrl() resolves the
+// host and rejects the request if ANY resolved address is private/reserved.
+function ipv4ToLong(ip) {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+    n = (n << 8) | octet;
+  }
+  return n >>> 0;
+}
+function isPrivateIp(ip) {
+  if (!ip) return true;
+  let addr = ip.trim().toLowerCase();
+  const mapped = addr.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped IPv6
+  if (mapped) addr = mapped[1];
+  if (addr.includes(':')) {
+    if (addr === '::1' || addr === '::') return true;       // loopback / unspecified
+    if (addr.startsWith('fe80')) return true;               // link-local
+    if (addr.startsWith('ff')) return true;                 // multicast
+    const hi = parseInt(addr.split(':')[0] || '0', 16);
+    if ((hi & 0xfe00) === 0xfc00) return true;              // fc00::/7 ULA (incl. Fly fdaa::/16)
+    return false;
+  }
+  const n = ipv4ToLong(addr);
+  if (n === null) return true; // unparseable -> treat as unsafe
+  const inRange = (base, bits) => (n >>> (32 - bits)) === (ipv4ToLong(base) >>> (32 - bits));
+  return (
+    inRange('0.0.0.0', 8) || inRange('10.0.0.0', 8) || inRange('100.64.0.0', 10) ||
+    inRange('127.0.0.0', 8) || inRange('169.254.0.0', 16) || inRange('172.16.0.0', 12) ||
+    inRange('192.0.0.0', 24) || inRange('192.168.0.0', 16) || inRange('198.18.0.0', 15) ||
+    inRange('224.0.0.0', 4) || inRange('240.0.0.0', 4)
+  );
+}
+async function assertPublicHttpUrl(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { throw new Error('invalid URL'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('only http(s) URLs are allowed');
+  const host = u.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets
+  let addresses;
+  try {
+    addresses = await dns.promises.lookup(host, { all: true });
+  } catch {
+    throw new Error('could not resolve host');
+  }
+  for (const a of addresses) {
+    if (isPrivateIp(a.address)) throw new Error('target resolves to a private/reserved address');
+  }
+  return u;
+}
 
 // Category mappings from Name to Torznab codes (supports multiple categories)
 const CATEGORY_MAP = {
@@ -415,9 +515,13 @@ app.post('/api/parse-import', async (req, res) => {
         importedNzbsCache.delete(importId);
       }, 4 * 60 * 60 * 1000);
 
-      const proto = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.headers['x-forwarded-host'] || req.get('host');
-      const nzbUrl = `${proto}://${host}/api/imported-nzb/${importId}`;
+      // Build the callback URL from a trusted PUBLIC_BASE_URL when configured,
+      // rather than attacker-spoofable x-forwarded-* headers. Falls back to the
+      // forwarded host for local/dev where PUBLIC_BASE_URL isn't set.
+      const base = process.env.PUBLIC_BASE_URL
+        ? process.env.PUBLIC_BASE_URL.replace(/\/+$/, '')
+        : `${req.headers['x-forwarded-proto'] || req.protocol}://${req.headers['x-forwarded-host'] || req.get('host')}`;
+      const nzbUrl = `${base}/api/imported-nzb/${importId}`;
 
       return res.json({
         type: 'usenet',
@@ -456,7 +560,7 @@ app.post('/api/cache-check', async (req, res) => {
     return res.json({ status: 'error', message: 'Missing hashes array' });
   }
 
-  const premiumizeApiKey = resolvePremiumizeKey(req);
+  const premiumizeApiKey = resolvePremiumizeKey(req); // optional: keyless falls back to mock below
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     // Mock response for dev
     const mockCache = {};
@@ -509,6 +613,46 @@ app.post('/api/cache-check', async (req, res) => {
   }
 });
 
+// Classify a raw Jackett result into one of the app's content lanes (used by the
+// unified "All" search to group mixed results). Uses torznab category codes first,
+// then title/filename heuristics for the ambiguous audio/book types.
+function classifyResult(item) {
+  const cats = Array.isArray(item.Category) ? item.Category.map(Number) : [];
+  const inRange = (lo, hi) => cats.some(c => c >= lo && c <= hi);
+  const title = (item.Title || '').toLowerCase();
+  if (/\b(audiobook|audio book|unabridged|narrated|m4b)\b/.test(title)) return 'Audiobooks';
+  if (/\.(epub|mobi|azw3?|pdf|cbz|cbr)\b|\bebook\b/.test(title)) return 'Ebooks';
+  if (/\b(vst|vsti|kontakt|sample pack|soundbank|presets?)\b/.test(title)) return 'VST';
+  if (inRange(2000, 2999)) return 'Movies';
+  if (inRange(5000, 5999)) return 'TV';
+  if (inRange(1000, 1999)) return 'Retro Games';
+  if (inRange(7000, 7999)) return 'Ebooks';
+  if (inRange(3000, 3999)) return 'Music';
+  if (inRange(4000, 4999)) return 'Software';
+  if (inRange(6000, 6999)) return 'Adult';
+  if (/\bs\d{2}e\d{2}\b|\bseason\b|\bcomplete series\b/.test(title)) return 'TV';
+  if (/\b(flac|mp3|320|album|discography|ost|soundtrack)\b/.test(title)) return 'Music';
+  return 'Other';
+}
+
+// Derive a usable display title: prefer the indexer's Title, else recover the
+// magnet display-name (dn=). Returns null when nothing usable exists (e.g. "."),
+// so the caller can drop nameless junk results.
+function deriveTitle(item, magnet) {
+  const raw = (item.Title || '').trim();
+  if (raw && /[a-z0-9]{2,}/i.test(raw)) return raw;
+  if (magnet) {
+    const m = magnet.match(/[?&]dn=([^&]+)/i);
+    if (m) {
+      try {
+        const dn = decodeURIComponent(m[1].replace(/\+/g, ' ')).trim();
+        if (dn && /[a-z0-9]{2,}/i.test(dn)) return dn;
+      } catch { /* ignore malformed dn */ }
+    }
+  }
+  return null;
+}
+
 // 1. Search Endpoint
 app.get('/api/search', async (req, res) => {
   const { q, category } = req.query;
@@ -518,15 +662,19 @@ app.get('/api/search', async (req, res) => {
   }
 
   const selectedCategory = category || 'Movies';
-  const torznabCategoryCodes = CATEGORY_MAP[selectedCategory] || [2000];
+  // Unified search: "All" queries every top-level torznab category at once
+  // (Adult/6000 is intentionally excluded and stays behind its own lane).
+  const torznabCategoryCodes = selectedCategory === 'All'
+    ? [1000, 2000, 3000, 4000, 5000, 7000, 8000]
+    : (CATEGORY_MAP[selectedCategory] || [2000]);
 
   console.log(`🔍 Search Request: "${q}" in Category "${selectedCategory}" (Torznab Codes: ${torznabCategoryCodes.join(', ')})`);
 
   let rawResults = [];
 
   // A. Check if Jackett API key is configured. If not, generate high-quality mock data
-  const jackettApiKey = req.userJackettKey || process.env.JACKETT_API_KEY;
-  const jackettUrl = req.userJackettUrl || process.env.JACKETT_URL || 'http://localhost:9117';
+  const jackettApiKey = req.userJackettKey || (envKeysAllowed() ? process.env.JACKETT_API_KEY : '');
+  const jackettUrl = req.userJackettUrl || (envKeysAllowed() ? process.env.JACKETT_URL : '') || 'http://localhost:9117';
 
   if (!jackettApiKey || jackettApiKey === 'your_jackett_api_key_here') {
     console.log('ℹ️  Jackett key not configured. Serving mock results.');
@@ -542,10 +690,11 @@ app.get('/api/search', async (req, res) => {
       });
 
       console.log(`🌐 Fetching from Jackett: ${jackettUrl}/api/v2.0/indexers/all/results?...`);
-      
-      const jackettResponse = await fetch(searchUrl.toString(), {
+
+      // 90s cap so a slow/hung indexer can never wedge the request indefinitely.
+      const jackettResponse = await fetchWithTimeout(searchUrl.toString(), {
         headers: { 'Accept': 'application/json' }
-      });
+      }, 90000);
 
       if (!jackettResponse.ok) {
         throw new Error(`Jackett replied with status: ${jackettResponse.status}`);
@@ -555,7 +704,8 @@ app.get('/api/search', async (req, res) => {
       rawResults = jackettData.Results || [];
       console.log(`✅ Jackett returned ${rawResults.length} raw results.`);
     } catch (err) {
-      console.error('❌ Jackett search failed:', err.message);
+      const reason = err.name === 'AbortError' ? 'Jackett search timed out after 90s' : err.message;
+      console.error('❌ Jackett search failed:', reason);
       // Fall back to mock data so the app doesn't crash
       console.log('ℹ️  Falling back to mock results due to error.');
       rawResults = generateMockResults(q, selectedCategory);
@@ -566,8 +716,10 @@ app.get('/api/search', async (req, res) => {
   const processedResults = rawResults.map(item => {
     const magnet = item.MagnetUri || (item.Link && item.Link.startsWith('magnet:') ? item.Link : null);
     const infoHash = magnet ? extractInfoHash(magnet) : (item.InfoHash || null);
+    const title = deriveTitle(item, magnet);
+    if (!title) return null; // drop nameless junk results (e.g. "." with no dn)
     return {
-      title: item.Title || 'Unknown Title',
+      title,
       size: Number(item.Size) || 0,
       seeders: Number(item.Seeders) || 0,
       peers: Number(item.Peers) || 0,
@@ -577,9 +729,10 @@ app.get('/api/search', async (req, res) => {
       tracker: item.Tracker || 'Unknown Tracker',
       publishDate: item.PublishDate || null,
       category: selectedCategory,
+      detectedType: selectedCategory === 'All' ? classifyResult(item) : null,
       cached: false // default
     };
-  });
+  }).filter(Boolean);
 
   // Filter items that actually have hashes to query Premiumize Cache
   const itemsWithHash = processedResults.filter(item => item.infoHash);
@@ -588,7 +741,7 @@ app.get('/api/search', async (req, res) => {
     return res.json(processedResults);
   }
 
-  const premiumizeApiKey = resolvePremiumizeKey(req);
+  const premiumizeApiKey = resolvePremiumizeKey(req); // optional: keyless falls back to mock below
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     console.log('ℹ️  Premiumize key not configured. Mocking cache status (50% hit rate).');
@@ -657,7 +810,10 @@ app.get('/api/search', async (req, res) => {
         const cacheInfo = cacheMap[item.infoHash];
         item.cached = cacheInfo.cached;
         if (cacheInfo.cached) {
-          if (cacheInfo.filename) item.title = cacheInfo.filename; // Use Premiumize cached filename if cleaner
+          // Use Premiumize's cached filename only when it's a real name — some
+          // cached items report "." (or other junk), which must not clobber the
+          // title deriveTitle() already recovered from the magnet's dn=.
+          if (cacheInfo.filename && /[a-z0-9]{2,}/i.test(cacheInfo.filename)) item.title = cacheInfo.filename;
           if (cacheInfo.filesize > 0) item.size = cacheInfo.filesize; // Use Premiumize actual file size
         }
       }
@@ -709,7 +865,7 @@ app.get('/api/usenet/search', async (req, res) => {
   if (req.userUsenetIndexers && req.userUsenetIndexers.length > 0) {
     indexers = [...req.userUsenetIndexers];
   } else {
-    const envIndexers = process.env.USENET_INDEXERS;
+    const envIndexers = envKeysAllowed() ? process.env.USENET_INDEXERS : '';
     if (envIndexers) {
       envIndexers.split(',').forEach(item => {
         const parts = item.split('|');
@@ -723,7 +879,7 @@ app.get('/api/usenet/search', async (req, res) => {
       });
     }
 
-    const nzbgeekApiKey = process.env.NZBGEEK_API_KEY;
+    const nzbgeekApiKey = envKeysAllowed() ? process.env.NZBGEEK_API_KEY : '';
     const hasNzbGeekKey = nzbgeekApiKey && nzbgeekApiKey !== 'your_nzbgeek_api_key_here';
 
     // Fallback to NZBGeek primary if no indexers configured
@@ -1014,6 +1170,7 @@ app.post('/api/download', async (req, res) => {
   console.log(`📥 Download Request received for magnet link.`);
 
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     console.log('ℹ️  Premiumize key not configured. Mocking transfer creation.');
@@ -1207,6 +1364,14 @@ async function downloadFile(url, dest) {
 function extractZip(zipPath, targetDir, password) {
   console.log(`🔓 Extracting ZIP: ${zipPath} to ${targetDir} ${password ? 'with password' : 'without password'}`);
   const zip = new AdmZip(zipPath);
+  // Zip-slip guard: reject any entry that would resolve outside targetDir.
+  const resolvedTarget = path.resolve(targetDir);
+  for (const entry of zip.getEntries()) {
+    const entryPath = path.resolve(targetDir, entry.entryName);
+    if (entryPath !== resolvedTarget && !entryPath.startsWith(resolvedTarget + path.sep)) {
+      throw new Error(`Blocked unsafe ZIP entry (zip-slip): ${entry.entryName}`);
+    }
+  }
   zip.extractAllTo(targetDir, true, false, password);
   console.log(`✅ ZIP extracted successfully`);
 }
@@ -1218,6 +1383,15 @@ async function extractRar(rarPath, targetDir, password) {
     targetPath: targetDir,
     password: password
   });
+  // Rar-slip guard: validate every entry name resolves inside targetDir first.
+  const resolvedTarget = path.resolve(targetDir);
+  const list = extractor.getFileList();
+  for (const header of list.fileHeaders) {
+    const entryPath = path.resolve(targetDir, header.name);
+    if (entryPath !== resolvedTarget && !entryPath.startsWith(resolvedTarget + path.sep)) {
+      throw new Error(`Blocked unsafe RAR entry (rar-slip): ${header.name}`);
+    }
+  }
   extractor.extract();
   console.log(`✅ RAR extracted successfully`);
 }
@@ -1233,6 +1407,7 @@ app.post('/api/stream-links', async (req, res) => {
   console.log(`🎬 Stream Request received for magnet link / torrent file.`);
 
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     console.log('ℹ️  Premiumize key not configured. Mocking stream links.');
@@ -1594,9 +1769,13 @@ app.get('/api/proxy-subtitle', async (req, res) => {
     return res.status(400).json({ error: 'Missing parameter: url' });
   }
 
+  let safeUrl;
+  try { safeUrl = await assertPublicHttpUrl(url); }
+  catch (e) { return res.status(400).json({ error: `Blocked URL: ${e.message}` }); }
+
   try {
     console.log(`🌐 Proxying subtitle request to bypass CORS...`);
-    const response = await fetch(url);
+    const response = await fetchWithTimeout(safeUrl.href, {}, 15000);
     if (!response.ok) {
       throw new Error(`Failed to fetch subtitle from source: ${response.status}`);
     }
@@ -1627,9 +1806,13 @@ app.get('/api/proxy-rom', async (req, res) => {
     return res.status(400).json({ error: 'Missing parameter: url' });
   }
 
+  let safeUrl;
+  try { safeUrl = await assertPublicHttpUrl(url); }
+  catch (e) { return res.status(400).json({ error: `Blocked URL: ${e.message}` }); }
+
   try {
     console.log(`🌐 Proxying ROM/Zip request to bypass CORS...`);
-    const response = await fetch(url);
+    const response = await fetch(safeUrl.href);
     if (!response.ok) {
       throw new Error(`Failed to fetch ROM from source: ${response.status}`);
     }
@@ -1666,12 +1849,14 @@ app.get('/api/stream-archive-file', (req, res) => {
     return res.status(400).json({ error: 'Missing parameter: archiveHash or filePath' });
   }
 
-  // Prevent directory traversal attacks!
-  const sanitizedPath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, '');
-  const absoluteFilePath = path.join(TEMP_DIR, archiveHash, sanitizedPath);
-
-  // Verify that the file exists and is within the TEMP_DIR
-  if (!absoluteFilePath.startsWith(TEMP_DIR)) {
+  // Prevent directory traversal: archiveHash must be a 32-char hex md5, and the
+  // resolved file path must stay strictly inside TEMP_DIR/<archiveHash>.
+  if (!/^[a-f0-9]{32}$/i.test(archiveHash)) {
+    return res.status(400).json({ error: 'Invalid archive identifier.' });
+  }
+  const archiveRoot = path.resolve(TEMP_DIR, archiveHash);
+  const absoluteFilePath = path.resolve(archiveRoot, filePath);
+  if (absoluteFilePath !== archiveRoot && !absoluteFilePath.startsWith(archiveRoot + path.sep)) {
     return res.status(403).json({ error: 'Access denied: directory traversal detected.' });
   }
 
@@ -1715,6 +1900,7 @@ app.get('/mock-download/:hash', (req, res) => {
 // 5. Cloud Sync endpoints (GET: Download sync, POST: Upload sync)
 app.get('/api/sync', async (req, res) => {
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
   const filename = req.query.filename || 'sync_data.json';
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
@@ -1792,6 +1978,7 @@ app.get('/api/sync', async (req, res) => {
 app.post('/api/sync', async (req, res) => {
   const syncData = req.body;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
   const filename = req.query.filename || 'sync_data.json';
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
@@ -2142,8 +2329,8 @@ app.get('/api/metadata', async (req, res) => {
 // ── Category-specific metadata fetchers ──────────────────────────────────────
 
 async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
-  const tmdbKey = customTmdbKey || (process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY.trim() : '');
-  const tmdbReadToken = process.env.TMDB_READ_TOKEN ? process.env.TMDB_READ_TOKEN.trim() : '';
+  const tmdbKey = customTmdbKey || (sharedTmdbAllowed() && process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY.trim() : '');
+  const tmdbReadToken = sharedTmdbAllowed() && process.env.TMDB_READ_TOKEN ? process.env.TMDB_READ_TOKEN.trim() : '';
 
   const hasApiKey = tmdbKey && tmdbKey !== 'your_tmdb_api_key_here';
   const hasReadToken = tmdbReadToken && tmdbReadToken !== 'your_tmdb_read_access_token_here';
@@ -2295,8 +2482,8 @@ async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
 }
 
 async function fetchMovieTvMetadataByImdb(imdbId, customTmdbKey) {
-  const tmdbKey = customTmdbKey || (process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY.trim() : '');
-  const tmdbReadToken = process.env.TMDB_READ_TOKEN ? process.env.TMDB_READ_TOKEN.trim() : '';
+  const tmdbKey = customTmdbKey || (sharedTmdbAllowed() && process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY.trim() : '');
+  const tmdbReadToken = sharedTmdbAllowed() && process.env.TMDB_READ_TOKEN ? process.env.TMDB_READ_TOKEN.trim() : '';
 
   const hasApiKey = tmdbKey && tmdbKey !== 'your_tmdb_api_key_here';
   const hasReadToken = tmdbReadToken && tmdbReadToken !== 'your_tmdb_read_access_token_here';
@@ -2744,6 +2931,7 @@ async function fetchEbookMetadata(parsed) {
 app.get('/api/cloud/list', async (req, res) => {
   const { id } = req.query;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     return res.status(401).json({ error: 'Premiumize API Key not configured.' });
@@ -2776,6 +2964,7 @@ app.get('/api/cloud/list', async (req, res) => {
 app.post('/api/cloud/rename', async (req, res) => {
   const { id, type, name } = req.body;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     return res.status(401).json({ error: 'Premiumize API Key not configured.' });
@@ -2818,6 +3007,7 @@ app.post('/api/cloud/rename', async (req, res) => {
 app.post('/api/cloud/delete', async (req, res) => {
   const { id, type } = req.body;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     return res.status(401).json({ error: 'Premiumize API Key not configured.' });
@@ -2858,6 +3048,7 @@ app.post('/api/cloud/delete', async (req, res) => {
 // D. Get Account Info (Points / Storage Quota)
 app.get('/api/account/info', async (req, res) => {
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     // Return dummy data in developer mode so it doesn't crash
@@ -2891,6 +3082,7 @@ app.get('/api/account/info', async (req, res) => {
 // E. Get Active Transfers List (Real-Time Queue Monitor)
 app.get('/api/transfers', async (req, res) => {
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     // Return dummy transfers in developer mode
@@ -2927,6 +3119,7 @@ app.get('/api/transfers', async (req, res) => {
 app.post('/api/transfers/delete', async (req, res) => {
   const { id } = req.body;
   const premiumizeApiKey = resolvePremiumizeKey(req);
+  if (!premiumizeApiKey) return res.status(401).json({ status: 'error', code: 'NO_PM_KEY', message: 'Add your Premiumize API key in Settings to use this feature.' });
 
   if (!premiumizeApiKey || premiumizeApiKey === 'your_premiumize_api_key_here') {
     return res.json({ status: 'success', message: 'Mock transfer deleted.' });
@@ -2965,7 +3158,9 @@ app.post('/api/transfers/delete', async (req, res) => {
 
 
 app.get('/api/ai/models', async (req, res) => {
-  const rawToken = req.query.token || req.headers.authorization;
+  // Prefer the Authorization header; the query-param form is a deprecated fallback
+  // (query strings leak into access logs / browser history).
+  const rawToken = req.headers.authorization || req.query.token;
   const token = sanitizeAiToken(rawToken);
 
   if (!token) {
