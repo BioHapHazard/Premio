@@ -2042,16 +2042,18 @@ export default function App() {
   useEffect(() => {
     const onEsc = (e) => {
       if (e.key !== 'Escape') return;
+      if (showKeysPinPrompt) { setShowKeysPinPrompt(false); setRevealPinInput(''); setRevealPinError(false); return; }
+      if (showLegalDisclaimer) { setShowLegalDisclaimer(false); return; }
       if (metadataDrawerItem) { setMetadataDrawerItem(null); return; }
-      if (showSettings) { setShowSettings(false); return; }
       if (showPlaylistChoiceModal) { setShowPlaylistChoiceModal(false); return; }
+      if (showSettings) { setShowSettings(false); return; }
       if (showAICopilot) { setShowAICopilot(false); return; }
       if (isProfileDropdownOpen) { setIsProfileDropdownOpen(false); return; }
       if (isProfilePickerOpen) { setIsProfilePickerOpen(false); return; }
     };
     window.addEventListener('keydown', onEsc);
     return () => window.removeEventListener('keydown', onEsc);
-  }, [metadataDrawerItem, showSettings, showPlaylistChoiceModal, showAICopilot, isProfileDropdownOpen, isProfilePickerOpen]);
+  }, [showKeysPinPrompt, showLegalDisclaimer, metadataDrawerItem, showSettings, showPlaylistChoiceModal, showAICopilot, isProfileDropdownOpen, isProfilePickerOpen]);
 
 
   // --- Subtitle compiler engine ---
@@ -4161,7 +4163,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Profile Selection Overlay */}
       {showPicker && (
         <div className="modal-overlay profile-picker-overlay fade-in" style={{ zIndex: '9999', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(25px)' }}>
-          <div className="profile-picker-container" style={{ textAlign: 'center', maxWidth: '800px', width: '95%', margin: '0 auto' }}>
+          <div className="profile-picker-container" role="dialog" aria-modal="true" aria-label="Choose a profile" style={{ textAlign: 'center', maxWidth: '800px', width: '95%', margin: '0 auto' }}>
             
             {pinTargetProfile ? (
               // PIN Entry Dialog
@@ -4876,6 +4878,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         </div>
       )}
       
+      {/* a11y: always-present live region so screen readers announce every toast
+          (the visual toast below is mounted/unmounted, which SRs don't reliably read). */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {toast ? toast.message : ''}
+      </div>
+
       {/* Toast Notification Banner */}
       {toast && (
         <div className={`toast-notification toast-${toast.type}`}>
@@ -7330,7 +7338,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Premium Streaming Video Player Modal */}
         {activePlayerTorrent && (
           <div className="player-modal-backdrop">
-            <div className="player-modal glass-panel fade-in">
+            <div className="player-modal glass-panel fade-in" role="dialog" aria-modal="true" aria-label="Video player">
               <div className="player-header">
                 <h2 className="heading-ico"><Icon name="movie" size={22} /> PremiumPlayer</h2>
                 <button 
@@ -7753,7 +7761,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Retro Arcade Player Modal */}
         {activeRetroTorrent && (
           <div className="player-modal-backdrop">
-            <div className="player-modal glass-panel fade-in">
+            <div className="player-modal glass-panel fade-in" role="dialog" aria-modal="true" aria-label="Retro arcade console">
               <div className="player-header">
                 <h2 className="heading-ico"><Icon name="device-gamepad" size={22} /> Retro Arcade Console</h2>
                 <button 
@@ -7886,7 +7894,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* EBook Reader Modal */}
         {activeEbookTorrent && (
           <div className="player-modal-backdrop">
-            <div className="player-modal glass-panel fade-in">
+            <div className="player-modal glass-panel fade-in" role="dialog" aria-modal="true" aria-label="eBook reader">
               <div className="player-header">
                 <h2 className="heading-ico"><Icon name="book" size={22} /> EBook Reader Panel</h2>
                 <button 
@@ -7993,7 +8001,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Audio Player Modal */}
         {activeAudioTorrent && (
           <div className="player-modal-backdrop">
-            <div className="player-modal glass-panel fade-in">
+            <div className="player-modal glass-panel fade-in" role="dialog" aria-modal="true" aria-label="Audio player">
               <div className="player-header">
                 <h2 className="heading-ico"><Icon name="headphones" size={22} /> Audio WebPlayer</h2>
                 <button 
@@ -8112,7 +8120,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Custom Playlist Selection Modal Overlay */}
         {playlistSelectionTrack && (
           <div className="player-modal-backdrop" style={{ zIndex: 3000 }}>
-            <div className="playlist-selector-modal glass-panel fade-in" style={{ maxWidth: '480px', width: '90%', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <div className="playlist-selector-modal glass-panel fade-in" role="dialog" aria-modal="true" aria-label="Add track to playlist" style={{ maxWidth: '480px', width: '90%', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ margin: 0, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Icon name="music" size={18} /> Add Track to Playlist
@@ -8398,7 +8406,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Terms of Service & Legal Disclaimer Modal */}
       {showLegalDisclaimer && (
         <div className="modal-overlay legal-modal-overlay fade-in">
-          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
+          <div className="modal-card legal-modal-card glass-panel" role="dialog" aria-modal="true" aria-label="Legal disclaimer and terms of service" style={{ maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
             <div className="modal-header">
               <h2> Legal Disclaimer & Terms of Service</h2>
             </div>
@@ -8476,7 +8484,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Onboarding Wizard Modal */}
       {showOnboarding && (
         <div className="modal-overlay legal-modal-overlay fade-in">
-          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div className="modal-card legal-modal-card glass-panel" role="dialog" aria-modal="true" aria-label="Setup guide" style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto' }}>
             <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2> Setup Guide (Step {onboardingStep} of 3)</h2>
               <button 
@@ -8715,7 +8723,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {/* Playlist Choice Modal */}
       {showPlaylistChoiceModal && (
         <div className="modal-overlay legal-modal-overlay fade-in">
-          <div className="modal-card legal-modal-card glass-panel" style={{ maxWidth: '520px', width: '90%' }}>
+          <div className="modal-card legal-modal-card glass-panel" role="dialog" aria-modal="true" aria-label="Choose playback mode" style={{ maxWidth: '520px', width: '90%' }}>
             <div className="modal-header">
               <h2 style={{ background: 'linear-gradient(135deg, #ffffff 40%, var(--color-primary) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'}}> Choose Playback Mode</h2>
             </div>
@@ -9039,11 +9047,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     style={{ flex: 1, height: '42px', borderRadius: '24px' }}
                     disabled={aiLoading}
                   />
-                  <button 
-                    type="submit" 
+                  <button
+                    type="submit"
                     className="search-submit-btn"
                     style={{ width: '42px', height: '42px', minWidth: 'auto', padding: 0, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     disabled={aiLoading || !copilotInput.trim()}
+                    aria-label="Send message to AI Co-pilot"
                   >
                     <Icon name="send" size={18} />
                   </button>

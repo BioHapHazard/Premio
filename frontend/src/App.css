@@ -78,6 +78,20 @@ body {
   outline: none;
 }
 
+/* a11y: visually hidden, but still read by screen readers — used for live
+   regions that announce toasts/status without affecting the visual layout. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Default Button Reset & Styling (Dark Premium theme) */
 button {
   font-family: var(--font-sans);
