@@ -1,276 +1,281 @@
+# PREMIO — Premiumize & Usenet Media Suite
 
-# ⚡ Premio — Real-Time Premiumize & Usenet (Newznab) Aggregator • Personal Cloud Media Suite
+**Premio** is a personal, stateless web application that serves as a unified interface and media manager for your **Premiumize.me** cloud storage. It integrates multi-tracker torrent aggregation, Usenet Newznab search, TMDb metadata, OMDb ratings, and an AI assistant into a professional dark streaming interface — letting you search, verify cache status, and **stream movies, TV, audiobooks, eBooks, and retro games directly in your browser**.
 
-**Premio** is a 100% stateless web application that serves as a unified interface and media manager for your **Premiumize.me** cloud storage and Usenet downloader. 
-
-By integrating multi-tracker torrent aggregation and **Usenet Newznab search** with active cloud locker management, Premio lets you search across public and private trackers or Usenet newsgroups, verify CDN caching status, add transfers, and **stream movies, listen to audiobooks, read books, or boot retro arcade games directly in your browser**.
-
-Built with a glassmorphic UI, preset dark themes, and a strict **Bring-Your-Own-Key (BYOK) stateless architecture**, Premio keeps your API keys secure by running entirely in your browser with zero remote database storage.
+Built with a strict **Bring-Your-Own-Key (BYOK) stateless architecture**, Premio keeps your API keys secure and never stores them on any server.
 
 ---
 
-## 📐 System Architecture
-
-Premio is designed to be lightweight, fast, and stateless. It proxies commands directly to Jackett and the Premiumize APIs, keeping all user data secure and local to the web client:
+## System Architecture
 
 ```mermaid
 graph TD
-    subgraph BrowserClient["Browser Client (Vite React Canvas)"]
-        UI[Glassmorphic Responsive UI]
-        Theme[Ambient Theme Engine]
+    subgraph BrowserClient["Browser Client (Vite React)"]
+        UI[Dark Streaming UI]
+        Theme[4-Theme Engine]
         Players[In-Browser Media Suite]
         Cache[Sync Storage Engine]
+        Profiles[Multi-Profile System]
     end
 
     subgraph HeadlessNode["Headless Node Proxy (Express Server)"]
-        Server[Express Routing & Controllers]
+        Server[Express Routing & BYOK Gate]
         ZipStream[Archive In-Memory Streamer]
-        Metadata[TMDb Metadata Parser]
+        Metadata[TMDb + OMDb Metadata Parser]
+        RateLimit[Rate Limiter & SSRF Guard]
     end
 
     subgraph ExternalAPIs["External APIs & Services"]
         Jackett[Jackett Torrent Indexer]
         PM_API[Premiumize.me Cloud API]
         TMDB[TMDb Metadata Service]
+        OMDB[OMDb Ratings — IMDb / RT / MC]
+        IntroDB[IntroDB Skip-Intro Timestamps]
     end
 
     UI <-->|Local Client States| Theme
     UI <-->|Chapters & Positions| Cache
-    UI <-->|HTTP API Calls| Server
+    UI <-->|HTTP API Calls + BYOK Headers| Server
     Players <-->|Subtitles / ROMs / Audio| Server
 
     Server <-->|Torrent Query XML| Jackett
     Server <-->|Direct DL / Transfers / Quota| PM_API
     Server <-->|Poster & Details Lookup| TMDB
-    ZipStream <-->|In-Memory Decompression| PM_API
+    Server <-->|IMDb / RT / Metacritic Ratings| OMDB
+    Players <-->|Intro Timestamps| IntroDB
 ```
 
 ---
 
-## 🌟 Key Features
+## Key Features
 
-### 🔍 1. Multi-Tracker Search Aggregator
-* **Concurrent Indexer Aggregation**: Searches across indexer feeds configured in your local Jackett instance.
-* **Category Lanes**: Browse search results in categories:
-  * `🎥 Movies` | `📺 TV Shows` | `🎧 Music` | `📻 Audiobooks` | `📖 Ebooks` | `💻 Software` | `🎹 VST` | `🔞 Adult` | `🎮 Retro Games` | `📁 Other`
-* **CDN Cache Verification**: Queries the Premiumize.me API to check which torrents are already cached, highlighting cached releases with an `🟢 Instant DL` badge for direct cloud transfers.
+### 1. Multi-Tracker & Usenet Search Aggregator
 
-### 🎮 2. In-Browser Media Players
-Premio includes built-in media players to stream files directly from your browser:
-* **🎬 Movie & Episode Streamer**: Stream video files directly in-browser with native controls, or generate direct-play links to launch external players like VLC.
-  * **TMDb Integration**: Optionally fetches movie posters, ratings, genre tags, cast details, plot summaries, and trailers.
-* **🎧 Audio Player**: Designed for music albums and audiobooks.
+* **Unified "All" Search**: A single query searches across every category simultaneously — Movies, TV Shows, Music, Audiobooks, eBooks, Software, VST, Retro Games, and Adult — with results grouped by type. No need to pick a category first.
+* **Category Lanes**: Drill into a specific category for focused results.
+* **Concurrent Indexer Aggregation**: Searches across all indexer feeds configured in your local Jackett instance in parallel, with a 90-second timeout and graceful fallback so a slow indexer never hangs the whole search.
+* **AI Semantic Search**: Run concurrent multi-title searches using natural language — e.g. *"find me Interstellar and Dune"* — powered by the Premiumize.ai assistant.
+* **CDN Cache Verification**: Queries the Premiumize.me API to check which torrents are instantly streamable, highlighting cached releases with an `Instant` badge.
+* **Drag-and-Drop Importer**: Drop a `.torrent`, `.nzb`, or magnet link directly onto the page. Premio parses it, checks cache status, and presents it as a result card.
+
+### 2. In-Browser Media Players
+
+* **Video Streamer**: Stream video files directly in-browser with native controls, or generate direct-play links for external players like VLC.
+  * **IntroDB Skip Intro**: Automatically fetches intro segment timestamps from [IntroDB](https://introdb.app) when you start a TV episode. A "Skip Intro" button appears timed to the intro, and an **Auto-Skip** toggle in Settings fast-forwards past intros automatically.
+  * **TMDb + OMDb Integration**: Fetches posters, ratings, genre tags, cast details, plot summaries, trailers, and multi-source ratings (IMDb, Rotten Tomatoes, Metacritic) for every movie and TV title.
+* **Audio Player**: Designed for music albums and audiobooks.
   * Compiles folders of audio tracks into playable playlists.
   * Features a rotating vinyl record visualizer.
-  * Supports timeline scrubbing and playback speed adjustments ($0.75x$ to $2.0x$).
-* **📖 eBook & PDF Document Reader**: Read books, comics, and technical PDFs.
-  * Includes a side-by-side Table of Contents drawer.
-  * Adjust font size.
-  * Screen filters (Night mode, Sepia tone, and Day mode).
-* **🎮 Retro Arcade Console (Emulator)**: Powered by EmulatorJS to play ROMs directly inside the browser.
-  * Supports `.nes`, `.sfc` / `.smc`, `.md`, `.gb` / `.gbc` / `.gba`, `.a26`, and `.a78` ROM formats.
-  * **Zip ROM Decompressor**: Unzips and boots games stored in compressed `.zip` folders on Premiumize.
-  * **Scrolling Lock**: Prevents arrow keys from scrolling the webpage during gameplay.
+  * Supports timeline scrubbing and playback speed adjustments (0.75× to 2.0×).
+* **eBook & PDF Reader**: Read books, comics, and technical PDFs.
+  * Side-by-side Table of Contents drawer.
+  * Adjustable font size.
+  * Screen filters: Night mode, Sepia tone, and Day mode.
+* **Retro Arcade Console**: Powered by EmulatorJS.
+  * Supports `.nes`, `.sfc/.smc`, `.md`, `.gb/.gbc/.gba`, `.a26`, `.a78` ROM formats.
+  * Zip ROM Decompressor: Unzips and boots games stored in `.zip` archives on Premiumize.
+  * Scrolling lock prevents arrow keys from scrolling the page during gameplay.
 
-### 📊 3. Cloud Storage & Quota Manager
-* **Cloud File Browser**: Navigate your Premiumize folder directories, rename files/folders, delete content, generate direct download links, or save files to your library.
-* **Quota Dashboard**: Displays account space usage in real-time (`246.96 GB / 1000 GB Used`). The quota bar changes color dynamically based on use (teal for safe, amber for warnings, and red for critical capacity).
+### 3. Multi-Source Ratings (OMDb)
+
+* **IMDb, Rotten Tomatoes & Metacritic** ratings pulled via the OMDb API and displayed as color-coded pills in the detail drawer alongside TMDb scores:
+  * **IMDb** — gold pill
+  * **Rotten Tomatoes** — red pill
+  * **Metacritic** — green pill
+* Ratings are fetched using the IMDb ID provided by TMDb for exact matching. Cached metadata entries are automatically backfilled with ratings on next view.
+* Requires an OMDb API key (free at [omdbapi.com](https://www.omdbapi.com/apikey.aspx)) entered in Settings or set as `OMDB_API_KEY` in `.env`.
+
+### 4. Cloud Storage Manager
+
+* **Cloud File Browser**: Navigate your Premiumize folder tree with a professional card-based layout — folder cards and file cards with thumbnails, metadata, and action buttons.
+* **File Actions**: Rename, delete, generate direct download links, or save files to your library — all from the card.
+* **Quota Dashboard**: Displays account space usage in real-time. The quota bar changes color dynamically (teal → amber → red) based on usage.
 * **Transfer Manager**: Track active torrent downloads on Premiumize with status bars and cancellation controls.
 
-### ⏱️ 4. Continue Watching & Progress Checkpoints
-* **Progress Tracking**: Saves video playback timestamp, audiobook chapter progress, and book scroll offset position.
-* **Resumable Sub-Shelves**: Resume reading, playing, or watching files from the continue watching section.
+### 5. Continue Watching & Progress Tracking
 
-### ⚡ 5. Usenet & Local Imports Suite
-* **📂 Drag-and-Drop NZB/Torrent/Magnet Importer**: Drag and drop a `.torrent` or `.nzb` file, or paste a magnet link. Premio's backend parses the metadata and checks the Premiumize CDN cache status, presenting it as a search result.
-* **🔀 Multi-Indexer Aggregation**: Connect multiple Newznab-compliant indexers via the settings Control Panel. Premio queries endpoints asynchronously, removes duplicates, and lists available sources on the result card (e.g. `Source: NZBGeek, AltHub`).
-* **🩺 Usenet Health & Completion Predictor**: Renders a completion probability indicator on Usenet cards (Excellent, Moderate, or Suspect), based on a mathematical decay equation factoring in post age, grabs, and password protection status.
-* **🔄 Auto-Decryption Archive Streamer**: If an audiobook, ROM, or music album inside a `.zip` or `.rar` archive is password-protected, Premio extracts the password from indexer listings and feeds it into the in-memory unzip/unrar streaming engines for automatic decryption.
-* **Double-Cost Fair-Use Points Warning**: Displays a warning explaining that Premiumize charges `1 point/GB` to download a Usenet NZB, plus standard fair-use points to stream or download it from your cloud. A toggle allows you to dismiss this warning.
-* **Rich Metadata Resolution Cache**: Parses IMDb and TVDB tags from Usenet XML attributes, feeding them to TMDb endpoints to retrieve posters, plots, and ratings.
-* **Usenet Cloud Submission**: Forwards the direct NZB link (`enclosure.url`) directly to Premiumize's transfer creator.
+* **Progress Checkpoints**: Saves video playback timestamp, audiobook chapter, and book scroll position per profile.
+* **Backdrop Cards**: The Continue Watching section shows 16:9 backdrop art (or poster fallback) with a title, time-remaining overlay, and a progress bar pinned to the bottom edge.
+* **Resumable Sub-Shelves**: Resume watching, listening, or reading from where you left off.
 
-### 🎨 6. Theme Customization
-Switch the application's theme preset. Your preference is persisted in `localStorage`:
-* 🌌 **Midnight Nebula**: Indigo base with purple and pink accents.
-* 🧊 **Nordic Frost**: Dark navy base with blue and teal highlights.
-* 🍊 **Retro Synthwave**: Warm orange-gold and pink gradients.
-* 🪵 **Obsidian Slate**: Minimalist stealth black base with slate gray highlights.
+### 6. Watchlist & Notifications
 
-### 🔒 7. Developer Privacy Lock
-* **Logo Unlocks**: Click the header logo **5 times in 2 seconds** to toggle visibility of Adult search categories.
-* **Privacy Filter**: When locked:
-  * Adult search queries and results are filtered out.
-  * Search keywords in the Adult category are excluded from local history.
-  * Active adult transfers are omitted from local download logs.
-  * Bookmarked adult releases are hidden from view.
+* **Per-Profile Watchlist**: Add any title to your watchlist. Premio periodically checks cache status for watchlisted items and raises an in-app notification when a cached release becomes available.
+* **Notification Center**: Badge count and notification feed for newly-available watchlisted titles.
+* **Discovery**: "New this week" row surfaces TMDb trending titles that are instantly streamable right now via Premiumize cache.
 
-### 🤖 8. Premiumize.ai AI Assistant Integration
-Premio integrates with your **Premiumize.ai** account to provide an intelligent, automated media companion under your existing subscription—with zero additional API token costs:
-* **🪄 AI Filename Cleaner**: Clean up long, messy release folder or file names (e.g. `Stranger.Things.S01E01.1080p.WEB.h264-EDITH.mkv` ➡️ `Stranger Things S01E01`) in 1-click while renaming files or folders in your cloud browser.
-* **✨ AI Playlist Curator**: When creating M3U show playlists, type natural language rules (e.g. *"only seasons 1 and 2, chronological"* or *"only fingerprint cases"*) to filter and sort the files instantly.
-* **💬 Floating AI Co-pilot Chat Sidebar**: Access a slide-out, glassmorphic chat sidebar powered by your preferred Premiumize.ai LLM model (GPT-4o, Llama, DeepSeek) for movie recommendations, library navigation support, or casual conversations.
+### 7. Multi-Profile System
+
+* **Up to 5 Profiles**: Each profile has a custom name, avatar, and fully isolated library, watchlist, continue-watching history, and settings — all stored in `localStorage` with per-profile namespace keys.
+* **PIN Locks**: Optional 4-digit PIN lock per profile to prevent switching without authorization. PINs are hashed locally.
+* **Age Rating Filters**: Lock a profile to a maximum content rating (G, PG, PG-13, R). Filtered profiles hide results above the selected rating from search and library views. Labeled as a soft/convenience lock (not a security boundary).
+
+### 8. Usenet Suite
+
+* **Multi-Indexer Aggregation**: Connect multiple Newznab-compliant indexers via Settings. Premio queries endpoints asynchronously, deduplicates, and lists available sources on each result card.
+* **Usenet Health & Completion Predictor**: Renders a completion probability indicator (Excellent / Moderate / Suspect) based on post age, grabs, and password-protection status.
+* **Auto-Decryption Archive Streamer**: Extracts passwords from indexer listings and feeds them into the in-memory unzip/unrar streaming engine for automatic decryption of password-protected archives.
+* **Usenet Cloud Submission**: Forwards NZB links directly to Premiumize's transfer creator.
+* **Rich Metadata Resolution**: Parses IMDb and TVDB tags from Usenet XML attributes to retrieve posters, plots, and ratings from TMDb.
+* **Fair-Use Points Warning**: Explains the double-cost structure for Usenet downloads on Premiumize (1 pt/GB download + streaming fair-use). Dismissible.
+
+### 9. Theme Customization
+
+Four built-in dark themes, persisted in `localStorage`:
+
+* **Midnight Nebula**: Indigo base with purple and pink accents.
+* **Nordic Frost**: Dark navy with blue and teal highlights.
+* **Retro Synthwave**: Warm orange-gold and pink gradients.
+* **Obsidian Slate**: Minimalist stealth black with slate-gray highlights.
+
+### 10. Developer Privacy Lock
+
+* Click the **PREMIO** header wordmark **5 times in 2 seconds** to toggle visibility of Adult search categories.
+* When locked, adult queries, results, transfers, and bookmarks are filtered from all views.
+
+### 11. AI Co-Pilot (Premiumize.ai)
+
+Premio integrates with your **Premiumize.ai** account for an intelligent media companion:
+
+* **AI Filename Cleaner**: Clean up messy release folder/file names in one click while renaming in the cloud browser.
+* **AI Playlist Curator**: Use natural language rules when building playlists (e.g. *"only seasons 1 and 2, chronological"*) to filter and sort files.
+* **Floating AI Chat Sidebar**: A slide-out chat panel (chatbot icon with animated pulse ring in the bottom-right corner) powered by your preferred Premiumize.ai LLM (GPT-4o, Llama, DeepSeek). Swaps to a close icon when the panel is open.
 
 ---
 
-## 💻 Tech Stack & Dependencies
+## Security Model
 
-* **Backend**: Node.js + Express (Modular ES Modules, natively using fetch APIs, group cache algorithms, and in-memory zip streaming).
-* **Frontend**: React (Vite) + Premium Vanilla CSS (custom dynamic HSL theme variables, frosted glassmorphism, responsive grid/flex systems).
-* **No Bloat**: Designed without heavy third-party styling frameworks to maximize speed, responsiveness, and control.
+Premio uses a strict **Bring-Your-Own-Key (BYOK)** architecture:
+
+* Every API-touching endpoint requires the caller to supply their own keys via request headers (`X-Premiumize-Key`, `X-Jackett-Key`, `X-TMDb-Key`, `X-OMDb-Key`, etc.).
+* The server **never falls back to the owner's `.env` keys in production**. `ALLOW_ENV_KEYS` must remain unset or `false` on any public deployment.
+* Set `ALLOW_ENV_KEYS=true` only in local `.env` for personal development, so you can test without entering keys in the UI on every restart.
+* **Rate limiting** on all `/api` routes, with stricter limits on keyless endpoints.
+* **SSRF guard**: The subtitle and ROM proxy endpoints validate URLs against a safe-fetch allowlist before making any outbound request.
+* **Helmet** security headers (HSTS, CSP, X-Content-Type-Options, frameguard) on all responses.
+* **CORS**: Restricted to configured origins (`CORS_ALLOWED_ORIGINS`); wildcard `*` is not used in production.
+* **Archive safety**: Zip/rar extraction validates each entry path against the target directory to prevent zip-slip attacks.
 
 ---
 
-## 🚀 Quick Start Guide
+## Tech Stack
+
+* **Backend**: Node.js + Express (ESM, Node 24), native `fetch`, in-memory zip/rar streaming
+* **Frontend**: React 18 (Vite), custom CSS with HSL theme variables and glassmorphism — no heavy UI framework
+* **Icons**: Custom inline-SVG `Icon` component (~49 Tabler-style icons) — no CDN dependency, works offline
+* **Typography**: [Audiowide](https://fonts.google.com/specimen/Audiowide) for the PREMIO wordmark; system sans-serif for UI
+
+---
+
+## Quick Start
 
 ### Prerequisites
-1. **Node.js** (v18.0.0 or higher recommended)
-2. **Jackett** installed on your local host (optional, only required to enable the search aggregator)
 
----
+1. **Node.js** v18+ (v24 recommended)
+2. **Jackett** (optional — only required for torrent search aggregation)
 
-### Step 1: Install Dependencies
-Clone the repository and run the integrated installer script from the root directory:
+### Install
+
 ```bash
+git clone https://github.com/BioHapHazard/premio.git
+cd premio
 npm run install-all
 ```
-*Alternatively, you can manually run `npm install` in both the root folder and the `frontend/` folder.*
 
----
+### Configure (optional — local dev only)
 
-### Step 2: Configure API Credentials (BYOK)
+Copy `.env.example` to `.env` and fill in your keys. Set `ALLOW_ENV_KEYS=true` so the server uses them without requiring UI entry during dev.
 
-Premio features a **Bring-Your-Own-Key (BYOK) architecture**. You do **not** need to configure any environment files to run the app. You can deploy it instantly and configure your credentials directly inside the web UI:
-
-1. Launch Premio and click the **⚙️ Control Panel** button in the top right corner.
-2. Input your **Premiumize API Key**, **TMDb API Key**, **Jackett Server URL/Key**, and **Usenet indexers** list.
-3. Your keys are saved locally in your browser's secure `localStorage` and sent with each request in secure headers. They are never logged or stored on any server database.
-
----
-
-### Step 3 (Optional): Fallback Environment Variables
-
-If you are self-hosting Premio and want to define default API keys for your instance, copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Open `.env` in a text editor and fill in your details:
+
+Key variables:
+
 ```env
 PORT=3001
 JACKETT_URL=http://localhost:9117
-JACKETT_API_KEY=your_jackett_api_key_here
-PREMIUMIZE_API_KEY=your_premiumize_api_key_here
-TMDB_API_KEY=your_tmdb_api_key_here
+JACKETT_API_KEY=your_jackett_api_key
+PREMIUMIZE_API_KEY=your_premiumize_api_key
+TMDB_READ_TOKEN=your_tmdb_v4_read_access_token
+OMDB_API_KEY=your_omdb_api_key          # optional — IMDb/RT/MC ratings
+ALLOW_ENV_KEYS=true                     # local dev only — NEVER set in production
 ```
 
-> [!TIP]
-> **Developer Mock Mode**: If you leave these environment variables blank and do not supply UI keys, Premio operates in a fully functional **Developer Mock Mode**. This offline sandbox serves highly realistic mock results and progress graphs, allowing complete inspection of Premio's premium aesthetic immediately without any keys!
+> **In production, leave `ALLOW_ENV_KEYS` unset.** Each visitor supplies their own keys via the in-app Settings panel.
 
----
+### Launch
 
-### Step 4: Launch the Application
-
-You can launch Premio either using Node.js locally or via Docker:
-
-#### Method A: Local Node.js Development
-Start both the Express backend and the Vite development server concurrently with a single command from the root directory:
 ```bash
 npm run dev-all
 ```
-Premio is now available at:
-* **Frontend UI**: `http://localhost:5173` (with Hot Module Replacement)
-* **Backend API Gateway**: `http://localhost:3001`
 
-#### Method B: Docker Container (Production)
-Build and run the unified Docker container:
+* **Frontend UI**: `http://localhost:5173` (Vite HMR)
+* **Backend API**: `http://localhost:3001`
+
+### Docker (Production)
+
 ```bash
-# 1. Build the production image
 docker build -t premio-media-suite .
-
-# 2. Start the container in stateless mode
 docker run -p 3001:3001 premio-media-suite
 ```
-Premio is now available in production mode at `http://localhost:3001`.
 
 ---
 
-## ⚙️ Setting Up Jackett (Optional)
+## Setting Up Jackett
 
-Jackett serves as an XML/JSON indexer proxy, aggregating search requests and translating them to indexer feeds.
-
-1. **Install Jackett**:
-   * macOS (via Homebrew): `brew install --cask jackett`
-   * Windows / Linux: Download from the official [Jackett Releases Page](https://github.com/Jackett/Jackett/releases).
-2. **Launch & Configure Indexers**:
-   * Open `http://localhost:9117` in your browser.
-   * Click **"+ Add Indexer"** and select your preferred public or private trackers.
-3. **Connect to Premio**:
-   * Copy the **API Key** located in the top-right corner of the Jackett web panel.
-   * Paste it as `JACKETT_API_KEY` in your `.env` file and restart Premio.
-
-*Tip: A pre-compiled macOS ARM64 binary of Jackett is also included in the repository under the `/Jackett` folder. It can be initialized by running `./jackett` in your terminal inside that directory.*
+1. **Install Jackett**: Download from [Jackett Releases](https://github.com/Jackett/Jackett/releases), or use the included macOS ARM64 binary under `/Jackett/`.
+2. **Launch**: `./Jackett/jackett &` — Jackett runs at `http://localhost:9117`.
+3. **Add Indexers**: Open the Jackett dashboard → **+ Add Indexer** → configure your public/private trackers.
+4. **Connect to Premio**: Copy the API key from the Jackett dashboard top-right and enter it in Premio Settings.
 
 ---
 
-## 🤖 Setting Up Premiumize.ai
+## Setting Up Premiumize.ai (AI Co-Pilot)
 
-Premio routes all AI calls securely through the backend proxy using your active browser session JWT token, allowing you to access premium LLM models at no additional charge.
-
-1. **Log in to Premiumize AI**:
-   * Open [https://premiumize.ai](https://premiumize.ai) in your browser and sign in.
-2. **Retrieve your JWT Token**:
-   * Open browser Developer Tools (**F12** or right-click ➡️ **Inspect**) and select the **Network** tab.
-   * Filter the list by selecting **Fetch/XHR**.
-   * Send a chat message on the website.
-   * Click on the new request that appears (e.g., `completions`).
-   * Under **Headers** ➡️ **Request Headers**, locate the `authorization` value (looks like `Bearer eyJ...`).
-   * Copy the entire token string (Premio will automatically strip out any `Bearer` or `Bearer: ` prefix if pasted).
-3. **Save Token in Premio**:
-   * In Premio, click **⚙️ Control Panel** in the top right.
-   * Toggle **Enable Premiumize AI Assistant** to on.
-   * Paste your token in the **Premiumize.ai JWT Token** field.
-   * Click **Fetch Models** to retrieve all models available on your account and select your preferred one (e.g., Llama, GPT-4o) from the dropdown.
+1. Sign in at [premiumize.ai](https://premiumize.ai).
+2. Open DevTools → Network tab → filter by Fetch/XHR → send a chat message → find the `completions` request → copy the `authorization` header value (`Bearer eyJ...`).
+3. In Premio Settings → enable **AI Assistant** → paste the token → click **Fetch Models** → select your model.
 
 ---
 
-## 📂 Project Directory Structure
+## Project Structure
 
 ```
 Premio/
-├── server.js               # Stateless Express backend (handles file streaming, api proxying, sync)
-├── package.json            # Main app dependencies and task runner scripts
-├── .env                    # Local environment secrets and keys (git-ignored)
-├── Jackett/                # Standalone Jackett indexer binary files
+├── server.js               # Express backend — BYOK gate, API proxy, streaming, security
+├── package.json
+├── .env                    # Local secrets (git-ignored, never committed)
+├── .env.example            # Template with documentation for all variables
+├── Jackett/                # macOS ARM64 Jackett binary
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx         # Central React container, page routing, and state manager
-│   │   ├── App.css         # Custom layout, styling variables, CRT scanlines, and glass themes
-│   │   └── main.jsx        # App entry point
-│   ├── public/             # Static public player HTML interfaces
-│   │   ├── audio.html      # Vinyl disc visualizer and playlist audio player
-│   │   ├── reader.html     # PDF & eBook Table of Contents reader
-│   │   └── emulator.html   # EmulatorJS retro cabinet console wrapper
-│   └── package.json        # Frontend configuration and Vite bundle settings
-└── README.md               # User and developer manual
+│   │   ├── App.jsx         # React app — all UI, routing, state, players
+│   │   ├── App.css         # Custom CSS — dark themes, glassmorphism, design tokens
+│   │   ├── Icon.jsx        # Inline-SVG icon component (~49 icons, no CDN)
+│   │   └── main.jsx        # Entry point
+│   ├── public/
+│   │   ├── audio.html      # Vinyl visualizer audio player
+│   │   ├── reader.html     # PDF & eBook reader
+│   │   └── emulator.html   # EmulatorJS retro console
+│   └── package.json
+└── README.md
 ```
 
 ---
 
-## 💾 Cloud Synchronization & Backups
+## Cloud Sync & Backups
 
-Premio keeps your library shelves and continues dashboards completely stateless on the local client, but automatically backs up your bookmarks to the cloud. 
-* All synchronization files are safely backed up to your Premiumize.me cloud storage inside a folder named `PremiumSearch_Sync`.
-* This folder name is preserved to ensure full backward compatibility, keeping all existing bookmarks and reading checkpoints intact!
+Bookmarks and library state are stateless on the client but automatically backed up to your Premiumize.me cloud storage inside a folder named `PremiumSearch_Sync`. This name is preserved for backward compatibility with existing bookmarks and checkpoints.
 
 ---
 
-## 👥 Credits
+## Credits
 
-* **Author & Lead Developer**: Built with ⚡ by **[BioHapHazard](https://github.com/BioHapHazard)**. 🚀
+**Author & Lead Developer**: Built by **[BioHapHazard](https://github.com/BioHapHazard)**
 
 ---
 
-## ⚖️ License
+## License
 
-This project is licensed under the **MIT License**. See the [LICENSE](file:///Users/shilgenfeld/Desktop/Premiumize%20Cache%20Search/LICENSE) file for the full legal text.
-
+MIT License — see [LICENSE](LICENSE) for the full text.
