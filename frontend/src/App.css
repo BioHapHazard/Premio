@@ -63,6 +63,21 @@ body {
   min-height: 100vh;
 }
 
+/* ===== a11y: keyboard focus visibility =====
+   Restores a clear, theme-colored focus ring for KEYBOARD navigation only
+   (:focus-visible). Mouse/touch clicks never trigger it, so sighted mouse
+   users see no extra outline. !important is intentional here: it must beat the
+   many element-level `outline: none` resets below (e.g. the button reset). */
+:focus-visible {
+  outline: 2px solid var(--color-primary) !important;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Belt-and-suspenders: never show a ring for non-keyboard focus. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Default Button Reset & Styling (Dark Premium theme) */
 button {
   font-family: var(--font-sans);
@@ -1442,6 +1457,101 @@ textarea::placeholder {
   flex-direction: column;
   gap: 0.4rem;
 }
+
+/* ===== Online subtitle fetch (OpenSubtitles + SubDL) ===== */
+.subtitle-fetch-group .sub-fetch-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.sub-lang-select { flex: 0 0 auto; min-width: 120px; }
+.sub-fetch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary-glow);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.sub-fetch-btn:hover:not(:disabled) { background: var(--color-primary); }
+.sub-fetch-btn:disabled { opacity: 0.6; cursor: progress; }
+
+.sub-active-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.6rem;
+  background: var(--color-cached-glow);
+  border: 1px solid var(--color-cached);
+  color: var(--color-cached);
+  font-size: 0.78rem;
+}
+.sub-active-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-active-remove {
+  flex-shrink: 0; padding: 2px; background: transparent; border: none;
+  color: var(--color-cached); cursor: pointer; display: inline-flex;
+}
+
+.sub-results-panel {
+  margin-top: 0.6rem;
+  background: hsla(224, 30%, 6%, 0.96);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.85rem;
+  overflow: hidden;
+}
+.sub-results-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.78rem; font-weight: 700; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 1px solid var(--glass-border);
+}
+.sub-results-close { padding: 2px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+.sub-results-loading, .sub-results-error {
+  padding: 0.9rem; font-size: 0.82rem; display: flex; align-items: center; gap: 0.5rem;
+}
+.sub-results-error { color: var(--color-uncached); }
+.sub-results-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+.sub-result-item {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid hsla(224, 20%, 20%, 0.4);
+}
+.sub-result-item:last-child { border-bottom: none; }
+.sub-result-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.sub-result-release {
+  font-size: 0.82rem; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sub-result-meta { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 0.7rem; color: var(--text-muted); }
+.sub-provider-tag {
+  padding: 1px 6px; border-radius: 4px; font-weight: 700; font-size: 0.65rem;
+}
+.prov-opensubtitles { background: hsla(150, 70%, 45%, 0.2); color: hsl(150, 70%, 60%); }
+.prov-subdl { background: hsla(263, 70%, 60%, 0.2); color: hsl(263, 75%, 72%); }
+.sub-result-dl { display: inline-flex; align-items: center; gap: 2px; }
+.sub-result-hi {
+  padding: 0 5px; border-radius: 4px; font-weight: 700; font-size: 0.62rem;
+  background: hsla(28, 90%, 55%, 0.18); color: hsl(28, 90%, 62%);
+}
+.sub-result-load {
+  flex-shrink: 0; padding: 0.35rem 0.85rem; border-radius: 0.55rem;
+  border: 1px solid var(--color-primary); background: transparent;
+  color: var(--color-primary); font-weight: 600; font-size: 0.78rem; cursor: pointer;
+  transition: all 0.18s ease; min-width: 54px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.sub-result-load:hover:not(:disabled) { background: var(--color-primary); color: #fff; }
+.sub-result-load:disabled { opacity: 0.6; cursor: progress; }
 
 .player-select-group label {
   font-size: 0.8rem;

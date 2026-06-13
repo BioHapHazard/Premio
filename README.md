@@ -31,6 +31,7 @@ graph TD
         TMDB[TMDb Metadata Service]
         OMDB[OMDb Ratings — IMDb / RT / MC]
         IntroDB[IntroDB Skip-Intro Timestamps]
+        Subs[OpenSubtitles + SubDL]
     end
 
     UI <-->|Local Client States| Theme
@@ -42,6 +43,7 @@ graph TD
     Server <-->|Direct DL / Transfers / Quota| PM_API
     Server <-->|Poster & Details Lookup| TMDB
     Server <-->|IMDb / RT / Metacritic Ratings| OMDB
+    Server <-->|Subtitle Search & Download| Subs
     Players <-->|Intro Timestamps| IntroDB
 ```
 
@@ -61,7 +63,9 @@ graph TD
 ### 2. In-Browser Media Players
 
 * **Video Streamer**: Stream video files directly in-browser with native controls, or generate direct-play links for external players like VLC.
+  * **Fetch Subtitles Online**: When a video has no embedded subtitle track, search and pull subtitles right from the player. Keyed by the TMDb-resolved IMDb ID (plus season/episode for TV), it queries **OpenSubtitles** (primary) with an automatic **SubDL** fallback when OpenSubtitles is empty or hits its daily download cap. Pick a language and release from the results panel (provider tag, download count, hearing-impaired badge), and the subtitle loads straight into the player — the existing SRT→WebVTT compiler and AI translation still apply on top.
   * **IntroDB Skip Intro**: Automatically fetches intro segment timestamps from [IntroDB](https://introdb.app) when you start a TV episode. A "Skip Intro" button appears timed to the intro, and an **Auto-Skip** toggle in Settings fast-forwards past intros automatically.
+  * **AI Subtitle Translation**: Translate any subtitle track (embedded or fetched) into another language on the fly using your Premiumize.ai assistant.
   * **TMDb + OMDb Integration**: Fetches posters, ratings, genre tags, cast details, plot summaries, trailers, and multi-source ratings (IMDb, Rotten Tomatoes, Metacritic) for every movie and TV title.
 * **Audio Player**: Designed for music albums and audiobooks.
   * Compiles folders of audio tracks into playable playlists.
@@ -147,7 +151,8 @@ Premio integrates with your **Premiumize.ai** account for an intelligent media c
 
 Premio uses a strict **Bring-Your-Own-Key (BYOK)** architecture:
 
-* Every API-touching endpoint requires the caller to supply their own keys via request headers (`X-Premiumize-Key`, `X-Jackett-Key`, `X-TMDb-Key`, `X-OMDb-Key`, etc.).
+* Every API-touching endpoint requires the caller to supply their own keys via request headers (`X-Premiumize-Key`, `X-Jackett-Key`, `X-TMDb-Key`, `X-OMDb-Key`, `X-OpenSubtitles-Key`, `X-SubDL-Key`, etc.).
+* The subtitle provider keys are **pure BYOK** — header-only, with no `.env` fallback at all — so the owner's subtitle accounts can never be spent by visitors, even in dev.
 * The server **never falls back to the owner's `.env` keys in production**. `ALLOW_ENV_KEYS` must remain unset or `false` on any public deployment.
 * Set `ALLOW_ENV_KEYS=true` only in local `.env` for personal development, so you can test without entering keys in the UI on every restart.
 * **Rate limiting** on all `/api` routes, with stricter limits on keyless endpoints.
@@ -155,6 +160,17 @@ Premio uses a strict **Bring-Your-Own-Key (BYOK)** architecture:
 * **Helmet** security headers (HSTS, CSP, X-Content-Type-Options, frameguard) on all responses.
 * **CORS**: Restricted to configured origins (`CORS_ALLOWED_ORIGINS`); wildcard `*` is not used in production.
 * **Archive safety**: Zip/rar extraction validates each entry path against the target directory to prevent zip-slip attacks.
+
+---
+
+## Accessibility
+
+Premio is being made fully keyboard- and screen-reader friendly:
+
+* **Keyboard operable**: Result cards, library tiles, and watchlist tiles are reachable with `Tab` and activated with `Enter` / `Space`, not just the mouse.
+* **Visible focus ring**: A theme-colored focus outline appears for keyboard navigation only (mouse clicks stay clean), so you can always see where you are.
+* **Dialog semantics**: The detail drawer is a proper `role="dialog"` with an accessible name; focus moves into it on open, and `Escape` closes it (and other overlays).
+* **Labeled navigation**: Every nav tab carries an accessible label and `aria-current`, so it stays usable even when collapsed to icons on small screens.
 
 ---
 
@@ -236,6 +252,16 @@ docker run -p 3001:3001 premio-media-suite
 1. Sign in at [premiumize.ai](https://premiumize.ai).
 2. Open DevTools → Network tab → filter by Fetch/XHR → send a chat message → find the `completions` request → copy the `authorization` header value (`Bearer eyJ...`).
 3. In Premio Settings → enable **AI Assistant** → paste the token → click **Fetch Models** → select your model.
+
+---
+
+## Setting Up Subtitle Fetching (Optional)
+
+Both keys are free and entered in Premio **Settings** (never in `.env`). A TMDb key must also be set, since subtitle search uses the IMDb ID that TMDb resolves.
+
+1. **OpenSubtitles** (primary): register at [opensubtitles.com](https://www.opensubtitles.com) → profile → **API consumers** → create a consumer → copy its API key. Tip: set the consumer to **"Under Development"** for up to 100 downloads/day without logging in.
+2. **SubDL** (fallback): grab a free key at [subdl.com](https://subdl.com). Used automatically when OpenSubtitles returns nothing or hits its daily download cap. The free tier's "no downloads" limit doesn't apply here — subtitle files are pulled from SubDL's public CDN, not its metered download API.
+3. Paste each key into Premio Settings. In the player, click **Fetch Subtitles** whenever a video has no embedded track.
 
 ---
 

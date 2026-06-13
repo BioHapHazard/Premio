@@ -7,6 +7,12 @@ const PM_SIGNUP_URL = "https://www.premiumize.me";
 // Deterministic hue (0-359) from a string, for gradient poster fallbacks.
 const hashHue = (str) => { let h = 0; for (let i = 0; i < (str || '').length; i++) h = (h * 31 + str.charCodeAt(i)) % 360; return h; };
 
+// a11y: lets a non-<button> element (role="button" tabIndex={0}) be activated by
+// keyboard. Mirrors native button behavior — Enter and Space fire the handler.
+const keyActivate = (handler) => (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(e); }
+};
+
 // Category Definitions
 const CATEGORIES = ['All', 'Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
 
@@ -386,6 +392,12 @@ export default function App() {
   const [userOmdbKey, setUserOmdbKey] = useState(() => {
     return localStorage.getItem('premio_user_omdb_key') || '';
   });
+  const [userOpenSubsKey, setUserOpenSubsKey] = useState(() => {
+    return localStorage.getItem('premio_user_opensubs_key') || '';
+  });
+  const [userSubdlKey, setUserSubdlKey] = useState(() => {
+    return localStorage.getItem('premio_user_subdl_key') || '';
+  });
   const [userJackettUrl, setUserJackettUrl] = useState(() => {
     return localStorage.getItem('premio_user_jackett_url') || '';
   });
@@ -537,6 +549,8 @@ export default function App() {
         'X-Premiumize-Key': userPmKey || '',
         'X-TMDb-Key': userTmdbKey || '',
         'X-OMDb-Key': userOmdbKey || '',
+        'X-OpenSubtitles-Key': userOpenSubsKey || '',
+        'X-SubDL-Key': userSubdlKey || '',
         'X-Jackett-Url': userJackettUrl || '',
         'X-Jackett-Key': userJackettKey || '',
         'X-Usenet-Indexers': JSON.stringify(userIndexers || [])
@@ -1415,6 +1429,13 @@ export default function App() {
   const [selectedVideoFile, setSelectedVideoFile] = useState(null);
   const [selectedSubtitleFile, setSelectedSubtitleFile] = useState(null);
   const [subtitleTrackUrl, setSubtitleTrackUrl] = useState(null);
+  // Online subtitle fetch (OpenSubtitles primary + SubDL fallback)
+  const [subSearchOpen, setSubSearchOpen] = useState(false);
+  const [subSearchLoading, setSubSearchLoading] = useState(false);
+  const [subSearchResults, setSubSearchResults] = useState([]);
+  const [subSearchError, setSubSearchError] = useState('');
+  const [subSearchLang, setSubSearchLang] = useState(() => localStorage.getItem('premio_sub_search_lang') || 'en');
+  const [subDownloadingId, setSubDownloadingId] = useState(null);
   const [resumeTime, setResumeTime] = useState(0);
   const autoplayDeclinedRef = useRef(false);
   const [introSegment, setIntroSegment] = useState(null);
@@ -1457,6 +1478,16 @@ export default function App() {
   const [metadataResults, setMetadataResults] = useState({});
   const [metadataDrawerItem, setMetadataDrawerItem] = useState(null);
   const metadataInFlightRef = useRef(new Set());
+  const metadataDrawerCloseRef = useRef(null);
+
+  // a11y: when the detail dialog opens, move keyboard focus into it (onto the
+  // close button) so screen-reader/keyboard users land inside the dialog rather
+  // than being left on the trigger behind the backdrop.
+  useEffect(() => {
+    if (metadataDrawerItem && metadataDrawerCloseRef.current) {
+      metadataDrawerCloseRef.current.focus();
+    }
+  }, [metadataDrawerItem]);
 
   // Fetch metadata for a given torrent item, with deduplication
   const fetchMetadata = async (item) => {
@@ -1956,6 +1987,24 @@ export default function App() {
   }, [activePlayerTorrent]);
 
 
+  // a11y: Escape closes the topmost open overlay (drawer, dialog, menu), so
+  // keyboard users aren't trapped. The media player is intentionally excluded —
+  // there Escape exits fullscreen (browser default). Priority = visual stacking.
+  useEffect(() => {
+    const onEsc = (e) => {
+      if (e.key !== 'Escape') return;
+      if (metadataDrawerItem) { setMetadataDrawerItem(null); return; }
+      if (showSettings) { setShowSettings(false); return; }
+      if (showPlaylistChoiceModal) { setShowPlaylistChoiceModal(false); return; }
+      if (showAICopilot) { setShowAICopilot(false); return; }
+      if (isProfileDropdownOpen) { setIsProfileDropdownOpen(false); return; }
+      if (isProfilePickerOpen) { setIsProfilePickerOpen(false); return; }
+    };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [metadataDrawerItem, showSettings, showPlaylistChoiceModal, showAICopilot, isProfileDropdownOpen, isProfilePickerOpen]);
+
+
   // --- Subtitle compiler engine ---
   useEffect(() => {
     if (!selectedSubtitleFile) {
@@ -1967,6 +2016,29 @@ export default function App() {
     let active = true;
     const fetchAndCompileSubtitle = async () => {
       try {
+        // Online-fetched subtitle (OpenSubtitles / SubDL): the SRT text is already
+        // resolved. Re-request a translated copy from the provider when AI-translate
+        // is on (reuses the server's translateSubtitleText), else use it as-is.
+        if (selectedSubtitleFile._online) {
+          let srt = selectedSubtitleFile.srtText;
+          if (aiTranslateLanguage && aiToken && aiEnabled) {
+            triggerToast(`Translating subtitle to ${aiTranslateLanguage}...`, 'info');
+            const tr = await fetchWithCredentials('/api/subtitles/download', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...selectedSubtitleFile._dl, translateTo: aiTranslateLanguage, token: aiToken, model: aiModel })
+            });
+            if (tr.ok) srt = (await tr.json()).srt;
+          }
+          if (!active) return;
+          const compiledVtt = srt.startsWith('WEBVTT') ? srt : convertSrtToVtt(srt);
+          const blob = new Blob([compiledVtt], { type: 'text/vtt' });
+          const objectUrl = URL.createObjectURL(blob);
+          setSubtitleTrackUrl(objectUrl);
+          if (aiTranslateLanguage && aiToken && aiEnabled) triggerToast(`Subtitle translated to ${aiTranslateLanguage}!`, 'success');
+          return;
+        }
+
         let fetchUrl = `/api/proxy-subtitle?url=${encodeURIComponent(selectedSubtitleFile.link)}`;
         if (aiTranslateLanguage && aiToken && aiEnabled) {
           triggerToast(` Translating subtitle to ${aiTranslateLanguage}...`, 'info');
@@ -2009,6 +2081,73 @@ export default function App() {
       }
     };
   }, [selectedSubtitleFile, aiTranslateLanguage, aiToken, aiModel, aiEnabled]);
+
+  // Search online subtitle providers (OpenSubtitles primary + SubDL fallback) for
+  // the currently-playing title, using the TMDb-resolved IMDb id (+ season/episode
+  // for TV). Opens the picker panel with the matched releases.
+  const fetchOnlineSubtitles = async () => {
+    if (!activePlayerTorrent) return;
+    if (!userOpenSubsKey && !userSubdlKey) {
+      triggerToast('Add an OpenSubtitles or SubDL key in Settings to fetch subtitles.', 'warning');
+      return;
+    }
+    setSubSearchOpen(true);
+    setSubSearchLoading(true);
+    setSubSearchError('');
+    setSubSearchResults([]);
+    try {
+      const cat = activePlayerTorrent.category || 'Movies';
+      const metaUrl = `/api/metadata?title=${encodeURIComponent(activePlayerTorrent.title || activePlayerTorrent.name)}&category=${encodeURIComponent(cat)}`;
+      const metaRes = await fetchWithCredentials(metaUrl);
+      const metaData = metaRes.ok ? await metaRes.json() : null;
+      const imdbId = metaData?.metadata?.imdbId;
+      if (!imdbId) {
+        setSubSearchError('Could not resolve an IMDb id for this title — a TMDb key is required for subtitle search.');
+        setSubSearchLoading(false);
+        return;
+      }
+      const params = new URLSearchParams({ imdbId, language: subSearchLang });
+      if (cat === 'TV' && selectedVideoFile) {
+        const sd = parseShowDetails(selectedVideoFile.name);
+        if (sd) { params.set('season', sd.season); params.set('episode', sd.episode); }
+      }
+      const res = await fetchWithCredentials(`/api/subtitles/search?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) { setSubSearchError(data.error || 'Subtitle search failed.'); setSubSearchLoading(false); return; }
+      setSubSearchResults(data.results || []);
+      if ((data.results || []).length === 0) setSubSearchError('No subtitles found for this title and language. Try another language.');
+    } catch (err) {
+      setSubSearchError(err.message || 'Subtitle search failed.');
+    } finally {
+      setSubSearchLoading(false);
+    }
+  };
+
+  // Download a chosen online subtitle and load it into the player's compiler.
+  const selectOnlineSubtitle = async (result) => {
+    setSubDownloadingId(result.id);
+    try {
+      const res = await fetchWithCredentials('/api/subtitles/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: result.provider, id: result.id })
+      });
+      const data = await res.json();
+      if (!res.ok) { triggerToast(data.error || 'Subtitle download failed.', 'error'); return; }
+      setSelectedSubtitleFile({
+        name: `${result.release.slice(0, 45)} · ${result.provider === 'opensubtitles' ? 'OpenSubtitles' : 'SubDL'}`,
+        srtText: data.srt,
+        _online: true,
+        _dl: { provider: result.provider, id: result.id }
+      });
+      triggerToast('Subtitle loaded into player!', 'success');
+      setSubSearchOpen(false);
+    } catch (err) {
+      triggerToast(err.message || 'Subtitle download failed.', 'error');
+    } finally {
+      setSubDownloadingId(null);
+    }
+  };
 
   // Programmatically mount and force-refresh the active subtitle track
   // to bypass HTML5 text track loading bugs and prevent manual CC toggling
@@ -4824,24 +4963,32 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         <button
           className={`nav-tab ${activeTab === 'search' ? 'active' : ''}`}
           onClick={() => setActiveTab('search')}
+          aria-label="Search"
+          aria-current={activeTab === 'search' ? 'page' : undefined}
         >
           <Icon name="search" size={18} /> <span className="nav-tab-label">Search</span>
         </button>
         <button
           className={`nav-tab ${activeTab === 'library' ? 'active' : ''}`}
           onClick={() => setActiveTab('library')}
+          aria-label={`Library, ${libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length} items`}
+          aria-current={activeTab === 'library' ? 'page' : undefined}
         >
           <Icon name="bookmark" size={18} /> <span className="nav-tab-label">Library</span> <span className="nav-badge">{libraryList.filter(item => !(item.category === 'Adult' && (!adultControlsUnlocked || hideAdult))).length}</span>
         </button>
         <button
           className={`nav-tab ${activeTab === 'progress' ? 'active' : ''}`}
           onClick={() => setActiveTab('progress')}
+          aria-label={`Continue watching, ${continueWatchingList.length} items`}
+          aria-current={activeTab === 'progress' ? 'page' : undefined}
         >
           <Icon name="player-play" size={18} /> <span className="nav-tab-label">Continue</span> <span className="nav-badge">{continueWatchingList.length}</span>
         </button>
         <button
           className={`nav-tab ${activeTab === 'watchlist' ? 'active' : ''}`}
           onClick={() => setActiveTab('watchlist')}
+          aria-label={`Watchlist, ${watchlist.length} items`}
+          aria-current={activeTab === 'watchlist' ? 'page' : undefined}
         >
           <Icon name="bell" size={18} /> <span className="nav-tab-label">Watchlist</span> <span className="nav-badge">{watchlist.length}</span>
         </button>
@@ -4852,12 +4999,16 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             fetchCloudFolder(null);
             fetchAccountQuota();
           }}
+          aria-label="Cloud storage"
+          aria-current={activeTab === 'cloud' ? 'page' : undefined}
         >
           <Icon name="folder" size={18} /> <span className="nav-tab-label">Cloud</span>
         </button>
         <button
           className={`nav-tab ${activeTab === 'transfers' ? 'active' : ''}`}
           onClick={() => setActiveTab('transfers')}
+          aria-label="Transfers"
+          aria-current={activeTab === 'transfers' ? 'page' : undefined}
         >
           <Icon name="cloud-up" size={18} /> <span className="nav-tab-label">Transfers</span>
         </button>
@@ -4946,6 +5097,44 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     localStorage.setItem('premio_user_omdb_key', val);
                   }}
                   placeholder="Enter your OMDb API Key..."
+                  className="settings-text-input"
+                />
+              </div>
+
+              {/* OpenSubtitles API Key Input */}
+              <div className="setting-item full-width-field">
+                <div className="setting-info">
+                  <h3>OpenSubtitles API Key</h3>
+                  <p>Optional. Lets the player fetch subtitles online when a video has none embedded. Free key at <strong>opensubtitles.com</strong> → Consumers. Tip: set your consumer to &quot;Under Development&quot; for 100 downloads/day without logging in.</p>
+                </div>
+                <input
+                  type="text"
+                  value={userOpenSubsKey}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUserOpenSubsKey(val);
+                    localStorage.setItem('premio_user_opensubs_key', val);
+                  }}
+                  placeholder="Enter your OpenSubtitles API Key..."
+                  className="settings-text-input"
+                />
+              </div>
+
+              {/* SubDL API Key Input (fallback subtitle source) */}
+              <div className="setting-item full-width-field">
+                <div className="setting-info">
+                  <h3>SubDL API Key <span style={{ fontWeight: 400, opacity: 0.7 }}>(fallback)</span></h3>
+                  <p>Optional. Free fallback subtitle source used when OpenSubtitles returns nothing or hits its daily download cap. Free key at <strong>subdl.com</strong>.</p>
+                </div>
+                <input
+                  type="text"
+                  value={userSubdlKey}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUserSubdlKey(val);
+                    localStorage.setItem('premio_user_subdl_key', val);
+                  }}
+                  placeholder="Enter your SubDL API Key..."
                   className="settings-text-input"
                 />
               </div>
@@ -5755,7 +5944,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         return (
                           <article key={idx} className={`result-card glass-panel ${isUsenetItem ? 'usenet-hit' : (item.cached ? 'cached-hit' : 'cached-miss')} ${hasPoster ? 'has-poster' : ''}`}>
                             {hasPoster && (
-                              <div className="card-poster-col" onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } })}>
+                              <div className="card-poster-col" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } }))}>
                                 <img src={posterSrc} alt="" className="card-poster-img" loading="lazy" />
                                 {meta?.voteAverage ? (
                                   <span className="poster-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span>
@@ -6204,7 +6393,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     else startStreaming(item);
                   };
                   return (
-                    <div key={idx} className="lib-tile" onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } })} title={item.title}>
+                    <div key={idx} className="lib-tile" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }))} title={item.title}>
                       <div className="lib-poster" style={poster ? { backgroundImage: `url(${poster})` } : { background: `linear-gradient(150deg, hsl(${hue}, 42%, 26%), hsl(${(hue + 35) % 360}, 48%, 15%))` }}>
                         {!poster && <span className="lib-poster-icon"><Icon name={typeIcon} size={34} /></span>}
                         {meta?.voteAverage ? <span className="lib-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span> : null}
@@ -6250,7 +6439,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 {watchlist.map((w, idx) => {
                   const hue = hashHue(w.title);
                   return (
-                    <div key={idx} className="lib-tile" onClick={() => findWatchlistItem(w)} title={`Find releases for ${w.title}`}>
+                    <div key={idx} className="lib-tile" role="button" tabIndex={0} aria-label={`Find releases for ${w.title}`} onClick={() => findWatchlistItem(w)} onKeyDown={keyActivate(() => findWatchlistItem(w))} title={`Find releases for ${w.title}`}>
                       <div className="lib-poster" style={w.poster ? { backgroundImage: `url(${w.poster})` } : { background: `linear-gradient(150deg, hsl(${hue}, 42%, 26%), hsl(${(hue + 35) % 360}, 48%, 15%))` }}>
                         {!w.poster && <span className="lib-poster-icon"><Icon name="bell" size={30} /></span>}
                         {w.cachedCount > 0 && <span className="watch-count" title={`${w.cachedCount} cached release(s) found`}><Icon name="bolt" size={11} /> {w.cachedCount}</span>}
@@ -7276,6 +7465,76 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       </div>
                     )}
 
+                    {/* Fetch subtitles online (OpenSubtitles primary + SubDL fallback) */}
+                    <div className="player-select-group subtitle-fetch-group">
+                      <label htmlFor="sub-fetch-lang">Online Subtitles:</label>
+                      <div className="sub-fetch-row">
+                        <select
+                          id="sub-fetch-lang"
+                          className="player-select sub-lang-select"
+                          value={subSearchLang}
+                          onChange={(e) => { setSubSearchLang(e.target.value); localStorage.setItem('premio_sub_search_lang', e.target.value); }}
+                          aria-label="Subtitle language"
+                        >
+                          <option value="en">English</option>
+                          <option value="es">Spanish</option>
+                          <option value="fr">French</option>
+                          <option value="de">German</option>
+                          <option value="it">Italian</option>
+                          <option value="pt">Portuguese</option>
+                          <option value="nl">Dutch</option>
+                          <option value="pl">Polish</option>
+                          <option value="ar">Arabic</option>
+                          <option value="ru">Russian</option>
+                          <option value="zh">Chinese</option>
+                          <option value="ja">Japanese</option>
+                          <option value="ko">Korean</option>
+                        </select>
+                        <button className="sub-fetch-btn" onClick={fetchOnlineSubtitles} disabled={subSearchLoading}>
+                          {subSearchLoading ? <span className="spinner-micro"></span> : <Icon name="search" size={15} />} Fetch Subtitles
+                        </button>
+                      </div>
+
+                      {selectedSubtitleFile?._online && (
+                        <div className="sub-active-chip">
+                          <Icon name="check" size={13} />
+                          <span className="sub-active-name">{selectedSubtitleFile.name}</span>
+                          <button className="sub-active-remove" onClick={() => setSelectedSubtitleFile(null)} aria-label="Remove fetched subtitle"><Icon name="x" size={13} /></button>
+                        </div>
+                      )}
+
+                      {subSearchOpen && (
+                        <div className="sub-results-panel" role="dialog" aria-label="Online subtitle results">
+                          <div className="sub-results-head">
+                            <span>Available subtitles</span>
+                            <button className="sub-results-close" onClick={() => setSubSearchOpen(false)} aria-label="Close subtitle results"><Icon name="x" size={14} /></button>
+                          </div>
+                          {subSearchLoading && <div className="sub-results-loading"><span className="spinner-micro"></span> Searching providers…</div>}
+                          {!subSearchLoading && subSearchError && <div className="sub-results-error">{subSearchError}</div>}
+                          {!subSearchLoading && subSearchResults.length > 0 && (
+                            <ul className="sub-results-list">
+                              {subSearchResults.map((r, idx) => (
+                                <li key={idx} className="sub-result-item">
+                                  <div className="sub-result-info">
+                                    <span className="sub-result-release" title={r.release}>{r.release}</span>
+                                    <span className="sub-result-meta">
+                                      <span className={`sub-provider-tag prov-${r.provider}`}>{r.provider === 'opensubtitles' ? 'OpenSubtitles' : 'SubDL'}</span>
+                                      <span className="sub-result-lang">{r.language.toUpperCase()}</span>
+                                      {r.downloads > 0 && <span className="sub-result-dl"><Icon name="download" size={11} /> {r.downloads.toLocaleString()}</span>}
+                                      {r.hi && <span className="sub-result-hi" title="Hearing impaired / SDH">HI</span>}
+                                    </span>
+                                  </div>
+                                  <button className="sub-result-load" onClick={() => selectOnlineSubtitle(r)} disabled={subDownloadingId === r.id}>
+                                    {subDownloadingId === r.id ? <span className="spinner-micro"></span> : 'Load'}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
                     {/* AI Subtitle Translation language select */}
                     {selectedSubtitleFile && (
                       <div className="player-select-group">
@@ -7799,7 +8058,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           const itemCat = metadataDrawerItem.category || category;
           return (
             <div className="player-modal-backdrop metadata-drawer-backdrop" onClick={() => setMetadataDrawerItem(null)} style={{ zIndex: 2800 }}>
-              <div className="metadata-drawer glass-panel fade-in" onClick={(e) => e.stopPropagation()}>
+              <div className="metadata-drawer glass-panel fade-in" role="dialog" aria-modal="true" aria-labelledby="metadata-drawer-title" onClick={(e) => e.stopPropagation()}>
                 {/* Backdrop hero image for Movies/TV */}
                 {meta.backdrop && (
                   <div className="metadata-backdrop-hero">
@@ -7808,7 +8067,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   </div>
                 )}
                 
-                <button className="metadata-drawer-close" onClick={() => setMetadataDrawerItem(null)} title="Close" aria-label="Close"><Icon name="x" size={18} /></button>
+                <button className="metadata-drawer-close" ref={metadataDrawerCloseRef} onClick={() => setMetadataDrawerItem(null)} title="Close" aria-label="Close"><Icon name="x" size={18} /></button>
 
                 <div className="metadata-drawer-body">
                   {/* Poster + Core Info */}
@@ -7819,7 +8078,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       </div>
                     )}
                     <div className="metadata-core-info">
-                      <h2 className="metadata-title">{meta.title || metadataDrawerItem.title}</h2>
+                      <h2 className="metadata-title" id="metadata-drawer-title">{meta.title || metadataDrawerItem.title}</h2>
                       {meta.tagline && <p className="metadata-tagline">{meta.tagline}</p>}
 
                       <div className="metadata-badges-row">

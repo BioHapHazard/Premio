@@ -76,13 +76,15 @@ app.use(express.json({ limit: '5mb' }));
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 const heavyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 app.use('/api/', apiLimiter);
-app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/proxy-rom', '/api/proxy-subtitle'], heavyLimiter);
+app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
 
 // Header extraction middleware to support stateless webapp deployments
 app.use((req, res, next) => {
   req.userPmKey = (req.headers['x-premiumize-key'] || '').trim();
   req.userTmdbKey = (req.headers['x-tmdb-key'] || '').trim();
   req.userOmdbKey = (req.headers['x-omdb-key'] || '').trim();
+  req.userOpenSubsKey = (req.headers['x-opensubtitles-key'] || '').trim();
+  req.userSubdlKey = (req.headers['x-subdl-key'] || '').trim();
   req.userJackettUrl = (req.headers['x-jackett-url'] || '').trim();
   req.userJackettKey = (req.headers['x-jackett-key'] || '').trim();
 
@@ -1841,6 +1843,172 @@ app.get('/api/proxy-subtitle', async (req, res) => {
   } catch (err) {
     console.error('❌ Subtitle proxy failed:', err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// 4a-bis. Online subtitle search & download (OpenSubtitles primary + SubDL fallback)
+// -----------------------------------------------------------------------------
+// BYOK: each visitor supplies their own OpenSubtitles and/or SubDL key via the
+// X-OpenSubtitles-Key / X-SubDL-Key headers. Search is keyed by the IMDb id that
+// TMDb already provides (the same id IntroDB uses), plus season/episode for TV.
+// Resolved subtitles are returned as raw SRT text, which the player's existing
+// SRT->WebVTT compiler renders; AI translation reuses translateSubtitleText().
+// =============================================================================
+const OS_API = 'https://api.opensubtitles.com/api/v1';
+const OS_USER_AGENT = 'Premio v1.0';
+const SUBDL_API = 'https://api.subdl.com/api/v1/subtitles';
+const SUBDL_DL_BASE = 'https://dl.subdl.com';
+
+// Normalize a TMDb/IMDb id into the two shapes the providers expect.
+function normalizeImdb(imdbId) {
+  const digits = String(imdbId || '').replace(/\D/g, '');
+  if (!digits) return null;
+  return {
+    numeric: parseInt(digits, 10),            // OpenSubtitles wants the bare number
+    tt: 'tt' + digits.padStart(7, '0'),       // SubDL wants the tt-prefixed form
+  };
+}
+
+async function searchOpenSubtitles({ imdb, season, episode, language, apiKey }) {
+  const params = new URLSearchParams({ languages: language });
+  if (season && episode) {
+    params.set('parent_imdb_id', String(imdb.numeric));
+    params.set('season_number', String(season));
+    params.set('episode_number', String(episode));
+  } else {
+    params.set('imdb_id', String(imdb.numeric));
+  }
+  // OpenSubtitles requires query params in alphabetical order, else it 301-redirects.
+  params.sort();
+  const resp = await fetchWithTimeout(`${OS_API}/subtitles?${params.toString()}`, {
+    headers: { 'Api-Key': apiKey, 'User-Agent': OS_USER_AGENT, 'Accept': 'application/json' }
+  }, 15000);
+  if (!resp.ok) throw new Error(`OpenSubtitles search ${resp.status}`);
+  const json = await resp.json();
+  return (json.data || []).map(d => {
+    const a = d.attributes || {};
+    const file = (a.files && a.files[0]) || {};
+    return {
+      provider: 'opensubtitles',
+      id: String(file.file_id || ''),
+      language: a.language || language,
+      release: a.release || file.file_name || 'Unknown release',
+      downloads: a.download_count || 0,
+      hi: !!a.hearing_impaired,
+    };
+  }).filter(r => r.id);
+}
+
+async function searchSubdl({ imdb, season, language, apiKey }) {
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    imdb_id: imdb.tt,
+    languages: language.toUpperCase(),
+    subs_per_page: '30',
+  });
+  if (season) params.set('season_number', String(season));
+  const resp = await fetchWithTimeout(`${SUBDL_API}?${params.toString()}`, {
+    headers: { 'Accept': 'application/json' }
+  }, 15000);
+  if (!resp.ok) throw new Error(`SubDL search ${resp.status}`);
+  const json = await resp.json();
+  if (!json || json.status === false) return [];
+  return (json.subtitles || []).map(s => ({
+    provider: 'subdl',
+    id: s.url || '',                          // zip path, e.g. /subtitle/123.zip
+    language: (s.language || s.lang || language).toLowerCase().slice(0, 2),
+    release: s.release_name || s.name || 'Unknown release',
+    downloads: 0,
+    hi: !!s.hi,
+  })).filter(r => r.id);
+}
+
+// Resolve a chosen result to raw subtitle text.
+async function resolveOpenSubtitlesDownload(fileId, apiKey) {
+  const dl = await fetchWithTimeout(`${OS_API}/download`, {
+    method: 'POST',
+    headers: { 'Api-Key': apiKey, 'User-Agent': OS_USER_AGENT, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ file_id: parseInt(fileId, 10) }),
+  }, 15000);
+  if (!dl.ok) {
+    const msg = dl.status === 406 || dl.status === 429 ? 'OpenSubtitles daily download limit reached' : `OpenSubtitles download ${dl.status}`;
+    throw new Error(msg);
+  }
+  const { link } = await dl.json();
+  if (!link) throw new Error('OpenSubtitles returned no download link');
+  const srtResp = await fetchWithTimeout(link, {}, 15000);
+  if (!srtResp.ok) throw new Error(`Subtitle file fetch ${srtResp.status}`);
+  return await srtResp.text();
+}
+
+async function resolveSubdlDownload(zipPath) {
+  const url = zipPath.startsWith('http') ? zipPath : `${SUBDL_DL_BASE}${zipPath}`;
+  const resp = await fetchWithTimeout(url, {}, 15000);
+  if (!resp.ok) throw new Error(`SubDL download ${resp.status}`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  const zip = new AdmZip(buf);
+  const srtEntry = zip.getEntries().find(e => !e.isDirectory && e.entryName.toLowerCase().endsWith('.srt'));
+  if (!srtEntry) throw new Error('No .srt file inside SubDL archive');
+  return srtEntry.getData().toString('utf-8');
+}
+
+// GET /api/subtitles/search?imdbId=tt..&season=&episode=&language=en
+app.get('/api/subtitles/search', async (req, res) => {
+  const { imdbId, season, episode, language = 'en' } = req.query;
+  const imdb = normalizeImdb(imdbId);
+  if (!imdb) return res.status(400).json({ error: 'A valid IMDb id is required to search subtitles.' });
+  if (!req.userOpenSubsKey && !req.userSubdlKey) {
+    return res.status(401).json({ error: 'Add an OpenSubtitles or SubDL API key in Settings to fetch subtitles.' });
+  }
+
+  const lang = String(language).toLowerCase().slice(0, 3);
+  const s = season ? parseInt(season, 10) : null;
+  const e = episode ? parseInt(episode, 10) : null;
+  let results = [];
+  const errors = [];
+
+  // Primary: OpenSubtitles
+  if (req.userOpenSubsKey) {
+    try {
+      results = await searchOpenSubtitles({ imdb, season: s, episode: e, language: lang, apiKey: req.userOpenSubsKey });
+    } catch (err) { errors.push(err.message); console.warn(`⚠️  OpenSubtitles: ${err.message}`); }
+  }
+  // Fallback: SubDL when OpenSubtitles is unavailable or empty
+  if (results.length === 0 && req.userSubdlKey) {
+    try {
+      results = await searchSubdl({ imdb, season: s, language: lang, apiKey: req.userSubdlKey });
+    } catch (err) { errors.push(err.message); console.warn(`⚠️  SubDL: ${err.message}`); }
+  }
+
+  console.log(`💬 Subtitle search [${imdb.tt}${s ? ` S${s}E${e}` : ''} ${lang}] → ${results.length} result(s)`);
+  return res.json({ results: results.slice(0, 30), errors });
+});
+
+// POST /api/subtitles/download  { provider, id, translateTo?, token?, model? }
+app.post('/api/subtitles/download', async (req, res) => {
+  const { provider, id, translateTo, token, model } = req.body || {};
+  if (!provider || !id) return res.status(400).json({ error: 'Missing provider or id.' });
+
+  try {
+    let srt;
+    if (provider === 'opensubtitles') {
+      if (!req.userOpenSubsKey) return res.status(401).json({ error: 'OpenSubtitles key missing.' });
+      srt = await resolveOpenSubtitlesDownload(id, req.userOpenSubsKey);
+    } else if (provider === 'subdl') {
+      srt = await resolveSubdlDownload(id);
+    } else {
+      return res.status(400).json({ error: `Unknown subtitle provider: ${provider}` });
+    }
+
+    if (translateTo && token) {
+      try { srt = await translateSubtitleText(srt, translateTo, token, model); }
+      catch (transErr) { console.error('❌ Subtitle translation failed, returning original:', transErr.message); }
+    }
+    return res.json({ srt });
+  } catch (err) {
+    console.error('❌ Subtitle download failed:', err.message);
+    return res.status(502).json({ error: err.message });
   }
 });
 
