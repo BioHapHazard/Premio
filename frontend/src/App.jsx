@@ -561,6 +561,7 @@ export default function App() {
   const setResults = setRawResults;
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const [activeDownloadId, setActiveDownloadId] = useState(null);
   const [searchMode, setSearchMode] = useState('torrent'); // 'torrent' or 'usenet'
   const [hideUsenetWarning, setHideUsenetWarning] = useState(() => {
@@ -2829,6 +2830,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
     setLoading(true);
     setSearched(true);
+    setSearchError('');
     setResults([]);
 
     const activeSearchMode = forcedMode || searchMode;
@@ -2881,6 +2883,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       setResults(data);
     } catch (err) {
       console.error(err);
+      setSearchError(err.message || 'Search request failed.');
       triggerToast(`Search failed: ${err.message}`, 'error');
     } finally {
       setLoading(false);
@@ -6229,6 +6232,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     </div>
                   ))}
                 </div>
+              ) : searchError ? (
+                <div className="empty-state glass-panel search-error-state">
+                  <div className="empty-icon" style={{ color: 'var(--color-danger)' }}><Icon name="alert-triangle" size={40} /></div>
+                  <h2>Search failed</h2>
+                  <p>{searchError} This usually means Jackett or the indexer is unreachable, or a key needs checking in Settings.</p>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ marginTop: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    onClick={() => handleSearch(null)}
+                  >
+                    <Icon name="refresh" size={15} /> Retry search
+                  </button>
+                </div>
               ) : results.length > 0 ? (
                 <div className="results-list">
                   <div className="results-header-row">
@@ -6263,6 +6280,36 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       )}
                     </div>
                   </div>
+
+                  {/* Active filter chips — one-click clear per active filter */}
+                  {(filterQuality !== 'All' || filterMaxSize < 100 || filterMinSeeders > 0 || excludeKeywords.trim()) && (
+                    <div className="active-filter-chips">
+                      <span className="active-filter-label">Active filters:</span>
+                      {filterQuality !== 'All' && (
+                        <button type="button" className="filter-chip" onClick={() => setFilterQuality('All')} aria-label={`Remove filter: quality ${filterQuality}`}>
+                          Quality: {filterQuality} <Icon name="x" size={12} />
+                        </button>
+                      )}
+                      {filterMaxSize < 100 && (
+                        <button type="button" className="filter-chip" onClick={() => setFilterMaxSize(100)} aria-label={`Remove filter: max size ${filterMaxSize} gigabytes`}>
+                          Max size: {filterMaxSize} GB <Icon name="x" size={12} />
+                        </button>
+                      )}
+                      {filterMinSeeders > 0 && (
+                        <button type="button" className="filter-chip" onClick={() => setFilterMinSeeders(0)} aria-label={`Remove filter: minimum ${filterMinSeeders} seeders`}>
+                          Min seeders: {filterMinSeeders} <Icon name="x" size={12} />
+                        </button>
+                      )}
+                      {excludeKeywords.trim() && (
+                        <button type="button" className="filter-chip" onClick={() => setExcludeKeywords('')} aria-label="Remove filter: excluded keywords">
+                          Excludes: {excludeKeywords.trim()} <Icon name="x" size={12} />
+                        </button>
+                      )}
+                      <button type="button" className="filter-chip filter-chip-clear" onClick={() => { setFilterQuality('All'); setFilterMaxSize(100); setFilterMinSeeders(0); setExcludeKeywords(''); }}>
+                        Clear all
+                      </button>
+                    </div>
+                  )}
 
                   {/* Inline Usenet Suggestion Banner (when no torrents are cached) */}
                   {searchMode === 'torrent' && cachedCount === 0 && (
