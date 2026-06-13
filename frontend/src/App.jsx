@@ -7597,76 +7597,6 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       </div>
                     )}
 
-                    {/* Fetch subtitles online (OpenSubtitles primary + SubDL fallback) */}
-                    <div className="player-select-group subtitle-fetch-group">
-                      <label htmlFor="sub-fetch-lang">Online Subtitles:</label>
-                      <div className="sub-fetch-row">
-                        <select
-                          id="sub-fetch-lang"
-                          className="player-select sub-lang-select"
-                          value={subSearchLang}
-                          onChange={(e) => { setSubSearchLang(e.target.value); localStorage.setItem('premio_sub_search_lang', e.target.value); }}
-                          aria-label="Subtitle language"
-                        >
-                          <option value="en">English</option>
-                          <option value="es">Spanish</option>
-                          <option value="fr">French</option>
-                          <option value="de">German</option>
-                          <option value="it">Italian</option>
-                          <option value="pt">Portuguese</option>
-                          <option value="nl">Dutch</option>
-                          <option value="pl">Polish</option>
-                          <option value="ar">Arabic</option>
-                          <option value="ru">Russian</option>
-                          <option value="zh">Chinese</option>
-                          <option value="ja">Japanese</option>
-                          <option value="ko">Korean</option>
-                        </select>
-                        <button className="sub-fetch-btn" onClick={fetchOnlineSubtitles} disabled={subSearchLoading}>
-                          {subSearchLoading ? <span className="spinner-micro"></span> : <Icon name="search" size={15} />} Fetch Subtitles
-                        </button>
-                      </div>
-
-                      {selectedSubtitleFile?._online && (
-                        <div className="sub-active-chip">
-                          <Icon name="check" size={13} />
-                          <span className="sub-active-name">{selectedSubtitleFile.name}</span>
-                          <button className="sub-active-remove" onClick={() => setSelectedSubtitleFile(null)} aria-label="Remove fetched subtitle"><Icon name="x" size={13} /></button>
-                        </div>
-                      )}
-
-                      {subSearchOpen && (
-                        <div className="sub-results-panel" role="dialog" aria-label="Online subtitle results">
-                          <div className="sub-results-head">
-                            <span>Available subtitles</span>
-                            <button className="sub-results-close" onClick={() => setSubSearchOpen(false)} aria-label="Close subtitle results"><Icon name="x" size={14} /></button>
-                          </div>
-                          {subSearchLoading && <div className="sub-results-loading"><span className="spinner-micro"></span> Searching providers…</div>}
-                          {!subSearchLoading && subSearchError && <div className="sub-results-error">{subSearchError}</div>}
-                          {!subSearchLoading && subSearchResults.length > 0 && (
-                            <ul className="sub-results-list">
-                              {subSearchResults.map((r, idx) => (
-                                <li key={idx} className="sub-result-item">
-                                  <div className="sub-result-info">
-                                    <span className="sub-result-release" title={r.release}>{r.release}</span>
-                                    <span className="sub-result-meta">
-                                      <span className={`sub-provider-tag prov-${r.provider}`}>{r.provider === 'opensubtitles' ? 'OpenSubtitles' : 'SubDL'}</span>
-                                      <span className="sub-result-lang">{r.language.toUpperCase()}</span>
-                                      {r.downloads > 0 && <span className="sub-result-dl"><Icon name="download" size={11} /> {r.downloads.toLocaleString()}</span>}
-                                      {r.hi && <span className="sub-result-hi" title="Hearing impaired / SDH">HI</span>}
-                                    </span>
-                                  </div>
-                                  <button className="sub-result-load" onClick={() => selectOnlineSubtitle(r)} disabled={subDownloadingId === r.id}>
-                                    {subDownloadingId === r.id ? <span className="spinner-micro"></span> : 'Load'}
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
                     {/* AI Subtitle Translation language select */}
                     {selectedSubtitleFile && (
                       <div className="player-select-group">
@@ -7706,6 +7636,76 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       </div>
                     )}
 
+                  </div>
+
+                  {/* Fetch subtitles online (OpenSubtitles primary + SubDL fallback) — full width */}
+                  <div className="subtitle-fetch-section">
+                    <label htmlFor="sub-fetch-lang" className="subtitle-fetch-label">Online Subtitles:</label>
+                    <div className="sub-fetch-row">
+                      <select
+                        id="sub-fetch-lang"
+                        className="player-select sub-lang-select"
+                        value={subSearchLang}
+                        onChange={(e) => { setSubSearchLang(e.target.value); localStorage.setItem('premio_sub_search_lang', e.target.value); }}
+                        aria-label="Subtitle language"
+                      >
+                        <option value="en">English</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <option value="it">Italian</option>
+                        <option value="pt">Portuguese</option>
+                        <option value="nl">Dutch</option>
+                        <option value="pl">Polish</option>
+                        <option value="ar">Arabic</option>
+                        <option value="ru">Russian</option>
+                        <option value="zh">Chinese</option>
+                        <option value="ja">Japanese</option>
+                        <option value="ko">Korean</option>
+                      </select>
+                      <button className="sub-fetch-btn" onClick={fetchOnlineSubtitles} disabled={subSearchLoading}>
+                        {subSearchLoading ? <span className="spinner-micro"></span> : <Icon name="search" size={15} />} Fetch Subtitles
+                      </button>
+                    </div>
+
+                    {selectedSubtitleFile?._online && (
+                      <div className="sub-active-chip">
+                        <Icon name="check" size={13} />
+                        <span className="sub-active-name">{selectedSubtitleFile.name}</span>
+                        <button className="sub-active-remove" onClick={() => setSelectedSubtitleFile(null)} aria-label="Remove fetched subtitle"><Icon name="x" size={13} /></button>
+                      </div>
+                    )}
+
+                    {subSearchOpen && (
+                      <div className="sub-results-panel" role="dialog" aria-label="Online subtitle results">
+                        <div className="sub-results-head">
+                          <span>Available subtitles</span>
+                          <button className="sub-results-close" onClick={() => setSubSearchOpen(false)} aria-label="Close subtitle results"><Icon name="x" size={14} /></button>
+                        </div>
+                        {subSearchLoading && <div className="sub-results-loading"><span className="spinner-micro"></span> Searching providers…</div>}
+                        {!subSearchLoading && subSearchError && <div className="sub-results-error">{subSearchError}</div>}
+                        {!subSearchLoading && subSearchResults.length > 0 && (
+                          <ul className="sub-results-list">
+                            {subSearchResults.map((r, idx) => (
+                              <li key={idx} className="sub-result-item">
+                                <div className="sub-result-info">
+                                  <span className="sub-result-release" title={r.release}>{r.release}</span>
+                                  <span className="sub-result-meta">
+                                    <span className={`sub-provider-tag prov-${r.provider}`}>{r.provider === 'opensubtitles' ? 'OpenSubtitles' : 'SubDL'}</span>
+                                    <span className="sub-result-lang">{r.language.toUpperCase()}</span>
+                                    {r.downloads > 0 && <span className="sub-result-dl"><Icon name="download" size={11} /> {r.downloads.toLocaleString()}</span>}
+                                    {r.hi && <span className="sub-result-hi" title="Hearing impaired / SDH">HI</span>}
+                                  </span>
+                                </div>
+                                <button className="sub-result-load" onClick={() => selectOnlineSubtitle(r)} disabled={subDownloadingId === r.id}>
+                                  {subDownloadingId === r.id ? <span className="spinner-micro"></span> : 'Load'}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* External Player deep links */}

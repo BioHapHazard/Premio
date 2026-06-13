@@ -1458,19 +1458,38 @@ textarea::placeholder {
   gap: 0.4rem;
 }
 
-/* ===== Online subtitle fetch (OpenSubtitles + SubDL) ===== */
-.subtitle-fetch-group .sub-fetch-row {
+/* ===== Online subtitle fetch (OpenSubtitles + SubDL) — full-width section ===== */
+.subtitle-fetch-section {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  align-items: stretch;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--glass-border);
 }
-.sub-lang-select { flex: 0 0 auto; min-width: 120px; }
+.subtitle-fetch-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.sub-fetch-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+/* Language picker takes a sensible chunk; the button keeps its natural width.
+   flex-wrap lets the button drop below on very narrow modals instead of
+   overflowing off the edge. */
+.sub-lang-select { flex: 0 1 220px; min-width: 140px; }
 .sub-fetch-btn {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4rem;
   white-space: nowrap;
-  padding: 0.5rem 0.9rem;
+  padding: 0.5rem 1.1rem;
   border-radius: 0.75rem;
   border: 1px solid var(--color-primary);
   background: var(--color-primary-glow);
@@ -1482,6 +1501,9 @@ textarea::placeholder {
 }
 .sub-fetch-btn:hover:not(:disabled) { background: var(--color-primary); }
 .sub-fetch-btn:disabled { opacity: 0.6; cursor: progress; }
+/* Keep the chip and results readable rather than stretching a very wide modal. */
+.subtitle-fetch-section .sub-active-chip,
+.subtitle-fetch-section .sub-results-panel { max-width: 720px; }
 
 .sub-active-chip {
   display: flex;
