@@ -1737,15 +1737,48 @@ export default function App() {
   const [metadataDrawerItem, setMetadataDrawerItem] = useState(null);
   const metadataInFlightRef = useRef(new Set());
   const metadataDrawerCloseRef = useRef(null);
+  // TMDb reviews panel (detail drawer)
+  const [reviewsOpen, setReviewsOpen] = useState(false);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [reviewsData, setReviewsData] = useState([]);
+  const [reviewsError, setReviewsError] = useState('');
 
   // a11y: when the detail dialog opens, move keyboard focus into it (onto the
   // close button) so screen-reader/keyboard users land inside the dialog rather
-  // than being left on the trigger behind the backdrop.
+  // than being left on the trigger behind the backdrop. Also reset the reviews
+  // panel so it doesn't carry over between titles.
   useEffect(() => {
     if (metadataDrawerItem && metadataDrawerCloseRef.current) {
       metadataDrawerCloseRef.current.focus();
     }
+    setReviewsOpen(false);
+    setReviewsData([]);
+    setReviewsError('');
   }, [metadataDrawerItem]);
+
+  // Toggle/fetch the TMDb reviews panel for the open detail item.
+  const toggleReviews = async (meta) => {
+    if (reviewsOpen) { setReviewsOpen(false); return; }
+    setReviewsOpen(true);
+    if (reviewsData.length > 0) return; // already loaded for this title
+    if (!meta?.tmdbId || !meta?.mediaType) { setReviewsError('Reviews need TMDb metadata (set a TMDb key in Settings).'); return; }
+    setReviewsLoading(true);
+    setReviewsError('');
+    try {
+      const res = await fetchWithCredentials(`/api/reviews?tmdbId=${encodeURIComponent(meta.tmdbId)}&mediaType=${encodeURIComponent(meta.mediaType)}`);
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        setReviewsData(data.reviews || []);
+        if (!(data.reviews || []).length) setReviewsError('No TMDb reviews have been posted for this title yet.');
+      } else {
+        setReviewsError(data.message || 'Could not load reviews.');
+      }
+    } catch {
+      setReviewsError('Could not load reviews (network error).');
+    } finally {
+      setReviewsLoading(false);
+    }
+  };
 
   // Fetch metadata for a given torrent item, with deduplication
   const fetchMetadata = async (item) => {
@@ -8499,24 +8532,43 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
                       <div className="metadata-badges-row">
                         {meta.voteAverage && (
-                          <span className="metadata-rating-pill tmdb-rating">
-                            <Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
-                          </span>
+                          (meta.tmdbId && meta.mediaType) ? (
+                            <button
+                              type="button"
+                              className={`metadata-rating-pill tmdb-rating rating-pill-btn ${reviewsOpen ? 'is-active' : ''}`}
+                              onClick={() => toggleReviews(meta)}
+                              aria-expanded={reviewsOpen}
+                              title="Show top TMDb reviews"
+                            >
+                              <Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
+                              <Icon name={reviewsOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                            </button>
+                          ) : (
+                            <span className="metadata-rating-pill tmdb-rating">
+                              <Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)} <span className="rating-source">TMDb</span>
+                            </span>
+                          )
                         )}
                         {meta.ratings?.imdbRating && (
-                          <span className="metadata-rating-pill imdb-rating" title={meta.ratings.imdbVotes ? `${meta.ratings.imdbVotes} IMDb votes` : 'IMDb rating'}>
-                            <span className="rating-src-tag src-imdb">IMDb</span> {meta.ratings.imdbRating}
-                          </span>
+                          meta.imdbId ? (
+                            <a className="metadata-rating-pill imdb-rating rating-pill-btn" href={`https://www.imdb.com/title/${meta.imdbId}/reviews`} target="_blank" rel="noopener noreferrer" title="Read IMDb reviews">
+                              <span className="rating-src-tag src-imdb">IMDb</span> {meta.ratings.imdbRating} <Icon name="external-link" size={11} />
+                            </a>
+                          ) : (
+                            <span className="metadata-rating-pill imdb-rating" title={meta.ratings.imdbVotes ? `${meta.ratings.imdbVotes} IMDb votes` : 'IMDb rating'}>
+                              <span className="rating-src-tag src-imdb">IMDb</span> {meta.ratings.imdbRating}
+                            </span>
+                          )
                         )}
                         {meta.ratings?.rottenTomatoes && (
-                          <span className="metadata-rating-pill rt-rating" title="Rotten Tomatoes">
-                            <span className="rating-src-tag src-rt">RT</span> {meta.ratings.rottenTomatoes}
-                          </span>
+                          <a className="metadata-rating-pill rt-rating rating-pill-btn" href={`https://www.rottentomatoes.com/search?search=${encodeURIComponent(meta.title || '')}`} target="_blank" rel="noopener noreferrer" title="Find on Rotten Tomatoes">
+                            <span className="rating-src-tag src-rt">RT</span> {meta.ratings.rottenTomatoes} <Icon name="external-link" size={11} />
+                          </a>
                         )}
                         {meta.ratings?.metacritic && (
-                          <span className="metadata-rating-pill mc-rating" title="Metacritic">
-                            <span className="rating-src-tag src-mc">MC</span> {meta.ratings.metacritic}
-                          </span>
+                          <a className="metadata-rating-pill mc-rating rating-pill-btn" href={`https://www.metacritic.com/search/${encodeURIComponent(meta.title || '')}/`} target="_blank" rel="noopener noreferrer" title="Find on Metacritic">
+                            <span className="rating-src-tag src-mc">MC</span> {meta.ratings.metacritic} <Icon name="external-link" size={11} />
+                          </a>
                         )}
                         {meta.rating && (
                           <span className="metadata-rating-pill book-rating">
@@ -8528,6 +8580,32 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         {meta.trackCount && <span className="metadata-tracks-pill">{meta.trackCount} tracks</span>}
                         {meta.pageCount && <span className="metadata-tracks-pill">{meta.pageCount} pages</span>}
                       </div>
+
+                      {/* TMDb reviews panel (toggled from the TMDb rating pill) */}
+                      {reviewsOpen && (
+                        <div className="tmdb-reviews-panel">
+                          <div className="tmdb-reviews-head">
+                            <span><Icon name="message-chatbot" size={14} /> Top TMDb Reviews</span>
+                            <button type="button" className="tmdb-reviews-close" onClick={() => setReviewsOpen(false)} aria-label="Hide reviews"><Icon name="x" size={14} /></button>
+                          </div>
+                          {reviewsLoading && <div className="tmdb-reviews-loading"><span className="spinner-micro"></span> Loading reviews…</div>}
+                          {!reviewsLoading && reviewsError && <div className="tmdb-reviews-empty">{reviewsError}</div>}
+                          {!reviewsLoading && reviewsData.length > 0 && (
+                            <ul className="tmdb-reviews-list">
+                              {reviewsData.map((rv, ri) => (
+                                <li key={ri} className="tmdb-review-item">
+                                  <div className="tmdb-review-head">
+                                    <span className="tmdb-review-author">{rv.author}</span>
+                                    {rv.rating != null && <span className="tmdb-review-rating"><Icon name="star" fill size={11} /> {rv.rating}/10</span>}
+                                  </div>
+                                  <p className="tmdb-review-content">{rv.content.length > 360 ? rv.content.slice(0, 360).trim() + '…' : rv.content}</p>
+                                  {rv.url && <a className="tmdb-review-link" href={rv.url} target="_blank" rel="noopener noreferrer">Read full review <Icon name="external-link" size={11} /></a>}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
 
                       {/* Genres */}
                       {meta.genres && meta.genres.length > 0 && (

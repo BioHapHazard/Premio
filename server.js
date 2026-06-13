@@ -76,7 +76,7 @@ app.use(express.json({ limit: '5mb' }));
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 const heavyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 app.use('/api/', apiLimiter);
-app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
+app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/reviews', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
 
 // Header extraction middleware to support stateless webapp deployments
 app.use((req, res, next) => {
@@ -2565,6 +2565,44 @@ app.get('/api/metadata', async (req, res) => {
   }
 });
 
+// Top TMDb user reviews for a title. Uses the same BYOK TMDb auth as /api/metadata.
+app.get('/api/reviews', async (req, res) => {
+  const { tmdbId, mediaType } = req.query;
+  if (!tmdbId || !['movie', 'tv'].includes(mediaType)) {
+    return res.status(400).json({ status: 'error', message: 'tmdbId and a valid mediaType (movie|tv) are required.' });
+  }
+  const tmdbKey = req.userTmdbKey || (sharedTmdbAllowed() && process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY.trim() : '');
+  const tmdbReadToken = sharedTmdbAllowed() && process.env.TMDB_READ_TOKEN ? process.env.TMDB_READ_TOKEN.trim() : '';
+  const hasApiKey = tmdbKey && tmdbKey !== 'your_tmdb_api_key_here';
+  const hasReadToken = tmdbReadToken && tmdbReadToken !== 'your_tmdb_read_access_token_here';
+  if (!hasApiKey && !hasReadToken) {
+    return res.status(401).json({ status: 'error', message: 'Add your TMDb key in Settings to load reviews.' });
+  }
+  try {
+    const options = {};
+    let url = `https://api.themoviedb.org/3/${mediaType}/${encodeURIComponent(tmdbId)}/reviews`;
+    if (hasReadToken) {
+      options.headers = { 'Authorization': `Bearer ${tmdbReadToken}`, 'Content-Type': 'application/json;charset=utf-8' };
+    } else {
+      url += `?api_key=${encodeURIComponent(tmdbKey)}`;
+    }
+    const r = await fetchWithTimeout(url, options, 12000);
+    if (!r.ok) throw new Error(`TMDb reviews returned ${r.status}`);
+    const data = await r.json();
+    const reviews = (data.results || []).slice(0, 8).map(rv => ({
+      author: rv.author || rv.author_details?.username || 'Anonymous',
+      rating: (rv.author_details && typeof rv.author_details.rating === 'number') ? rv.author_details.rating : null, // 0-10
+      content: rv.content || '',
+      createdAt: rv.created_at || null,
+      url: rv.url || null
+    }));
+    return res.json({ status: 'success', reviews, total: data.total_results || reviews.length });
+  } catch (err) {
+    console.error('❌ TMDb reviews fetch failed:', err.message);
+    return res.status(502).json({ status: 'error', message: err.message });
+  }
+});
+
 // ── Category-specific metadata fetchers ──────────────────────────────────────
 
 async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
@@ -2709,7 +2747,9 @@ async function fetchMovieTvMetadata(parsed, category, customTmdbKey) {
       certification: certification || 'Unrated',
       trailer,
       cast,
-      imdbId: detail.external_ids?.imdb_id || detail.imdb_id || null
+      imdbId: detail.external_ids?.imdb_id || detail.imdb_id || null,
+      tmdbId: detail.id || null,
+      mediaType
     };
 
     console.log(`✅ TMDb metadata found: "${metadata.title}" [Rating: ${metadata.certification}]`);
@@ -2846,7 +2886,9 @@ async function fetchMovieTvMetadataByImdb(imdbId, customTmdbKey) {
       certification: certification || 'Unrated',
       trailer,
       cast,
-      imdbId: formattedImdb
+      imdbId: formattedImdb,
+      tmdbId: detail.id || null,
+      mediaType
     };
 
     console.log(`✅ TMDb metadata found via exact IMDb match: "${metadata.title}" [Rating: ${metadata.certification}]`);
