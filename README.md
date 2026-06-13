@@ -160,6 +160,7 @@ Premio uses a strict **Bring-Your-Own-Key (BYOK)** architecture:
 * **Helmet** security headers (HSTS, CSP, X-Content-Type-Options, frameguard) on all responses.
 * **CORS**: Restricted to configured origins (`CORS_ALLOWED_ORIGINS`); wildcard `*` is not used in production.
 * **Archive safety**: Zip/rar extraction validates each entry path against the target directory to prevent zip-slip attacks.
+* **Masked keys with PIN-gated reveal**: All API-key fields in Settings are masked by default. A **Show Keys** toggle reveals them (handy for copying keys into another instance) — and if the active profile has a PIN set, revealing requires entering that PIN first.
 
 ---
 

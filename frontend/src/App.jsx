@@ -379,6 +379,12 @@ export default function App() {
   
   // --- Settings States ---
   const [showSettings, setShowSettings] = useState(false);
+  // Reveal/mask API keys in Settings. Hidden by default; revealing is PIN-gated
+  // when the active profile has a PIN set.
+  const [showKeys, setShowKeys] = useState(false);
+  const [showKeysPinPrompt, setShowKeysPinPrompt] = useState(false);
+  const [revealPinInput, setRevealPinInput] = useState('');
+  const [revealPinError, setRevealPinError] = useState(false);
   const [hideAdult, setHideAdult] = useState(() => {
     const saved = localStorage.getItem('premium_search_hide_adult');
     return saved !== null ? JSON.parse(saved) : true; // Default to hiding adult for safety
@@ -562,6 +568,36 @@ export default function App() {
       };
     }
     return fetch(url, options);
+  };
+
+  // Toggle API-key visibility in Settings. Hiding is always allowed; revealing
+  // requires the active profile's PIN (when one is set), so keys can't be copied
+  // off a locked profile.
+  const handleToggleShowKeys = () => {
+    if (showKeys) { setShowKeys(false); return; }
+    const activeProfile = profiles.find(p => p.id === activeProfileId);
+    if (activeProfile && activeProfile.pin) {
+      setRevealPinInput('');
+      setRevealPinError(false);
+      setShowKeysPinPrompt(true);
+    } else {
+      setShowKeys(true);
+    }
+  };
+
+  // Validate a PIN entered to reveal keys.
+  const submitRevealPin = (val) => {
+    const activeProfile = profiles.find(p => p.id === activeProfileId);
+    if (val === activeProfile?.pin) {
+      setShowKeys(true);
+      setShowKeysPinPrompt(false);
+      setRevealPinInput('');
+      setRevealPinError(false);
+    } else {
+      setRevealPinError(true);
+      triggerToast('Incorrect PIN.', 'error');
+      setTimeout(() => { setRevealPinInput(''); setRevealPinError(false); }, 600);
+    }
   };
 
   const syncProfilesToCloud = async (currentProfiles = profiles) => {
@@ -1917,6 +1953,19 @@ export default function App() {
       // Avoid capturing keys when the user is typing in forms or search fields
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
         return;
+      }
+
+      // Keys we fully own while a video is open. When the <video controls>
+      // element or a control button holds focus (e.g. right after a mouse
+      // click on the player), the browser ALSO runs its native action — the
+      // <video> space-toggle, or a button's keyup "click" — on top of ours.
+      // The two fight and cancel out: the intermittent "pause for a split
+      // second then resume" double-toggle. Dropping focus to <body> first
+      // removes that second actor, so one press = exactly one action.
+      const ownedKeys = [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 's', 'S', 'f', 'F'];
+      if (ownedKeys.includes(e.key)) {
+        const ae = document.activeElement;
+        if (ae && ae !== document.body && typeof ae.blur === 'function') ae.blur();
       }
 
       switch (e.key) {
@@ -4048,7 +4097,67 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
   return (
     <div className="app-container">
-      
+
+      {/* Reveal-keys PIN gate — shown when revealing API keys on a PIN-locked profile */}
+      {showKeysPinPrompt && (
+        <div className="modal-overlay fade-in" role="dialog" aria-modal="true" aria-label="Enter PIN to reveal keys"
+          style={{ position: 'fixed', inset: 0, zIndex: 10000, backgroundColor: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(20px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="profile-pin-card glass-panel fade-in"
+            style={{ padding: '2.5rem 2rem', borderRadius: '16px', maxWidth: '340px', width: '90%', textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.6)', border: '1px solid var(--glass-border)', background: 'var(--panel-glass)' }}>
+            <div style={{ width: '64px', height: '64px', borderRadius: '50%', margin: '0 auto 1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--color-primary-glow)', color: 'var(--color-primary)', animation: revealPinError ? 'shake 0.5s' : 'none' }}>
+              <Icon name="eye" size={30} />
+            </div>
+            <h3 style={{ margin: '0 0 8px', fontSize: '1.2rem', color: 'var(--text-primary)' }}>Enter PIN to Reveal Keys</h3>
+            <p style={{ margin: '0 0 1.5rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>This profile is PIN-locked. Enter the PIN to show your API keys.</p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginBottom: '1.75rem' }}>
+              {[0, 1, 2, 3].map(idx => {
+                const filled = revealPinInput.length > idx;
+                return <div key={idx} className={`pin-dot ${filled ? 'filled' : ''} ${revealPinError ? 'shake-pin' : ''}`}
+                  style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid var(--glass-border)', backgroundColor: filled ? 'var(--color-primary)' : 'transparent', boxShadow: filled ? '0 0 10px var(--color-primary)' : 'none', transition: 'all 0.15s ease' }} />;
+              })}
+            </div>
+            <input type="text" pattern="\d*" maxLength={4} autoFocus value={revealPinInput}
+              onChange={(e) => {
+                const val = e.target.value.replace(/\D/g, '').substring(0, 4);
+                setRevealPinInput(val);
+                setRevealPinError(false);
+                if (val.length === 4) submitRevealPin(val);
+              }}
+              style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', maxWidth: '200px', margin: '0 auto' }}>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+                <button key={num} className="glass-panel"
+                  onClick={() => {
+                    if (revealPinInput.length < 4) {
+                      const val = revealPinInput + num;
+                      setRevealPinInput(val);
+                      if (val.length === 4) submitRevealPin(val);
+                    }
+                  }}
+                  style={{ fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', color: 'white', cursor: 'pointer' }}>
+                  {num}
+                </button>
+              ))}
+              <button onClick={() => { setShowKeysPinPrompt(false); setRevealPinInput(''); setRevealPinError(false); }}
+                style={{ fontSize: '0.8rem', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', background: 'rgba(255,255,255,0.02)', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button className="glass-panel"
+                onClick={() => {
+                  if (revealPinInput.length < 4) {
+                    const val = revealPinInput + '0';
+                    setRevealPinInput(val);
+                    if (val.length === 4) submitRevealPin(val);
+                  }
+                }}
+                style={{ fontSize: '1.2rem', fontWeight: 'bold', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', color: 'white', cursor: 'pointer' }}>
+                0
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Profile Selection Overlay */}
       {showPicker && (
         <div className="modal-overlay profile-picker-overlay fade-in" style={{ zIndex: '9999', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(25px)' }}>
@@ -5021,26 +5130,49 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           <section className="settings-card glass-panel fade-in" id="settings-panel">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '16px' }}>
               <h2 style={{ margin: 0 }} className="heading-ico"><Icon name="settings" size={20} /> Control Panel</h2>
-              <button 
-                type="button" 
-                className="action-btn" 
-                style={{ 
-                  fontSize: '0.8rem', 
-                  padding: '6px 12px',
-                  background: 'rgba(255, 255, 255, 0.05)', 
-                  border: '1px solid var(--glass-border)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                  cursor: 'pointer'
-                }}
-                onClick={() => {
-                  setShowSettings(false);
-                  setShowOnboarding(true);
-                  setOnboardingStep(1);
-                }}
-              >
-                 Run Setup Guide / Onboarding
-              </button>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="action-btn"
+                  aria-pressed={showKeys}
+                  style={{
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: showKeys ? 'var(--color-primary-glow)' : 'rgba(255, 255, 255, 0.05)',
+                    border: `1px solid ${showKeys ? 'var(--color-primary)' : 'var(--glass-border)'}`,
+                    borderRadius: '8px',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleToggleShowKeys}
+                  title={showKeys ? 'Hide all API keys' : 'Reveal all API keys (so you can copy them)'}
+                >
+                  <Icon name={showKeys ? 'eye-off' : 'eye'} size={14} /> {showKeys ? 'Hide Keys' : 'Show Keys'}
+                </button>
+                <button
+                  type="button"
+                  className="action-btn"
+                  style={{
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid var(--glass-border)',
+                    borderRadius: '8px',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowOnboarding(true);
+                    setOnboardingStep(1);
+                  }}
+                >
+                   Run Setup Guide / Onboarding
+                </button>
+              </div>
             </div>
             <div className="settings-grid">
               
@@ -5051,7 +5183,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Required for stream link generation, CDN cache status checks, and cloud sync features.</p>
                 </div>
                 <input 
-                  type="password" 
+                  type={showKeys ? 'text' : 'password'}
                   value={userPmKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5070,7 +5202,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Optional. Used to fetch movie posters, overview texts, and rating details directly in your browser.</p>
                 </div>
                 <input
-                  type="text"
+                  type={showKeys ? 'text' : 'password'}
                   value={userTmdbKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5089,7 +5221,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Optional. Adds IMDb, Rotten Tomatoes, and Metacritic ratings to movie &amp; TV detail pages (alongside TMDb). Free key at omdbapi.com.</p>
                 </div>
                 <input
-                  type="text"
+                  type={showKeys ? 'text' : 'password'}
                   value={userOmdbKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5108,7 +5240,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Optional. Lets the player fetch subtitles online when a video has none embedded. Free key at <strong>opensubtitles.com</strong> → Consumers. Tip: set your consumer to &quot;Under Development&quot; for 100 downloads/day without logging in.</p>
                 </div>
                 <input
-                  type="text"
+                  type={showKeys ? 'text' : 'password'}
                   value={userOpenSubsKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5127,7 +5259,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   <p>Optional. Free fallback subtitle source used when OpenSubtitles returns nothing or hits its daily download cap. Free key at <strong>subdl.com</strong>.</p>
                 </div>
                 <input
-                  type="text"
+                  type={showKeys ? 'text' : 'password'}
                   value={userSubdlKey}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5163,7 +5295,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 {aiEnabled && (
                   <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
                     <input 
-                      type="password" 
+                      type={showKeys ? 'text' : 'password'}
                       value={aiToken}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -5224,7 +5356,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     className="settings-text-input small"
                   />
                   <input 
-                    type="password" 
+                    type={showKeys ? 'text' : 'password'}
                     value={userJackettKey}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -5310,7 +5442,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                   </div>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <input 
-                      type="password" 
+                      type={showKeys ? 'text' : 'password'}
                       placeholder="API Key"
                       value={newIdxKey}
                       onChange={(e) => setNewIdxKey(e.target.value)}
