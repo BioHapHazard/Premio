@@ -5076,7 +5076,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       </header>
 
       {/* Core Room Navigation Tabs */}
-      <nav className="room-navigation glass-panel">
+      <nav className="room-navigation glass-panel" aria-label="Primary">
         <button
           className={`nav-tab ${activeTab === 'search' ? 'active' : ''}`}
           onClick={() => setActiveTab('search')}
@@ -6353,7 +6353,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
         {/* Tab: My Library Bookshelf */}
         {activeTab === 'library' && (
-          <section className="library-section fade-in">
+          <section className="library-section fade-in" aria-label="Library">
             <div className="results-header-row">
               <div className="results-header">
                 <h2 className="heading-ico"><Icon name="star" size={20} fill /> My Library bookshelves ({librarySubTab === 'Playlists' ? playlists.length : filteredLibraryList.length})</h2>
@@ -6555,7 +6555,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
         {/* Tab: Watchlist */}
         {activeTab === 'watchlist' && (
-          <section className="watchlist-section fade-in">
+          <section className="watchlist-section fade-in" aria-label="Watchlist">
             <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
               <div className="results-header">
                 <h2>Watchlist ({watchlist.length})</h2>
@@ -6662,7 +6662,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           };
 
           return (
-            <section className="progress-section fade-in">
+            <section className="progress-section fade-in" aria-label="Continue watching">
               <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
                 <div className="results-header">
                   <h2 className="heading-ico"><Icon name="player-play" size={20} fill /> Continue Watching ({continueWatchingList.length})</h2>
@@ -6824,7 +6824,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
         {/* Tab: Cloud Storage Manager */}
         {activeTab === 'cloud' && (
-          <section className="cloud-section fade-in">
+          <section className="cloud-section fade-in" aria-label="Cloud storage">
             <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
               <div className="results-header">
                 <h2 className="heading-ico"><Icon name="database" size={20} /> Premiumize Cloud Storage Manager</h2>
@@ -7263,7 +7263,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         )}
         {/* Tab: Active Downloads Transfer Manager */}
         {activeTab === 'transfers' && (
-          <section className="transfers-section fade-in">
+          <section className="transfers-section fade-in" aria-label="Transfers">
             <div className="results-header-row" style={{ marginBottom: '1.5rem' }}>
               <div className="results-header">
                 <h2 className="heading-ico"><Icon name="download" size={20} /> Real-Time Active Downloads</h2>
@@ -8925,7 +8925,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
           {/* Slide-out Sidebar Panel */}
           {showAICopilot && (
-            <div className="copilot-sidebar glass-panel" style={{
+            <div className="copilot-sidebar glass-panel" role="complementary" aria-label="AI Co-pilot chat" style={{
               position: 'fixed',
               top: 0,
               right: 0,
