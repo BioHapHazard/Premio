@@ -3318,6 +3318,47 @@ app.get('/api/account/info', async (req, res) => {
   }
 });
 
+// D-bis. Validate a user's Jackett URL + API key (lightweight caps query, no search).
+// Returns { status: 'success' | 'error', message } with HTTP 200 for a rejected key
+// so the client can tell "invalid key" apart from a network failure.
+app.get('/api/jackett/test', async (req, res) => {
+  const jackettUrl = (req.userJackettUrl || (envKeysAllowed() ? process.env.JACKETT_URL : '') || '').replace(/\/+$/, '');
+  const jackettApiKey = req.userJackettKey || (envKeysAllowed() ? process.env.JACKETT_API_KEY : '');
+  if (!jackettUrl || !jackettApiKey) {
+    return res.status(400).json({ status: 'error', message: 'Enter both a Jackett URL and API key first.' });
+  }
+  try {
+    const capsUrl = `${jackettUrl}/api/v2.0/indexers/all/results/torznab/api?apikey=${encodeURIComponent(jackettApiKey)}&t=caps`;
+    const r = await fetchWithTimeout(capsUrl, { headers: { 'Accept': 'application/xml' } }, 10000);
+    const text = await r.text();
+    if (r.ok && /<caps/i.test(text)) {
+      return res.json({ status: 'success', message: 'Jackett reachable — key accepted.' });
+    }
+    if (r.status === 401 || /unauthor/i.test(text)) {
+      return res.json({ status: 'error', message: 'Jackett rejected the API key.' });
+    }
+    return res.json({ status: 'error', message: `Jackett responded with status ${r.status}.` });
+  } catch (err) {
+    const reason = err.name === 'AbortError' ? 'Jackett did not respond (timed out).' : `Could not reach Jackett (${err.message}).`;
+    return res.json({ status: 'error', message: reason });
+  }
+});
+
+// D-ter. Validate a user's TMDb key — v3 api_key, or v4 read access token (JWT).
+app.get('/api/tmdb/test', async (req, res) => {
+  const key = req.userTmdbKey || '';
+  if (!key) return res.status(400).json({ status: 'error', message: 'Enter a TMDb key first.' });
+  try {
+    const r = key.startsWith('eyJ')
+      ? await fetchWithTimeout('https://api.themoviedb.org/3/authentication', { headers: { 'Authorization': `Bearer ${key}`, 'Accept': 'application/json' } }, 10000)
+      : await fetchWithTimeout(`https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(key)}`, { headers: { 'Accept': 'application/json' } }, 10000);
+    if (r.ok) return res.json({ status: 'success', message: 'TMDb key is valid.' });
+    return res.json({ status: 'error', message: 'TMDb rejected the key.' });
+  } catch (err) {
+    return res.json({ status: 'error', message: `Could not reach TMDb (${err.message}).` });
+  }
+});
+
 // E. Get Active Transfers List (Real-Time Queue Monitor)
 app.get('/api/transfers', async (req, res) => {
   const premiumizeApiKey = resolvePremiumizeKey(req);

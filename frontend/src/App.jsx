@@ -423,6 +423,8 @@ export default function App() {
   });
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
+  // Onboarding "test key" results: { pm|jackett|tmdb: { state: 'testing'|'ok'|'fail', msg } }
+  const [keyTestStatus, setKeyTestStatus] = useState({});
 
   // First-run guidance for the bring-your-own-key model: once the legal notice is
   // dismissed, if no Premiumize key is set and onboarding hasn't been completed,
@@ -598,6 +600,33 @@ export default function App() {
       triggerToast('Incorrect PIN.', 'error');
       setTimeout(() => { setRevealPinInput(''); setRevealPinError(false); }, 600);
     }
+  };
+
+  // Onboarding: validate a key against its provider and record an inline result.
+  const testKey = async (name, endpoint) => {
+    setKeyTestStatus(s => ({ ...s, [name]: { state: 'testing', msg: 'Testing…' } }));
+    try {
+      const res = await fetchWithCredentials(endpoint);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.status === 'success') {
+        setKeyTestStatus(s => ({ ...s, [name]: { state: 'ok', msg: data.message || 'Connected!' } }));
+      } else {
+        setKeyTestStatus(s => ({ ...s, [name]: { state: 'fail', msg: data.message || 'Key was rejected.' } }));
+      }
+    } catch {
+      setKeyTestStatus(s => ({ ...s, [name]: { state: 'fail', msg: 'Network error — could not test.' } }));
+    }
+  };
+
+  // Inline ✓/✗ result shown next to a "Test" button.
+  const renderKeyTestResult = (name) => {
+    const st = keyTestStatus[name];
+    if (!st || st.state === 'testing') return null;
+    return (
+      <span style={{ fontSize: '0.78rem', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px', color: st.state === 'ok' ? '#4ade80' : '#f87171' }}>
+        <Icon name={st.state === 'ok' ? 'check' : 'x'} size={13} /> {st.msg}
+      </span>
+    );
   };
 
   const syncProfilesToCloud = async (currentProfiles = profiles) => {
@@ -8540,38 +8569,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                       You can find your API key by logging into your account page at <a href="https://www.premiumize.me/account" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>premiumize.me/account</a> (click &quot;Show API Key&quot;).
                     </span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!userPmKey) { triggerToast('Enter your Premiumize API key first.', 'warning'); return; }
-                        triggerToast('Testing connection…', 'info');
-                        try {
-                          const res = await fetchWithCredentials('/api/account/info');
-                          const data = await res.json().catch(() => ({}));
-                          if (res.ok && data.status === 'success') {
-                            triggerToast('Premiumize key works — account connected!', 'success');
-                          } else {
-                            triggerToast('Key was rejected by Premiumize. Double-check it.', 'error');
-                          }
-                        } catch (e) {
-                          triggerToast('Could not verify key (network error).', 'error');
-                        }
-                      }}
-                      style={{
-                        marginTop: '4px',
-                        alignSelf: 'flex-start',
-                        padding: '8px 14px',
-                        background: 'rgba(45, 212, 191, 0.12)',
-                        border: '1px solid rgba(45, 212, 191, 0.4)',
-                        borderRadius: '8px',
-                        color: '#5eead4',
-                        fontSize: '0.8rem',
-                        fontWeight: 700,
-                        cursor: 'pointer'
-                      }}
-                    >
-                       Test connection
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!userPmKey) { triggerToast('Enter your Premiumize API key first.', 'warning'); return; }
+                          testKey('pm', '/api/account/info');
+                        }}
+                        disabled={keyTestStatus.pm?.state === 'testing'}
+                        style={{ padding: '8px 14px', background: 'rgba(45, 212, 191, 0.12)', border: '1px solid rgba(45, 212, 191, 0.4)', borderRadius: '8px', color: '#5eead4', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}
+                      >
+                        {keyTestStatus.pm?.state === 'testing' ? 'Testing…' : 'Test connection'}
+                      </button>
+                      {renderKeyTestResult('pm')}
+                    </div>
                   </div>
                 </div>
               )}
@@ -8631,6 +8642,21 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     </div>
                   </div>
 
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!userJackettUrl || !userJackettKey) { triggerToast('Enter both the Jackett URL and API key first.', 'warning'); return; }
+                        testKey('jackett', '/api/jackett/test');
+                      }}
+                      disabled={keyTestStatus.jackett?.state === 'testing'}
+                      style={{ alignSelf: 'flex-start', padding: '8px 14px', background: 'rgba(45, 212, 191, 0.12)', border: '1px solid rgba(45, 212, 191, 0.4)', borderRadius: '8px', color: '#5eead4', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      {keyTestStatus.jackett?.state === 'testing' ? 'Testing…' : 'Test Jackett connection'}
+                    </button>
+                    {renderKeyTestResult('jackett')}
+                  </div>
+
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
                      Set up trackers (e.g. LimeTorrents, EZTV) inside your Jackett dashboard so search queries return cached media.
                   </p>
@@ -8668,6 +8694,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                       Register a free account on <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>themoviedb.org</a> to generate your v3 key.
                     </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!userTmdbKey) { triggerToast('Enter your TMDb key first.', 'warning'); return; }
+                          testKey('tmdb', '/api/tmdb/test');
+                        }}
+                        disabled={keyTestStatus.tmdb?.state === 'testing'}
+                        style={{ alignSelf: 'flex-start', padding: '8px 14px', background: 'rgba(45, 212, 191, 0.12)', border: '1px solid rgba(45, 212, 191, 0.4)', borderRadius: '8px', color: '#5eead4', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}
+                      >
+                        {keyTestStatus.tmdb?.state === 'testing' ? 'Testing…' : 'Test TMDb key'}
+                      </button>
+                      {renderKeyTestResult('tmdb')}
+                    </div>
                   </div>
 
                   <div style={{ background: 'rgba(74, 222, 128, 0.05)', borderLeft: '3px solid #4ade80', padding: '10px', borderRadius: '6px', fontSize: '0.8rem', color: '#4ade80', marginTop: '10px' }}>
