@@ -76,7 +76,14 @@ app.use(express.json({ limit: '5mb' }));
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 const heavyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 app.use('/api/', apiLimiter);
-app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/reviews', '/api/letterboxd-reviews', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
+// /api/metadata is intentionally NOT in the strict bucket: it's a cached, BYOK,
+// read-only TMDb proxy that a single search legitimately calls for many results
+// (poster/rating enrichment). It stays under the general apiLimiter instead.
+app.use(['/api/search', '/api/usenet/search', '/api/reviews', '/api/letterboxd-reviews', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
+
+// Dedicated, generous bucket for the high-volume cached metadata endpoint.
+const metadataLimiter = rateLimit({ windowMs: 60 * 1000, max: 600, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
+app.use('/api/metadata', metadataLimiter);
 
 // Header extraction middleware to support stateless webapp deployments
 app.use((req, res, next) => {
@@ -859,6 +866,20 @@ app.get('/api/search', async (req, res) => {
       console.log('ℹ️  Falling back to mock results due to error.');
       rawResults = generateMockResults(q, selectedCategory);
     }
+  }
+
+  // Internet Archive (a Jackett indexer) returns a flood of unrelated user uploads
+  // — game footage, review clips, lectures — that pollute Movie/TV (and "All")
+  // searches with junk titles. It's only genuinely useful for audio, so restrict
+  // it to Music searches and drop it everywhere else.
+  const IA_ALLOWED_CATEGORIES = ['Music'];
+  const isInternetArchive = (item) =>
+    /internet\s*archive/i.test(item.Tracker || '') || /^internetarchive$/i.test(item.TrackerId || '');
+  if (!IA_ALLOWED_CATEGORIES.includes(selectedCategory)) {
+    const before = rawResults.length;
+    rawResults = rawResults.filter(item => !isInternetArchive(item));
+    const dropped = before - rawResults.length;
+    if (dropped > 0) console.log(`🗑️  Dropped ${dropped} Internet Archive result(s) from "${selectedCategory}" search.`);
   }
 
   // B. Process and map torrent data
