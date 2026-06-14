@@ -349,6 +349,7 @@ button:disabled {
   align-items: center;
   gap: 0.5rem;
   margin-top: 1.25rem;
+  flex-wrap: wrap;
 }
 
 .header-actions .action-btn {
@@ -1953,6 +1954,7 @@ textarea::placeholder {
   justify-content: center;
   margin-bottom: 0.75rem;
   border-radius: 2rem;
+  flex-wrap: wrap;
 }
 
 .nav-tab {
@@ -2930,6 +2932,37 @@ textarea::placeholder {
 .card-poster-col:hover {
   transform: scale(1.05);
   box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+}
+
+.shimmer-poster {
+  width: 100%;
+  aspect-ratio: 2/3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0.5rem;
+  position: relative;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.shimmer-poster::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 20%,
+    rgba(255, 255, 255, 0.08) 60%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: shimmer 1.5s infinite;
 }
 
 .card-poster-img {

@@ -13,6 +13,63 @@ const keyActivate = (handler) => (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(e); }
 };
 
+// Reduce a release name to a canonical "title (+ year)" key so different releases
+// of the same movie/episode (varying quality, codec, group) collapse to one key.
+// Used to share TMDb metadata across sibling results when one resolved and another
+// didn't (because its messy release name cleaned to a non-matching title).
+const normalizeTitle = (raw) => {
+  if (!raw) return '';
+  const t = String(raw).toLowerCase().replace(/[._]/g, ' ');
+  // Find the year first (it's the strongest anchor), then keep only the text before it.
+  const ym = t.match(/\b(19|20)\d{2}\b/);
+  const year = ym ? ym[0] : '';
+  let core = ym
+    ? t.slice(0, ym.index)
+    : t.split(/\b(2160p|1080p|720p|480p|4k|uhd|bluray|blu-ray|web-?dl|webrip|brrip|hdrip|dvdrip|x264|x265|h ?264|h ?265|hevc|remux|av1)\b/i)[0];
+  core = core
+    .replace(/[[(][^\])]*[\])]/g, ' ')                                            // drop [bracket]/(paren) groups
+    .replace(/\b(reup|proper|repack|internal|read nfo|multi|complete)\b/gi, ' ')  // release-action words
+    .replace(/\b(imax|extended|unrated|remastered|directors? cut|theatrical|10 ?bit|hdr)\b/gi, ' ') // editions
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return year ? `${core} ${year}`.trim() : core;
+};
+
+// Continue-Watching conflict-free merge. Cloud sync used to OVERWRITE the local
+// list, so a peer instance (or a stale background pull) could wipe the movie you're
+// actively watching. Instead we union local + cloud keyed by the token-independent
+// file path (cleanUrl), keep the newer entry by timestamp, and honor removal
+// "tombstones" so a manual delete stays deleted instead of being resurrected.
+const mergeTombstoneLists = (a = [], b = []) => {
+  const m = new Map();
+  for (const t of [...a, ...b]) {
+    if (!t || !t.link) continue;
+    m.set(t.link, Math.max(m.get(t.link) || 0, t.removedAt || 0));
+  }
+  const cutoff = Date.now() - 1000 * 60 * 60 * 24 * 60; // drop tombstones older than 60 days
+  return [...m.entries()].filter(([, removedAt]) => removedAt > cutoff).map(([link, removedAt]) => ({ link, removedAt }));
+};
+
+const mergeProgress = (local = [], cloud = [], tombstones = [], limit = 12) => {
+  const tomb = new Map();
+  for (const t of tombstones) { if (t && t.link) tomb.set(t.link, t.removedAt || 0); }
+  const byKey = new Map();
+  // cloud first, then local, so an equal-or-newer local entry wins ties
+  for (const item of [...cloud, ...local]) {
+    if (!item || !item.link) continue;
+    const k = cleanUrl(item.link);
+    const cur = byKey.get(k);
+    if (!cur || (item.timestamp || 0) >= (cur.timestamp || 0)) byKey.set(k, item);
+  }
+  const out = [];
+  for (const [k, item] of byKey) {
+    if ((tomb.get(k) || 0) >= (item.timestamp || 0)) continue; // removed after last watch → stays removed
+    out.push(item);
+  }
+  return out.sort((x, y) => (y.timestamp || 0) - (x.timestamp || 0)).slice(0, limit);
+};
+
 // Category Definitions
 const CATEGORIES = ['All', 'Movies', 'TV', 'Music', 'Audiobooks', 'Ebooks', 'Software', 'VST', 'Adult', 'Other', 'Retro Games'];
 
@@ -894,32 +951,51 @@ export default function App() {
         if (data.synced && data.data) {
           const cloudLib = data.data.libraryList || [];
           const cloudProgress = data.data.continueWatchingList || [];
+          const cloudTombstones = data.data.removedProgress || [];
           const cloudPlaylists = data.data.playlists || [];
           const cloudTheme = data.data.selectedTheme || 'midnight-nebula';
-          
-          // Save profile-specific local storage
+
+          // Continue-Watching is MERGED, never overwritten — union local + cloud,
+          // newest timestamp wins, deletions honored via tombstones. This stops a
+          // peer/stale pull from wiping the movie you're actively watching.
+          const localProgress = JSON.parse(localStorage.getItem(`premium_search_continue_watching_${profileId}`) || '[]');
+          const mergedTombstones = mergeTombstoneLists(readTombstones(profileId), cloudTombstones);
+          const mergedProgress = mergeProgress(localProgress, cloudProgress, mergedTombstones);
+          localStorage.setItem(tombstoneKeyFor(profileId), JSON.stringify(mergedTombstones));
+
+          // Save profile-specific local storage (library/playlists/theme keep
+          // last-writer-wins; only Continue-Watching needed conflict-free merge).
           localStorage.setItem(`premium_search_library_${profileId}`, JSON.stringify(cloudLib));
-          localStorage.setItem(`premium_search_continue_watching_${profileId}`, JSON.stringify(cloudProgress));
+          localStorage.setItem(`premium_search_continue_watching_${profileId}`, JSON.stringify(mergedProgress));
           localStorage.setItem(`premium_search_playlists_${profileId}`, JSON.stringify(cloudPlaylists));
           localStorage.setItem(`premium_search_theme_${profileId}`, cloudTheme);
-          
+
           // If this is still the active profile, update states
           const currentActiveId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
           if (profileId === currentActiveId) {
             setLibraryList(cloudLib);
             localStorage.setItem('premium_search_library', JSON.stringify(cloudLib));
-            
-            setContinueWatchingList(cloudProgress);
-            localStorage.setItem('premium_search_continue_watching', JSON.stringify(cloudProgress));
-            
+
+            setContinueWatchingList(mergedProgress);
+            localStorage.setItem('premium_search_continue_watching', JSON.stringify(mergedProgress));
+
             setPlaylists(cloudPlaylists);
             localStorage.setItem('premium_search_playlists', JSON.stringify(cloudPlaylists));
-            
+
             setSelectedTheme(cloudTheme);
             localStorage.setItem('premium_search_theme', cloudTheme);
-            
+
             setLastSynced(new Date());
             triggerToast('Cloud profile storage synchronized!', 'success');
+          }
+
+          // If our merge differs from the cloud (kept a movie the peer lacked, or
+          // applied a deletion), push the converged result back so instances agree.
+          // Idempotent — once everyone matches, this no-ops (no sync loop).
+          const changed = JSON.stringify(mergedProgress) !== JSON.stringify(cloudProgress)
+            || JSON.stringify(mergedTombstones) !== JSON.stringify(cloudTombstones);
+          if (changed) {
+            syncToCloud(cloudLib, mergedProgress, cloudPlaylists, cloudTheme, profileId);
           }
         } else {
           // If no cloud data found for this profile, upload current local state
@@ -973,6 +1049,7 @@ export default function App() {
         body: JSON.stringify({
           libraryList: currentLib,
           continueWatchingList: currentProgress,
+          removedProgress: readTombstones(targetProfileId), // sync deletions so peers honor them
           playlists: currentPlaylists,
           selectedTheme: currentTheme
         })
@@ -984,6 +1061,23 @@ export default function App() {
       console.error('Cloud sync upload failed:', err.message);
     }
   };
+
+  // Keep the latest library/progress in a ref so the periodic auto-save reads
+  // current data without restarting its timer on every playback tick.
+  const autoSaveDataRef = useRef({ lib: libraryList, cw: continueWatchingList });
+  autoSaveDataRef.current = { lib: libraryList, cw: continueWatchingList };
+
+  // Background auto-save: push Continue-Watching to the cloud every 2 minutes so
+  // in-progress playback "sticks" and peer instances converge even mid-watch.
+  useEffect(() => {
+    if (!activeProfileId) return;
+    const id = setInterval(() => {
+      if (autoSaveDataRef.current.cw.length > 0) {
+        syncToCloud(autoSaveDataRef.current.lib, autoSaveDataRef.current.cw);
+      }
+    }, 2 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [activeProfileId]);
 
   const syncFromCloud = async () => {
     setIsSyncing(true);
@@ -1739,6 +1833,34 @@ export default function App() {
   const metadataCacheRef = useRef(new Map());
   const [metadataResults, setMetadataResults] = useState({});
   const [metadataDrawerItem, setMetadataDrawerItem] = useState(null);
+
+  // Index resolved metadata by normalized title, so a result whose own TMDb lookup
+  // missed can borrow info from a sibling release of the same movie/episode.
+  const canonicalMeta = useMemo(() => {
+    const m = new Map();
+    for (const key in metadataResults) {
+      const val = metadataResults[key];
+      if (val && !val.tmdbMiss && (val.poster || val.voteAverage)) {
+        const norm = normalizeTitle(key.slice(key.indexOf('::') + 2));
+        if (norm && !m.has(norm)) m.set(norm, val);
+      }
+    }
+    return m;
+  }, [metadataResults]);
+
+  // Dynamically resolve metadata for the selected drawer item from state cache,
+  // falling back to a same-title sibling. Lets the detail view fill in once a
+  // background fetch (its own or a sibling's) completes.
+  const activeMeta = useMemo(() => {
+    if (!metadataDrawerItem) return null;
+    const cat = metadataDrawerItem.detectedType || metadataDrawerItem.category || category;
+    const direct = metadataResults[`${cat}::${metadataDrawerItem.title}`];
+    if (direct && !direct.tmdbMiss) return direct;
+    const shared = canonicalMeta.get(normalizeTitle(metadataDrawerItem.title));
+    if (shared) return shared;
+    return direct || metadataDrawerItem._metadata || null;
+  }, [metadataDrawerItem, metadataResults, canonicalMeta, category]);
+
   const metadataInFlightRef = useRef(new Set());
   const metadataDrawerCloseRef = useRef(null);
   // TMDb reviews panel (detail drawer)
@@ -1773,7 +1895,7 @@ export default function App() {
     // Lazily fetch the Letterboxd rating + popular reviews in one scrape, only for
     // movies with an IMDb id. This keeps Letterboxd off the search/metadata path
     // (no scrape-per-result); the rating pill appears once it loads.
-    const m = metadataDrawerItem?._metadata;
+    const m = activeMeta;
     if (m?.imdbId && m?.mediaType === 'movie') {
       let active = true;
       setLbReviewsLoading(true);
@@ -1797,7 +1919,7 @@ export default function App() {
       })();
       return () => { active = false; };
     }
-  }, [metadataDrawerItem]);
+  }, [metadataDrawerItem, activeMeta?.imdbId, activeMeta?.mediaType]);
 
   // Toggle/fetch the TMDb reviews panel for the open detail item.
   const toggleReviews = async (meta) => {
@@ -1849,7 +1971,7 @@ export default function App() {
     
     // Already in flight?
     if (metadataInFlightRef.current.has(cacheKey)) {
-      return null;
+      return { inFlight: true };
     }
     metadataInFlightRef.current.add(cacheKey);
     
@@ -1859,8 +1981,10 @@ export default function App() {
       if (item.tvdbid) url += `&tvdb=${encodeURIComponent(item.tvdbid)}`;
       const res = await fetchWithCredentials(url);
       if (!res.ok) {
+        // HTTP errors (e.g. 429 rate-limit, 5xx) are transient — do NOT cache, so
+        // the lookup retries on the next pass instead of becoming a permanent miss.
         console.error(`Backend returned HTTP error ${res.status} for "${item.title}"`);
-        return null;
+        return { title: item.title, overview: 'Could not load details (server busy). Will retry.', tmdbMiss: true, error: true };
       }
       const data = await res.json();
       
@@ -1869,11 +1993,13 @@ export default function App() {
         return data.metadata;
       }
       // Cache misses too to avoid repeated lookups
-      metadataCacheRef.current.set(cacheKey, null);
-      return null;
+      const fallback = { title: item.title, overview: 'No additional details found on TMDb.', tmdbMiss: true };
+      metadataCacheRef.current.set(cacheKey, fallback);
+      return fallback;
     } catch (err) {
       console.error('Fetch error for:', item.title, err.message);
-      return null;
+      // Return a temporary miss so UI stops spinning but can retry next page load
+      return { title: item.title, overview: 'Failed to load details due to a network error.', tmdbMiss: true, error: true };
     } finally {
       metadataInFlightRef.current.delete(cacheKey);
     }
@@ -1885,18 +2011,32 @@ export default function App() {
       const cat = item.detectedType || item.category || category;
       return !['Software', 'Other', 'Retro Games', 'Adult', 'VST'].includes(cat);
     });
-    
+
     if (eligibleItems.length === 0) return;
-    
+
+    // Collapse to ONE representative per normalized title: many results are just
+    // different releases of the same movie, and siblings already share metadata via
+    // canonicalMeta. This cuts a 195-release search from ~195 metadata requests to a
+    // handful (avoiding 429s). Pick the shortest title as the cleanest match candidate.
+    const repByNorm = new Map();
+    const standalone = [];
+    for (const item of eligibleItems) {
+      const norm = normalizeTitle(item.title);
+      if (!norm) { standalone.push(item); continue; }
+      const cur = repByNorm.get(norm);
+      if (!cur || (item.title || '').length < (cur.title || '').length) repByNorm.set(norm, item);
+    }
+    const fetchItems = [...repByNorm.values(), ...standalone];
+
     // Fetch in parallel, max 4 at a time to avoid flooding
     const BATCH = 4;
     const newResults = {};
     
-    for (let i = 0; i < eligibleItems.length; i += BATCH) {
-      const batch = eligibleItems.slice(i, i + BATCH);
+    for (let i = 0; i < fetchItems.length; i += BATCH) {
+      const batch = fetchItems.slice(i, i + BATCH);
       const promises = batch.map(async (item) => {
         const metadata = await fetchMetadata(item);
-        if (metadata) {
+        if (metadata && !metadata.inFlight) {
           const cat = item.detectedType || item.category || category;
           newResults[`${cat}::${item.title}`] = metadata;
         }
@@ -1912,8 +2052,12 @@ export default function App() {
   // Helper: Get metadata for an item from state
   const getMetadata = (item) => {
     const cat = item.detectedType || item.category || category;
-    const key = `${cat}::${item.title}`;
-    return metadataResults[key] || null;
+    const direct = metadataResults[`${cat}::${item.title}`];
+    if (direct && !direct.tmdbMiss) return direct;
+    // Borrow from a sibling release of the same title that did resolve on TMDb.
+    const shared = canonicalMeta.get(normalizeTitle(item.title));
+    if (shared) return shared;
+    return direct || null;
   };
 
   // --- Watchlist helpers & actions ---
@@ -2112,13 +2256,13 @@ export default function App() {
     }
   }, [activeTab]);
 
-  // Auto-fetch metadata for the first 20 DISPLAYED search results (sorted & filtered)
-  // This runs whenever search results, categories, sorting, or filters change.
+  // Auto-fetch metadata for the DISPLAYED search results (based on visibleCount)
+  // This runs whenever search results, categories, sorting, filters, or visibleCount changes.
   useEffect(() => {
     if (activeTab === 'search' && processedResults && processedResults.length > 0) {
-      fetchMetadataBatch(processedResults.slice(0, 20));
+      fetchMetadataBatch(processedResults.slice(0, visibleCount));
     }
-  }, [activeTab, results, filterQuality, filterMaxSize, filterMinSeeders, excludeKeywords, category, sortBy]);
+  }, [activeTab, results, filterQuality, filterMaxSize, filterMinSeeders, excludeKeywords, category, sortBy, visibleCount]);
 
   // --- Auto-Save: eBook Progress Event Listener ---
   useEffect(() => {
@@ -3703,10 +3847,22 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     }
   };
 
+  // --- Continue-Watching removal tombstones (so deletions survive a merge) ---
+  const tombstoneKeyFor = (pid) => `premium_search_cw_removed_${pid || activeProfileId}`;
+  const readTombstones = (pid) => {
+    try { return JSON.parse(localStorage.getItem(tombstoneKeyFor(pid)) || '[]'); } catch { return []; }
+  };
+  const recordTombstone = (fileLink, pid = activeProfileId) => {
+    const merged = mergeTombstoneLists(readTombstones(pid), [{ link: cleanUrl(fileLink), removedAt: Date.now() }]);
+    localStorage.setItem(tombstoneKeyFor(pid), JSON.stringify(merged));
+    return merged;
+  };
+
   const removeFromContinueWatching = (fileLink) => {
     const updated = continueWatchingList.filter(item => cleanUrl(item.link) !== cleanUrl(fileLink));
     setContinueWatchingList(updated);
     localStorage.setItem('premium_search_continue_watching', JSON.stringify(updated));
+    recordTombstone(fileLink); // remember the deletion so a peer sync can't resurrect it
     syncToCloud(libraryList, updated); // Sync deletion to cloud immediately!
   };
 
@@ -6451,16 +6607,26 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                         const isDownloading = activeDownloadId !== null && activeDownloadId === itemIdentifier;
                         const inLib = isItemInLibrary(item);
                         const meta = getMetadata(item);
+                        const cat = item.detectedType || item.category || category;
+                        const isVideo = cat === 'Movies' || cat === 'TV';
                         
                         // Fallback to Usenet indexer custom cover art if TMDb poster is unavailable
-                        const hasPoster = meta?.poster || item.coverurl;
+                        // For video content, we always reserve poster space to avoid layout shifts.
+                        const hasPoster = !!(meta?.poster || item.coverurl || isVideo);
                         const posterSrc = meta?.poster || item.coverurl;
+                        const isMetadataLoading = isVideo && !meta;
                         
                         return (
                           <article key={idx} className={`result-card glass-panel ${isUsenetItem ? 'usenet-hit' : (item.cached ? 'cached-hit' : 'cached-miss')} ${hasPoster ? 'has-poster' : ''}`}>
                             {hasPoster && (
-                              <div className="card-poster-col" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Usenet NZB Cover Art' } }))}>
-                                <img src={posterSrc} alt="" className="card-poster-img" loading="lazy" />
+                              <div className="card-poster-col" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Loading details from TMDb...' } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Loading details from TMDb...' } }))}>
+                                {posterSrc ? (
+                                  <img src={posterSrc} alt="" className="card-poster-img" loading="lazy" />
+                                ) : (
+                                  <div className="shimmer-poster">
+                                    <Icon name="movie" size={24} />
+                                  </div>
+                                )}
                                 {meta?.voteAverage ? (
                                   <span className="poster-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span>
                                 ) : null}
@@ -6478,7 +6644,15 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                   <span className="type-badge" title="Detected content type">{item.detectedType}</span>
                                 )}
                               </div>
-                              {meta && (meta.voteAverage || meta.rating || meta.genres?.length || meta.artist || meta.author || meta.runtime) && (
+                              {isMetadataLoading ? (
+                                <div className="meta-line">
+                                  <span className="shimmer-badge" style={{ width: '40px', height: '18px', borderRadius: '4px' }} />
+                                  <span className="shimmer-badge" style={{ width: '85px', height: '18px', borderRadius: '4px' }} />
+                                  <button className="meta-details-link" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: { title: item.title, overview: 'Loading details from TMDb...' } }); }} title="View full details">
+                                    <Icon name="refresh" className="spin" size={14} /> Details
+                                  </button>
+                                </div>
+                              ) : meta && (meta.voteAverage || meta.rating || meta.genres?.length || meta.artist || meta.author || meta.runtime || meta.tmdbMiss) ? (
                                 <div className="meta-line">
                                   {meta.voteAverage ? <span className="meta-rating"><Icon name="star" fill size={13} /> {meta.voteAverage.toFixed(1)}</span> : null}
                                   {meta.rating ? <span className="meta-rating"><Icon name="star" fill size={13} /> {meta.rating}</span> : null}
@@ -6488,11 +6662,18 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                   {meta.artist && <span className="meta-sub">{meta.artist}</span>}
                                   {meta.author && <span className="meta-sub">{meta.author}</span>}
                                   {meta.runtime ? <span className="meta-sub"><Icon name="clock" size={13} /> {Math.floor(meta.runtime / 60)}h {meta.runtime % 60}m</span> : null}
+                                  {meta.tmdbMiss ? <span className="meta-genre" style={{ opacity: 0.6 }}>No TMDb Match</span> : null}
                                   <button className="meta-details-link" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: meta }); }} title="View full details">
                                     <Icon name="info" size={14} /> Details
                                   </button>
                                 </div>
-                              )}
+                              ) : isVideo ? (
+                                <div className="meta-line">
+                                  <button className="meta-details-link" onClick={(e) => { e.stopPropagation(); setMetadataDrawerItem({ ...item, _metadata: { title: item.title, overview: 'No details found.' } }); }} title="View full details">
+                                    <Icon name="info" size={14} /> Details
+                                  </button>
+                                </div>
+                              ) : null}
                               
                               {qualityTags.length > 0 && (
                                 <div className="quality-tags">
@@ -8573,9 +8754,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
           </div>
         )}
         {/* Metadata Detail Drawer */}
-        {metadataDrawerItem && metadataDrawerItem._metadata && (() => {
-          const meta = metadataDrawerItem._metadata;
+        {metadataDrawerItem && (() => {
+          const meta = activeMeta || { title: metadataDrawerItem.title, overview: 'Loading details from TMDb...' };
           const itemCat = metadataDrawerItem.category || category;
+          const isVideo = itemCat === 'Movies' || itemCat === 'TV';
           return (
             <div className="player-modal-backdrop metadata-drawer-backdrop" onClick={() => setMetadataDrawerItem(null)} style={{ zIndex: 2800 }}>
               <div className="metadata-drawer glass-panel fade-in" role="dialog" aria-modal="true" aria-labelledby="metadata-drawer-title" onClick={(e) => e.stopPropagation()}>
@@ -8592,9 +8774,15 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                 <div className="metadata-drawer-body">
                   {/* Poster + Core Info */}
                   <div className="metadata-hero-row">
-                    {meta.poster && (
+                    {(meta.poster || isVideo) && (
                       <div className="metadata-poster-wrap">
-                        <img src={meta.poster} alt="" className="metadata-poster-full" />
+                        {meta.poster ? (
+                          <img src={meta.poster} alt="" className="metadata-poster-full" />
+                        ) : (
+                          <div className="shimmer-poster" style={{ width: '100%', aspectRatio: '2/3' }}>
+                            <Icon name="movie" size={30} />
+                          </div>
+                        )}
                       </div>
                     )}
                     <div className="metadata-core-info">
@@ -8602,7 +8790,12 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                       {meta.tagline && <p className="metadata-tagline">{meta.tagline}</p>}
 
                       <div className="metadata-badges-row">
-                        {meta.voteAverage && (
+                        {isVideo && !meta.voteAverage && !meta.tmdbMiss && (
+                          <span className="metadata-rating-pill tmdb-rating" style={{ opacity: 0.6 }}>
+                            <Icon name="refresh" className="spin" size={13} /> Loading TMDb...
+                          </span>
+                        )}
+                        {meta.voteAverage && !meta.tmdbMiss && (
                           (meta.tmdbId && meta.mediaType) ? (
                             <button
                               type="button"
