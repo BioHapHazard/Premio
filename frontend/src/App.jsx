@@ -1743,6 +1743,13 @@ export default function App() {
   const [reviewsData, setReviewsData] = useState([]);
   const [reviewsError, setReviewsError] = useState('');
 
+  // Letterboxd rating + reviews panel (detail drawer) — fetched lazily on open.
+  const [lbRating, setLbRating] = useState(null); // { rating, url } | null
+  const [lbReviewsOpen, setLbReviewsOpen] = useState(false);
+  const [lbReviewsLoading, setLbReviewsLoading] = useState(false);
+  const [lbReviewsData, setLbReviewsData] = useState([]);
+  const [lbReviewsError, setLbReviewsError] = useState('');
+
   // a11y: when the detail dialog opens, move keyboard focus into it (onto the
   // close button) so screen-reader/keyboard users land inside the dialog rather
   // than being left on the trigger behind the backdrop. Also reset the reviews
@@ -1754,12 +1761,45 @@ export default function App() {
     setReviewsOpen(false);
     setReviewsData([]);
     setReviewsError('');
+    setLbReviewsOpen(false);
+    setLbReviewsData([]);
+    setLbReviewsError('');
+    setLbRating(null);
+
+    // Lazily fetch the Letterboxd rating + popular reviews in one scrape, only for
+    // movies with an IMDb id. This keeps Letterboxd off the search/metadata path
+    // (no scrape-per-result); the rating pill appears once it loads.
+    const m = metadataDrawerItem?._metadata;
+    if (m?.imdbId && m?.mediaType === 'movie') {
+      let active = true;
+      setLbReviewsLoading(true);
+      (async () => {
+        try {
+          const res = await fetchWithCredentials(`/api/letterboxd-reviews?imdbId=${encodeURIComponent(m.imdbId)}`);
+          const data = await res.json();
+          if (!active) return;
+          if (res.ok && data.status === 'success') {
+            if (data.rating != null) setLbRating({ rating: data.rating, url: data.url });
+            setLbReviewsData(data.reviews || []);
+            if (!(data.reviews || []).length) setLbReviewsError('No Letterboxd reviews found for this title.');
+          } else {
+            setLbReviewsError(data.message || 'Could not load reviews.');
+          }
+        } catch {
+          if (active) setLbReviewsError('Could not load reviews (network error).');
+        } finally {
+          if (active) setLbReviewsLoading(false);
+        }
+      })();
+      return () => { active = false; };
+    }
   }, [metadataDrawerItem]);
 
   // Toggle/fetch the TMDb reviews panel for the open detail item.
   const toggleReviews = async (meta) => {
     if (reviewsOpen) { setReviewsOpen(false); return; }
     setReviewsOpen(true);
+    setLbReviewsOpen(false); // Close Letterboxd panel when opening TMDb
     if (reviewsData.length > 0) return; // already loaded for this title
     if (!meta?.tmdbId || !meta?.mediaType) { setReviewsError('Reviews need TMDb metadata (set a TMDb key in Settings).'); return; }
     setReviewsLoading(true);
@@ -1778,6 +1818,14 @@ export default function App() {
     } finally {
       setReviewsLoading(false);
     }
+  };
+
+  // Toggle the Letterboxd reviews panel. Data is already loaded (lazily) when the
+  // detail drawer opens, so this just shows/hides the panel.
+  const toggleLbReviews = () => {
+    if (lbReviewsOpen) { setLbReviewsOpen(false); return; }
+    setLbReviewsOpen(true);
+    setReviewsOpen(false); // Close TMDb panel when opening Letterboxd
   };
 
   // Fetch metadata for a given torrent item, with deduplication
@@ -8549,6 +8597,18 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                             </span>
                           )
                         )}
+                        {lbRating && lbRating.rating != null && (
+                          <button
+                            type="button"
+                            className={`metadata-rating-pill lb-rating rating-pill-btn ${lbReviewsOpen ? 'is-active' : ''}`}
+                            onClick={toggleLbReviews}
+                            aria-expanded={lbReviewsOpen}
+                            title="Show top Letterboxd reviews"
+                          >
+                            <span className="rating-src-tag src-lb">LB</span> {lbRating.rating.toFixed(1)}/5
+                            <Icon name={lbReviewsOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                          </button>
+                        )}
                         {meta.ratings?.imdbRating && (
                           meta.imdbId ? (
                             <a className="metadata-rating-pill imdb-rating rating-pill-btn" href={`https://www.imdb.com/title/${meta.imdbId}/reviews`} target="_blank" rel="noopener noreferrer" title="Read IMDb reviews">
@@ -8600,6 +8660,36 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                                   </div>
                                   <p className="tmdb-review-content">{rv.content.length > 360 ? rv.content.slice(0, 360).trim() + '…' : rv.content}</p>
                                   {rv.url && <a className="tmdb-review-link" href={rv.url} target="_blank" rel="noopener noreferrer">Read full review <Icon name="external-link" size={11} /></a>}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Letterboxd reviews panel (toggled from the Letterboxd rating pill) */}
+                      {lbReviewsOpen && (
+                        <div className="lb-reviews-panel">
+                          <div className="lb-reviews-head">
+                            <span><Icon name="message-chatbot" size={14} /> Top Letterboxd Reviews</span>
+                            <button type="button" className="lb-reviews-close" onClick={() => setLbReviewsOpen(false)} aria-label="Hide reviews"><Icon name="x" size={14} /></button>
+                          </div>
+                          {lbReviewsLoading && <div className="lb-reviews-loading"><span className="spinner-micro"></span> Loading reviews…</div>}
+                          {!lbReviewsLoading && lbReviewsError && <div className="lb-reviews-empty">{lbReviewsError}</div>}
+                          {!lbReviewsLoading && lbReviewsData.length > 0 && (
+                            <ul className="lb-reviews-list">
+                              {lbReviewsData.map((rv, ri) => (
+                                <li key={ri} className="lb-review-item">
+                                  <div className="lb-review-head">
+                                    <span className="lb-review-author">{rv.author}</span>
+                                    {rv.rating != null && (
+                                      <span className="lb-review-rating" style={{ color: '#00e054' }}>
+                                        <Icon name="star" fill size={11} /> {rv.rating}/10
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="lb-review-content">{rv.content.length > 360 ? rv.content.slice(0, 360).trim() + '…' : rv.content}</p>
+                                  {rv.url && <a className="lb-review-link" href={rv.url} style={{ color: '#00e054' }} target="_blank" rel="noopener noreferrer">Read full review <Icon name="external-link" size={11} /></a>}
                                 </li>
                               ))}
                             </ul>

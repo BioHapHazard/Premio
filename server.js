@@ -76,7 +76,7 @@ app.use(express.json({ limit: '5mb' }));
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 const heavyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests, slow down.' } });
 app.use('/api/', apiLimiter);
-app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/reviews', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
+app.use(['/api/search', '/api/usenet/search', '/api/metadata', '/api/reviews', '/api/letterboxd-reviews', '/api/proxy-rom', '/api/proxy-subtitle', '/api/subtitles/search', '/api/subtitles/download'], heavyLimiter);
 
 // Header extraction middleware to support stateless webapp deployments
 app.use((req, res, next) => {
@@ -176,6 +176,108 @@ async function fetchOmdbRatings(imdbId, omdbKey) {
     console.error('❌ OMDb lookup failed:', e.message);
     return null;
   }
+}
+
+// Helper: decode common HTML entities left over after tag-stripping scraped text.
+function decodeEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&hellip;/g, '…')
+    .replace(/&mdash;/g, '—')
+    .replace(/&ndash;/g, '–')
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+}
+
+// Helper: parse the Letterboxd aggregate rating (out of 5) from an already-fetched page.
+function parseLetterboxdRating(html) {
+  let rating = null;
+  const jsonLdRegex = /<script\s+type="application\/ld\+json">([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = jsonLdRegex.exec(html)) !== null) {
+    const cleanJson = match[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+    try {
+      const parsed = JSON.parse(cleanJson);
+      if (parsed && parsed.aggregateRating && parsed.aggregateRating.ratingValue) {
+        rating = parseFloat(parsed.aggregateRating.ratingValue);
+        break;
+      }
+    } catch (e) {}
+  }
+  if (rating === null) {
+    const metaMatch = html.match(/<meta\s+name="twitter:data2"\s+content="([0-9.]+)\s+out of 5"/i);
+    if (metaMatch) rating = parseFloat(metaMatch[1]);
+  }
+  return rating;
+}
+
+// Helper: Parse Letterboxd popular reviews from HTML
+function parseLetterboxdReviews(html) {
+  const reviews = [];
+  const articleRegex = /<article[^>]*class="[^"]*js-production-viewing[^"]*"[\s\S]*?<\/article>/gi;
+  let match;
+  while ((match = articleRegex.exec(html)) !== null && reviews.length < 8) {
+    const articleHtml = match[0];
+    
+    // Author
+    let author = 'Anonymous';
+    const authorMatch = articleHtml.match(/<strong class="displayname">([^<]+)<\/strong>/i);
+    if (authorMatch) {
+      author = decodeEntities(authorMatch[1].trim());
+    } else {
+      const personMatch = articleHtml.match(/data-person="([^"]+)"/i);
+      if (personMatch) {
+        author = decodeEntities(personMatch[1].trim());
+      }
+    }
+    
+    // Rating
+    let ratingValue = null;
+    const ratingMatch = articleHtml.match(/aria-label="([★½]+)"/i) || articleHtml.match(/<title>([★½]+)<\/title>/i);
+    if (ratingMatch) {
+      const stars = ratingMatch[1];
+      let val = 0;
+      for (let char of stars) {
+        if (char === '★') val += 2;
+        else if (char === '½') val += 1;
+      }
+      ratingValue = val;
+    }
+    
+    // Content
+    let content = '';
+    const bodyMatch = articleHtml.match(/<div class="body-text -prose -reset js-review-body js-collapsible-text"[^>]*>([\s\S]*?)<\/div>/i);
+    if (bodyMatch) {
+      content = decodeEntities(
+        bodyMatch[1]
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+    }
+    
+    // URL
+    let reviewUrl = null;
+    const urlMatch = articleHtml.match(/href="(\/[a-zA-Z0-9_-]+\/film\/[^/"]+)/i);
+    if (urlMatch) {
+      reviewUrl = `https://letterboxd.com${urlMatch[1]}`;
+    }
+    
+    if (content) {
+      reviews.push({
+        author,
+        rating: ratingValue,
+        content,
+        url: reviewUrl
+      });
+    }
+  }
+  return reviews;
 }
 
 // Helper: Resolve Premiumize Key prioritizing user settings header
@@ -2500,6 +2602,7 @@ app.get('/api/metadata', async (req, res) => {
   // Check cache first
   if (metadataCache.has(cacheKey)) {
     const cached = metadataCache.get(cacheKey);
+    let cacheUpdated = false;
     // Backfill OMDb ratings onto a cached entry that predates the feature
     // (or was cached before the user supplied an OMDb key).
     if (cached && cached.status === 'success' && cached.metadata && cached.metadata.imdbId && !cached.metadata.ratings) {
@@ -2508,10 +2611,15 @@ app.get('/api/metadata', async (req, res) => {
         const ratings = await fetchOmdbRatings(cached.metadata.imdbId, omdbKey);
         if (ratings) {
           cached.metadata.ratings = ratings;
-          setMetadataCache(cacheKey, cached);
+          cacheUpdated = true;
           console.log(`⭐ OMDb ratings backfilled onto cached "${cached.metadata.title}"`);
         }
       }
+    }
+    // (Letterboxd rating is fetched lazily when the detail drawer opens — see
+    // /api/letterboxd-reviews — to avoid scraping Letterboxd for every search result.)
+    if (cacheUpdated) {
+      setMetadataCache(cacheKey, cached);
     }
     console.log('⚡ Metadata cache hit.');
     return res.json(cached);
@@ -2557,6 +2665,10 @@ app.get('/api/metadata', async (req, res) => {
       }
     }
 
+    // (Letterboxd rating/reviews are fetched lazily from the detail drawer via
+    // /api/letterboxd-reviews, so a single movie search no longer triggers a
+    // Letterboxd scrape for every result.)
+
     setMetadataCache(cacheKey, result);
     return res.json(result);
   } catch (err) {
@@ -2599,6 +2711,41 @@ app.get('/api/reviews', async (req, res) => {
     return res.json({ status: 'success', reviews, total: data.total_results || reviews.length });
   } catch (err) {
     console.error('❌ TMDb reviews fetch failed:', err.message);
+    return res.status(502).json({ status: 'error', message: err.message });
+  }
+});
+
+// Letterboxd reviews endpoint
+app.get('/api/letterboxd-reviews', async (req, res) => {
+  const { imdbId } = req.query;
+  if (!imdbId) {
+    return res.status(400).json({ status: 'error', message: 'imdbId is required.' });
+  }
+  let id = imdbId.toString().trim();
+  if (!/^tt\d+$/i.test(id)) id = 'tt' + id.replace(/^tt/i, '');
+  if (!/^tt\d+$/i.test(id)) {
+    return res.status(400).json({ status: 'error', message: 'Invalid IMDb ID format.' });
+  }
+
+  try {
+    const url = `https://letterboxd.com/imdb/${id}/`;
+    const response = await fetchWithTimeout(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      }
+    }, 8000);
+
+    if (!response.ok) throw new Error(`Letterboxd returned status ${response.status}`);
+    const html = await response.text();
+    // One scrape returns both the aggregate rating and the popular reviews.
+    const reviews = parseLetterboxdReviews(html);
+    const rating = parseLetterboxdRating(html);
+
+    return res.json({ status: 'success', rating, url: response.url, reviews });
+  } catch (err) {
+    console.error('❌ Letterboxd reviews fetch failed:', err.message);
     return res.status(502).json({ status: 'error', message: err.message });
   }
 });

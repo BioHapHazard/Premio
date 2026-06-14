@@ -3150,15 +3150,15 @@ textarea::placeholder {
 .rating-pill-btn:active { transform: scale(0.97); }
 .rating-pill-btn.is-active { filter: brightness(1.25); }
 
-/* ===== TMDb reviews panel ===== */
-.tmdb-reviews-panel {
+/* ===== TMDb & Letterboxd reviews panel ===== */
+.tmdb-reviews-panel, .lb-reviews-panel {
   margin: 0.85rem 0 0.25rem;
   background: hsla(224, 30%, 7%, 0.6);
   border: 1px solid var(--glass-border);
   border-radius: 0.85rem;
   overflow: hidden;
 }
-.tmdb-reviews-head {
+.tmdb-reviews-head, .lb-reviews-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -3170,24 +3170,24 @@ textarea::placeholder {
   color: var(--text-muted);
   border-bottom: 1px solid var(--glass-border);
 }
-.tmdb-reviews-head > span { display: inline-flex; align-items: center; gap: 0.4rem; }
-.tmdb-reviews-close { padding: 2px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
-.tmdb-reviews-loading, .tmdb-reviews-empty {
+.tmdb-reviews-head > span, .lb-reviews-head > span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.tmdb-reviews-close, .lb-reviews-close { padding: 2px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+.tmdb-reviews-loading, .tmdb-reviews-empty, .lb-reviews-loading, .lb-reviews-empty {
   padding: 0.9rem; font-size: 0.84rem; color: var(--text-muted);
   display: flex; align-items: center; gap: 0.5rem;
 }
-.tmdb-reviews-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
-.tmdb-review-item {
+.tmdb-reviews-list, .lb-reviews-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
+.tmdb-review-item, .lb-review-item {
   padding: 0.75rem 0.85rem;
   border-bottom: 1px solid hsla(224, 20%, 20%, 0.4);
 }
-.tmdb-review-item:last-child { border-bottom: none; }
-.tmdb-review-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
-.tmdb-review-author { font-weight: 700; font-size: 0.85rem; color: var(--text-primary); }
-.tmdb-review-rating { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 700; color: #fbbf24; flex-shrink: 0; }
-.tmdb-review-content { margin: 0; font-size: 0.83rem; line-height: 1.5; color: var(--text-secondary, var(--text-muted)); white-space: pre-wrap; }
-.tmdb-review-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 0.4rem; font-size: 0.78rem; font-weight: 600; color: var(--color-primary); text-decoration: none; }
-.tmdb-review-link:hover { text-decoration: underline; }
+.tmdb-review-item:last-child, .lb-review-item:last-child { border-bottom: none; }
+.tmdb-review-head, .lb-review-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+.tmdb-review-author, .lb-review-author { font-weight: 700; font-size: 0.85rem; color: var(--text-primary); }
+.tmdb-review-rating, .lb-review-rating { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 700; color: #fbbf24; flex-shrink: 0; }
+.tmdb-review-content, .lb-review-content { margin: 0; font-size: 0.83rem; line-height: 1.5; color: var(--text-secondary, var(--text-muted)); white-space: pre-wrap; }
+.tmdb-review-link, .lb-review-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 0.4rem; font-size: 0.78rem; font-weight: 600; color: var(--color-primary); text-decoration: none; }
+.tmdb-review-link:hover, .lb-review-link:hover { text-decoration: underline; }
 
 .metadata-rating-pill.tmdb-rating {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.1));
@@ -3225,6 +3225,15 @@ textarea::placeholder {
   color: #9fdb72;
   border: 1px solid rgba(108, 198, 74, 0.32);
 }
+.metadata-rating-pill.lb-rating {
+  background: rgba(0, 224, 84, 0.12);
+  color: #00e054;
+  border: 1px solid rgba(0, 224, 84, 0.3);
+}
+.metadata-rating-pill.lb-rating.is-active {
+  background: rgba(0, 224, 84, 0.25);
+  border: 1px solid rgba(0, 224, 84, 0.5);
+}
 .rating-src-tag {
   font-size: 0.6rem;
   font-weight: 800;
@@ -3236,6 +3245,7 @@ textarea::placeholder {
 .rating-src-tag.src-imdb { background: #f5c518; }
 .rating-src-tag.src-rt { background: #fa320a; color: #fff; }
 .rating-src-tag.src-mc { background: #6cc64a; }
+.rating-src-tag.src-lb { background: #00e054; color: #0d0f17; }
 
 .metadata-year-pill,
 .metadata-tracks-pill {
