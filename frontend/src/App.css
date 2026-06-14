@@ -1120,6 +1120,17 @@ textarea::placeholder {
 }
 .filter-chip-clear:hover { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
 
+/* Incremental-render "load more" sentinel for large result sets */
+.results-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .stat-badge {
   display: inline-flex;
   align-items: center;

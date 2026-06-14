@@ -562,6 +562,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [searchError, setSearchError] = useState('');
+  // Incremental rendering of search results — render a batch, reveal more on scroll.
+  const RESULTS_BATCH = 40;
+  const [visibleCount, setVisibleCount] = useState(RESULTS_BATCH);
+  const loadMoreRef = useRef(null);
   const [activeDownloadId, setActiveDownloadId] = useState(null);
   const [searchMode, setSearchMode] = useState('torrent'); // 'torrent' or 'usenet'
   const [hideUsenetWarning, setHideUsenetWarning] = useState(() => {
@@ -4401,7 +4405,21 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   });
 
   const processedResults = getFilteredResults();
-  
+
+  // Incremental rendering: start each new result set at one batch.
+  useEffect(() => { setVisibleCount(RESULTS_BATCH); }, [rawResults, searchMode]);
+
+  // Reveal more cards as the sentinel scrolls into view (IntersectionObserver).
+  useEffect(() => {
+    const el = loadMoreRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) setVisibleCount(c => c + RESULTS_BATCH);
+    }, { rootMargin: '600px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [visibleCount, processedResults.length]);
+
   // Calculate cached count for stats indicator
   const cachedCount = processedResults.filter(item => item.cached).length;
 
@@ -6424,7 +6442,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                     </div>
                   ) : (
                     <div className="results-grid">
-                      {processedResults.map((item, idx) => {
+                      {processedResults.slice(0, visibleCount).map((item, idx) => {
                         const isUsenetItem = item.nzbUrl !== undefined;
                         const qualityTags = extractQuality(item.title);
                         
@@ -6632,6 +6650,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
                           </article>
                         );
                       })}
+                    </div>
+                  )}
+                  {processedResults.length > visibleCount && (
+                    <div ref={loadMoreRef} className="results-load-more">
+                      <span className="spinner-micro"></span> Loading more… ({visibleCount} of {processedResults.length})
                     </div>
                   )}
                 </div>
