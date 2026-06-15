@@ -2239,10 +2239,10 @@ export default function App() {
     }
   };
 
-  // Auto-fetch metadata and cache status when library tab is shown
+  // Refresh cache status when the Library tab is shown. (Metadata/cover art is
+  // pre-fetched by the background [libraryList] effect below, so no fetch here.)
   useEffect(() => {
     if (activeTab === 'library' && libraryList.length > 0) {
-      fetchMetadataBatch(libraryList.slice(0, 20));
       checkLibraryCacheStatus();
     }
   }, [activeTab]);
@@ -2263,6 +2263,35 @@ export default function App() {
       fetchMetadataBatch(processedResults.slice(0, visibleCount));
     }
   }, [activeTab, results, filterQuality, filterMaxSize, filterMinSeeders, excludeKeywords, category, sortBy, visibleCount]);
+
+  // Auto-fetch metadata for all library items in background when list changes
+  useEffect(() => {
+    if (libraryList.length > 0) {
+      fetchMetadataBatch(libraryList);
+    }
+  }, [libraryList]);
+
+  // Stable signature of the Continue-Watching item SET (title + category). Used so
+  // the cover-art fetch below only runs when items are added/removed — NOT on every
+  // playback progress tick (continueWatchingList gets a fresh reference each second
+  // while a video plays, which would otherwise re-run this effect constantly).
+  const cwArtSignature = useMemo(
+    () => continueWatchingList
+      .map(i => `${i.category || (i.torrent && i.torrent.category) || 'Movies'}::${i.parentTitle || i.title}`)
+      .join('|'),
+    [continueWatchingList]
+  );
+
+  // Auto-fetch metadata for all Continue Watching items in the background to resolve
+  // backdrop/cover art (replaces the generic gradient cards with real artwork).
+  useEffect(() => {
+    if (!cwArtSignature) return;
+    const itemsToFetch = cwArtSignature.split('|').map(s => {
+      const sep = s.indexOf('::');
+      return { category: s.slice(0, sep), title: s.slice(sep + 2) };
+    });
+    fetchMetadataBatch(itemsToFetch);
+  }, [cwArtSignature]);
 
   // --- Auto-Save: eBook Progress Event Listener ---
   useEffect(() => {
