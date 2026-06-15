@@ -7,6 +7,7 @@ import { normalizeTitle, mergeTombstoneLists, mergeProgress } from './lib/progre
 import { filterResultsForKids, isRatingAllowed } from './lib/ratings';
 import { convertSrtToVtt } from './lib/subtitles';
 import { renderMarkdown } from './lib/markdown';
+import { useThemeState } from './state/useThemeState';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -26,10 +27,7 @@ export default function App() {
   const [cloudRenameType, setCloudRenameType] = useState('folder');
   const [cloudFilter, setCloudFilter] = useState('');
 
-  // --- Custom UI Themes, Storage Quota & Active Downloads States ---
-  const [selectedTheme, setSelectedTheme] = useState(() => {
-    return localStorage.getItem('premium_search_theme') || 'midnight-nebula';
-  });
+  // --- Storage Quota & Active Downloads States ---
   const [accountInfo, setAccountInfo] = useState(null);
   const [transfers, setTransfers] = useState([]);
   const [transfersLoading, setTransfersLoading] = useState(false);
@@ -69,6 +67,9 @@ export default function App() {
   }, [profiles, activeProfileId]);
 
   const isKids = activeProfile ? activeProfile.isKids : false;
+
+  // UI theme (per-profile persistence handled inside the hook).
+  const [selectedTheme, setSelectedTheme] = useThemeState(activeProfileId);
 
   // --- UI & Application State ---
   const [query, setQuery] = useState('');
@@ -1599,15 +1600,6 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [toast]);
-
-  // --- UI Theme Application Hook ---
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', selectedTheme);
-    localStorage.setItem('premium_search_theme', selectedTheme);
-    if (activeProfileId) {
-      localStorage.setItem(`premium_search_theme_${activeProfileId}`, selectedTheme);
-    }
-  }, [selectedTheme, activeProfileId]);
 
   // Prevent page scroll with arrow keys/space while retro game ROM is active
   useEffect(() => {
