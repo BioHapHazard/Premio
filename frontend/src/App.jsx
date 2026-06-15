@@ -8,6 +8,7 @@ import { filterResultsForKids, isRatingAllowed } from './lib/ratings';
 import { convertSrtToVtt } from './lib/subtitles';
 import { renderMarkdown } from './lib/markdown';
 import { useThemeState } from './state/useThemeState';
+import { useRetroPlayer } from './state/useRetroPlayer';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -1265,11 +1266,13 @@ export default function App() {
     return localStorage.getItem('premium_search_auto_skip_intro') === 'true';
   });
 
-  // --- Retro Emulation Arcade States ---
-  const [activeRetroTorrent, setActiveRetroTorrent] = useState(null);
-  const [selectedRetroRomFile, setSelectedRetroRomFile] = useState(null);
-  const [retroPlayableFiles, setRetroPlayableFiles] = useState([]);
-  const [retroSearchQuery, setRetroSearchQuery] = useState('');
+  // --- Retro Emulation Arcade States --- (state + scroll-lock effect in useRetroPlayer)
+  const {
+    activeRetroTorrent, setActiveRetroTorrent,
+    selectedRetroRomFile, setSelectedRetroRomFile,
+    retroPlayableFiles, setRetroPlayableFiles,
+    retroSearchQuery, setRetroSearchQuery,
+  } = useRetroPlayer();
 
 
   // --- Digital EBook Reader States ---
@@ -1600,31 +1603,6 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [toast]);
-
-  // Prevent page scroll with arrow keys/space while retro game ROM is active
-  useEffect(() => {
-    if (!selectedRetroRomFile) return;
-
-    const handlePreventScroll = (e) => {
-      // Avoid intercepting keys if the user is typing in an input/textarea inside the parent doc
-      const activeEl = document.activeElement;
-      const isInput = activeEl && (
-        activeEl.tagName === 'INPUT' || 
-        activeEl.tagName === 'TEXTAREA' || 
-        activeEl.isContentEditable
-      );
-      if (isInput) return;
-
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar'].includes(e.key)) {
-        e.preventDefault();
-      }
-    };
-
-    window.addEventListener('keydown', handlePreventScroll, { passive: false });
-    return () => {
-      window.removeEventListener('keydown', handlePreventScroll);
-    };
-  }, [selectedRetroRomFile]);
 
   // Persist show/hide adult configuration
   useEffect(() => {
