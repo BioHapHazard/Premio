@@ -17,10 +17,26 @@ commit.
 
 - [x] **Phase 1 — Extract pure helpers/constants** → `src/lib/` (commit `3ab8732`, pushed).
       `App.jsx` 9,780 → 9,243 lines.
-- [ ] **Phase 2 — Group state into domain hooks** (`src/state/`). ← in progress
+- [~] **Phase 2 — Group state into domain hooks** (`src/state/`). ← in progress
+  - [x] `useThemeState` (`7d3374e`) — takes `activeProfileId`.
+  - [x] `useRetroPlayer` (`0a59721`) — self-contained (state + scroll-lock effect).
+  - [x] `useEbookReader` (`011d4bf`) — state + progress effect; takes `setContinueWatchingList`.
+  - [x] `useAudioPlayer` (`906053e`) — **state only**; iframe progress effect stays in App
+        (its `getMetadata`/`removeFromContinueWatching`/`triggerToast` collaborators are
+        declared after the hook call site → TDZ). Fold the effect in once those move to the provider.
+  - [x] `useToast` (`fdaeeeb`) — self-contained (toast + triggerToast + auto-dismiss).
+  - [ ] AppStateProvider seeded with `useProfiles` + `useSettings` (next session).
+  - [ ] `useMetadata`, `useVideoPlayer`, data domains, cloud, AI, ui-shell, cloud-sync.
 - [ ] **Phase 3 — Extract presentational leaf components** (cards, pills, shimmer).
 - [ ] **Phase 4 — Extract panels & player overlays as components** (consume context).
 - [ ] **Phase 5 — Split `App.css`** (optional, deferred).
+
+> **Lesson (Phase 2):** a domain hook can only fold in its effect if the effect's
+> collaborators are in scope at the hook's *call site*. Functions declared later in
+> `App()` (e.g. `getMetadata`, `removeFromContinueWatching`) are in the temporal dead
+> zone there, so such effects stay in App until those collaborators also live in the
+> provider. Also: relocating a hook makes Fast Refresh emit a one-off "order of Hooks"
+> warning — always confirm with a **full reload**, not just HMR.
 
 ---
 
