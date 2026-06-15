@@ -10,6 +10,7 @@ import { renderMarkdown } from './lib/markdown';
 import { useThemeState } from './state/useThemeState';
 import { useRetroPlayer } from './state/useRetroPlayer';
 import { useEbookReader } from './state/useEbookReader';
+import { useAudioPlayer } from './state/useAudioPlayer';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -1286,12 +1287,14 @@ export default function App() {
     resumeEbookScroll, setResumeEbookScroll,
   } = useEbookReader({ setContinueWatchingList });
 
-  // --- Premium Audio Player States ---
-  const [activeAudioTorrent, setActiveAudioTorrent] = useState(null);
-  const [selectedAudioFile, setSelectedAudioFile] = useState(null);
-  const [audioPlayableFiles, setAudioPlayableFiles] = useState([]);
-  const [audioSearchQuery, setAudioSearchQuery] = useState('');
-  const [resumeAudioTime, setResumeAudioTime] = useState(0);
+  // --- Premium Audio Player States --- (iframe progress effect stays in App; see useAudioPlayer)
+  const {
+    activeAudioTorrent, setActiveAudioTorrent,
+    selectedAudioFile, setSelectedAudioFile,
+    audioPlayableFiles, setAudioPlayableFiles,
+    audioSearchQuery, setAudioSearchQuery,
+    resumeAudioTime, setResumeAudioTime,
+  } = useAudioPlayer();
 
   // --- Netflix-Style Autoplay States ---
   const [nextEpisodeFile, setNextEpisodeFile] = useState(null);
