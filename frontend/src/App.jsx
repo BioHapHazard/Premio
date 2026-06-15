@@ -11,6 +11,7 @@ import { useThemeState } from './state/useThemeState';
 import { useRetroPlayer } from './state/useRetroPlayer';
 import { useEbookReader } from './state/useEbookReader';
 import { useAudioPlayer } from './state/useAudioPlayer';
+import { useToast } from './state/useToast';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -1592,23 +1593,8 @@ export default function App() {
   };
 
   // --- Custom Animated Toast System ---
-  const [toast, setToast] = useState(null);
-
-  const triggerToast = (message, type = 'success') => {
-    // Strip any decorative emoji from toast copy — the type icon conveys state now.
-    const clean = (message || '')
-      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-    setToast({ message: clean, type });
-  };
-
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
+  // Toast notification (state + auto-dismiss effect in useToast).
+  const { toast, triggerToast } = useToast();
 
   // Persist show/hide adult configuration
   useEffect(() => {
