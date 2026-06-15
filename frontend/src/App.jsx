@@ -9,6 +9,7 @@ import { convertSrtToVtt } from './lib/subtitles';
 import { renderMarkdown } from './lib/markdown';
 import { useThemeState } from './state/useThemeState';
 import { useRetroPlayer } from './state/useRetroPlayer';
+import { useEbookReader } from './state/useEbookReader';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -1275,13 +1276,15 @@ export default function App() {
   } = useRetroPlayer();
 
 
-  // --- Digital EBook Reader States ---
-  const [activeEbookTorrent, setActiveEbookTorrent] = useState(null);
-  const [selectedEbookFile, setSelectedEbookFile] = useState(null);
-  const [ebookPlayableFiles, setEbookPlayableFiles] = useState([]);
-  const [ebookSearchQuery, setEbookSearchQuery] = useState('');
-  const [resumeEbookChapter, setResumeEbookChapter] = useState(null);
-  const [resumeEbookScroll, setResumeEbookScroll] = useState(null);
+  // --- Digital EBook Reader States --- (state + progress-save effect in useEbookReader)
+  const {
+    activeEbookTorrent, setActiveEbookTorrent,
+    selectedEbookFile, setSelectedEbookFile,
+    ebookPlayableFiles, setEbookPlayableFiles,
+    ebookSearchQuery, setEbookSearchQuery,
+    resumeEbookChapter, setResumeEbookChapter,
+    resumeEbookScroll, setResumeEbookScroll,
+  } = useEbookReader({ setContinueWatchingList });
 
   // --- Premium Audio Player States ---
   const [activeAudioTorrent, setActiveAudioTorrent] = useState(null);
@@ -1725,50 +1728,6 @@ export default function App() {
     });
     fetchMetadataBatch(itemsToFetch);
   }, [cwArtSignature]);
-
-  // --- Auto-Save: eBook Progress Event Listener ---
-  useEffect(() => {
-    const handleIframeMessage = (event) => {
-      if (event.data && event.data.type === 'ebook-progress') {
-        const { chapterIndex, chapterTitle, totalChapters, bookTitle } = event.data;
-        if (!activeEbookTorrent || !selectedEbookFile) return;
-
-        // STRICT PRIVACY COMPLIANCE RULE: NEVER save Adult content progress
-        if (activeEbookTorrent.category === 'Adult') return;
-
-        const progressPercent = totalChapters > 0 ? ((chapterIndex + 1) / totalChapters) * 100 : 0;
-
-        setContinueWatchingList(prev => {
-          const updated = [
-            {
-              title: selectedEbookFile.name,
-              parentTitle: activeEbookTorrent.title,
-              link: selectedEbookFile.link,
-              torrent: activeEbookTorrent,
-              category: 'Ebooks',
-              chapterIndex: chapterIndex,
-              chapterTitle: chapterTitle,
-              totalChapters: totalChapters,
-              currentTime: chapterIndex + 1,
-              duration: totalChapters,
-              percent: progressPercent,
-              scrollTop: event.data.scrollTop || 0,
-              scrollPercent: event.data.scrollPercent || 0,
-              timestamp: Date.now()
-            },
-            ...prev.filter(item => cleanUrl(item.link) !== cleanUrl(selectedEbookFile.link))
-          ].slice(0, 12);
-          localStorage.setItem('premium_search_continue_watching', JSON.stringify(updated));
-          return updated;
-        });
-      }
-    };
-
-    window.addEventListener('message', handleIframeMessage);
-    return () => window.removeEventListener('message', handleIframeMessage);
-  }, [activeEbookTorrent, selectedEbookFile]);
-
-
 
   // --- Auto-Save: Audio / Audiobook Progress Event Listener ---
   useEffect(() => {
