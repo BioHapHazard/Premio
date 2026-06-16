@@ -15,6 +15,7 @@ import { useToast } from './state/useToast';
 import { useProfilesState } from './state/useProfilesState';
 import { useSettingsState } from './state/useSettingsState';
 import { useMetadataState } from './state/useMetadataState';
+import { useContinueWatchingState } from './state/useContinueWatchingState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -35,7 +36,8 @@ function AppStateProvider({ children }) {
   const retro = useRetroPlayer();
   const audio = useAudioPlayer();
   const metadata = useMetadataState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata };
+  const continueWatching = useContinueWatchingState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -153,6 +155,8 @@ function AppContent() {
     lbReviewsLoading, setLbReviewsLoading,
     lbReviewsData, setLbReviewsData,
     lbReviewsError, setLbReviewsError,
+    // continue watching
+    continueWatchingList, setContinueWatchingList,
   } = useAppState();
 
   // --- UI & Application State ---
@@ -271,11 +275,8 @@ function AppContent() {
     } catch { setWatchlist([]); }
   }, [activeProfileId]);
 
-  // --- Continue Watching log State (Strict Privacy Filtered) ---
-  const [continueWatchingList, setContinueWatchingList] = useState(() => {
-    const saved = localStorage.getItem('premium_search_continue_watching');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // --- Continue Watching log --- (state in useContinueWatchingState via context;
+  // cwArtSignature memo + cover-art effect + removeFromContinueWatching stay in AppContent)
 
   // --- Custom Playlists States ---
   const [playlists, setPlaylists] = useState(() => {
