@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
+import { useState, useEffect, useRef, Fragment, useMemo, createContext, useContext } from 'react';
 import Icon from './Icon';
 import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS } from './lib/constants';
 import { keyActivate } from './lib/a11y';
@@ -15,7 +15,35 @@ import { useToast } from './state/useToast';
 import { useProfilesState } from './state/useProfilesState';
 import { useSettingsState } from './state/useSettingsState';
 
+// Context for the migrated "root" domains. AppStateProvider composes the domain
+// hooks and exposes their values flattened; AppContent (and, later, extracted
+// panel components) read them via useAppState(). More domains move in here as
+// Phase 2 continues.
+const AppStateContext = createContext(null);
+
+function AppStateProvider({ children }) {
+  // Spreading produces a fresh value object per provider render, so consumers
+  // re-render whenever profiles/settings change — same cadence as the old
+  // single-component App, just sourced from here now.
+  const value = { ...useProfilesState(), ...useSettingsState() };
+  return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
+}
+
+function useAppState() {
+  const ctx = useContext(AppStateContext);
+  if (!ctx) throw new Error('useAppState must be used within AppStateProvider');
+  return ctx;
+}
+
 export default function App() {
+  return (
+    <AppStateProvider>
+      <AppContent />
+    </AppStateProvider>
+  );
+}
+
+function AppContent() {
   // --- UI Layout Navigation state ---
   const [activeTab, setActiveTab] = useState('search'); // Options: search, library, progress, cloud
   const [librarySubTab, setLibrarySubTab] = useState('All');
@@ -38,9 +66,10 @@ export default function App() {
   const [transfers, setTransfers] = useState([]);
   const [transfersLoading, setTransfersLoading] = useState(false);
 
-  // --- Multi-Profile States --- (state + dropdown outside-click effect in useProfilesState;
-  // profile lifecycle/switch logic stays in App since it orchestrates other domains)
+  // Root domains (profiles + settings) provided by AppStateProvider via context.
+  // Profile lifecycle/switch logic + key onChange persistence stay in AppContent.
   const {
+    // profiles
     profiles, setProfiles,
     activeProfileId, setActiveProfileId,
     isProfilePickerOpen, setIsProfilePickerOpen,
@@ -65,7 +94,28 @@ export default function App() {
     profileDropdownRef,
     activeProfile,
     isKids,
-  } = useProfilesState();
+    // settings (BYOK keys + key-reveal + onboarding)
+    showKeys, setShowKeys,
+    showKeysPinPrompt, setShowKeysPinPrompt,
+    revealPinInput, setRevealPinInput,
+    revealPinError, setRevealPinError,
+    userPmKey, setUserPmKey,
+    userTmdbKey, setUserTmdbKey,
+    userOmdbKey, setUserOmdbKey,
+    userOpenSubsKey, setUserOpenSubsKey,
+    userSubdlKey, setUserSubdlKey,
+    userJackettUrl, setUserJackettUrl,
+    userJackettKey, setUserJackettKey,
+    userIndexers, setUserIndexers,
+    showJackettGuide, setShowJackettGuide,
+    newIdxName, setNewIdxName,
+    newIdxUrl, setNewIdxUrl,
+    newIdxKey, setNewIdxKey,
+    showLegalDisclaimer, setShowLegalDisclaimer,
+    showOnboarding, setShowOnboarding,
+    onboardingStep, setOnboardingStep,
+    keyTestStatus, setKeyTestStatus,
+  } = useAppState();
 
   // UI theme (per-profile persistence handled inside the hook).
   const [selectedTheme, setSelectedTheme] = useThemeState(activeProfileId);
@@ -96,31 +146,6 @@ export default function App() {
   
   // --- Settings States ---
   const [showSettings, setShowSettings] = useState(false);
-  // BYOK API keys + key-reveal / onboarding state (state + onboarding effect in
-  // useSettingsState). Keys are persisted inline by the Settings onChange handlers.
-  const {
-    showKeys, setShowKeys,
-    showKeysPinPrompt, setShowKeysPinPrompt,
-    revealPinInput, setRevealPinInput,
-    revealPinError, setRevealPinError,
-    userPmKey, setUserPmKey,
-    userTmdbKey, setUserTmdbKey,
-    userOmdbKey, setUserOmdbKey,
-    userOpenSubsKey, setUserOpenSubsKey,
-    userSubdlKey, setUserSubdlKey,
-    userJackettUrl, setUserJackettUrl,
-    userJackettKey, setUserJackettKey,
-    userIndexers, setUserIndexers,
-    showJackettGuide, setShowJackettGuide,
-    newIdxName, setNewIdxName,
-    newIdxUrl, setNewIdxUrl,
-    newIdxKey, setNewIdxKey,
-    showLegalDisclaimer, setShowLegalDisclaimer,
-    showOnboarding, setShowOnboarding,
-    onboardingStep, setOnboardingStep,
-    keyTestStatus, setKeyTestStatus,
-  } = useSettingsState();
-
   const [hideAdult, setHideAdult] = useState(() => {
     const saved = localStorage.getItem('premium_search_hide_adult');
     return saved !== null ? JSON.parse(saved) : true; // Default to hiding adult for safety
