@@ -69,8 +69,10 @@ commit.
         EbookReaderModal (`dc924ff`), AudioPlayerModal (`fd06289`, takes syncToCloud prop),
         VideoPlayerModal (`a7e6517`, the big one — 8 handler props). Each computes its
         filtered-file list internally. **App.jsx 9,126 → 8,266 lines this session.**
-  - [ ] Remaining overlays: detail drawer (~300 lines), playlist-choice modal, legal/setup
-        modals. Then the big tab panels (search/library/cloud/settings) and leaf cards.
+  - [x] DetailDrawer (`e115511`) — ~300-line IIFE → component; activeMeta + 12 action
+        handlers as props. **App.jsx 8,266 → 7,967 lines.**
+  - [ ] Remaining overlays: playlist-choice modal, playlist-selector modal, legal/setup/
+        playback-mode modals. Then the big tab panels (search/library/cloud/settings) + leaf cards.
 
 **Component pattern:** module-scope component in `src/components/`, calls `useAppState()`
 for shared state, imports pure helpers from `lib/`, computes view-only derived values
