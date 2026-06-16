@@ -20,6 +20,7 @@ import { useLibraryState } from './state/useLibraryState';
 import { useWatchlistState } from './state/useWatchlistState';
 import { usePlaylistsState } from './state/usePlaylistsState';
 import { useSearchState } from './state/useSearchState';
+import { useVideoPlayer } from './state/useVideoPlayer';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -48,7 +49,8 @@ function AppStateProvider({ children }) {
   const watchlist = useWatchlistState(profiles.activeProfileId);
   const playlists = usePlaylistsState();
   const search = useSearchState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search };
+  const video = useVideoPlayer();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -211,6 +213,29 @@ function AppContent() {
     sortBy, setSortBy,
     recentSearches, setRecentSearches,
     recentDownloads, setRecentDownloads,
+    // video player
+    activePlayerTorrent, setActivePlayerTorrent,
+    playerLoading, setPlayerLoading,
+    playerFiles, setPlayerFiles,
+    selectedVideoFile, setSelectedVideoFile,
+    selectedSubtitleFile, setSelectedSubtitleFile,
+    subtitleTrackUrl, setSubtitleTrackUrl,
+    subSearchOpen, setSubSearchOpen,
+    subSearchLoading, setSubSearchLoading,
+    subSearchResults, setSubSearchResults,
+    subSearchError, setSubSearchError,
+    subSearchLang, setSubSearchLang,
+    subDownloadingId, setSubDownloadingId,
+    resumeTime, setResumeTime,
+    autoplayDeclinedRef,
+    introSegment, setIntroSegment,
+    showSkipButton, setShowSkipButton,
+    skipTimer, setSkipTimer,
+    autoSkipEnabled, setAutoSkipEnabled,
+    nextEpisodeFile, setNextEpisodeFile,
+    showAutoplayOverlay, setShowAutoplayOverlay,
+    autoplayCountdown, setAutoplayCountdown,
+    autoplayTimerRef,
   } = useAppState();
 
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
@@ -1257,39 +1282,11 @@ function AppContent() {
   };
 
 
-  // --- Premium Streaming Video Player States ---
-  const [activePlayerTorrent, setActivePlayerTorrent] = useState(null);
-  const [playerLoading, setPlayerLoading] = useState(false);
-  const [playerFiles, setPlayerFiles] = useState([]);
-  const [selectedVideoFile, setSelectedVideoFile] = useState(null);
-  const [selectedSubtitleFile, setSelectedSubtitleFile] = useState(null);
-  const [subtitleTrackUrl, setSubtitleTrackUrl] = useState(null);
-  // Online subtitle fetch (OpenSubtitles primary + SubDL fallback)
-  const [subSearchOpen, setSubSearchOpen] = useState(false);
-  const [subSearchLoading, setSubSearchLoading] = useState(false);
-  const [subSearchResults, setSubSearchResults] = useState([]);
-  const [subSearchError, setSubSearchError] = useState('');
-  const [subSearchLang, setSubSearchLang] = useState(() => localStorage.getItem('premio_sub_search_lang') || 'en');
-  const [subDownloadingId, setSubDownloadingId] = useState(null);
-  const [resumeTime, setResumeTime] = useState(0);
-  const autoplayDeclinedRef = useRef(false);
-  const [introSegment, setIntroSegment] = useState(null);
-  const [showSkipButton, setShowSkipButton] = useState(false);
-  const [skipTimer, setSkipTimer] = useState(0);
-  const [autoSkipEnabled, setAutoSkipEnabled] = useState(() => {
-    return localStorage.getItem('premium_search_auto_skip_intro') === 'true';
-  });
-
-
-  // Audio player state now comes from AppStateProvider (via useAppState above);
-  // the audio iframe progress effect still lives in AppContent (uses getMetadata /
-  // setContinueWatchingList / triggerToast).
-
-  // --- Netflix-Style Autoplay States ---
-  const [nextEpisodeFile, setNextEpisodeFile] = useState(null);
-  const [showAutoplayOverlay, setShowAutoplayOverlay] = useState(false);
-  const [autoplayCountdown, setAutoplayCountdown] = useState(15);
-  const autoplayTimerRef = useRef(null);
+  // --- Video player + autoplay --- (state + refs in useVideoPlayer via context).
+  // All player effects (progress save, subtitles, recap, IntroDB, skip/autoplay timers)
+  // stay in AppContent and read this state via context.
+  // Audio player state likewise comes from the provider; its iframe progress effect
+  // stays in AppContent (uses getMetadata / setContinueWatchingList / triggerToast).
 
   // --- Rich Metadata Enrichment --- (state + refs in useMetadataState via context;
   // the derived memos below + the drawer effect + fetch logic stay in AppContent)
