@@ -37,7 +37,10 @@ function AppStateProvider({ children }) {
   const audio = useAudioPlayer();
   const metadata = useMetadataState();
   const continueWatching = useContinueWatchingState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching };
+  // eBook progress writes to Continue Watching; now that CW is in the provider its
+  // setter is available, so the reader hook can compose here too.
+  const ebook = useEbookReader({ setContinueWatchingList: continueWatching.setContinueWatchingList });
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -157,6 +160,13 @@ function AppContent() {
     lbReviewsError, setLbReviewsError,
     // continue watching
     continueWatchingList, setContinueWatchingList,
+    // ebook reader
+    activeEbookTorrent, setActiveEbookTorrent,
+    selectedEbookFile, setSelectedEbookFile,
+    ebookPlayableFiles, setEbookPlayableFiles,
+    ebookSearchQuery, setEbookSearchQuery,
+    resumeEbookChapter, setResumeEbookChapter,
+    resumeEbookScroll, setResumeEbookScroll,
   } = useAppState();
 
   // --- UI & Application State ---
@@ -1286,16 +1296,6 @@ function AppContent() {
     return localStorage.getItem('premium_search_auto_skip_intro') === 'true';
   });
 
-  // --- Digital EBook Reader States --- (state + progress-save effect in useEbookReader;
-  // stays in AppContent because it needs setContinueWatchingList, not yet in the provider)
-  const {
-    activeEbookTorrent, setActiveEbookTorrent,
-    selectedEbookFile, setSelectedEbookFile,
-    ebookPlayableFiles, setEbookPlayableFiles,
-    ebookSearchQuery, setEbookSearchQuery,
-    resumeEbookChapter, setResumeEbookChapter,
-    resumeEbookScroll, setResumeEbookScroll,
-  } = useEbookReader({ setContinueWatchingList });
 
   // Audio player state now comes from AppStateProvider (via useAppState above);
   // the audio iframe progress effect still lives in AppContent (uses getMetadata /
