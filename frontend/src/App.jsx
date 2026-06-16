@@ -16,6 +16,9 @@ import { useProfilesState } from './state/useProfilesState';
 import { useSettingsState } from './state/useSettingsState';
 import { useMetadataState } from './state/useMetadataState';
 import { useContinueWatchingState } from './state/useContinueWatchingState';
+import { useLibraryState } from './state/useLibraryState';
+import { useWatchlistState } from './state/useWatchlistState';
+import { usePlaylistsState } from './state/usePlaylistsState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -40,7 +43,10 @@ function AppStateProvider({ children }) {
   // eBook progress writes to Continue Watching; now that CW is in the provider its
   // setter is available, so the reader hook can compose here too.
   const ebook = useEbookReader({ setContinueWatchingList: continueWatching.setContinueWatchingList });
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook };
+  const library = useLibraryState();
+  const watchlist = useWatchlistState(profiles.activeProfileId);
+  const playlists = usePlaylistsState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -167,6 +173,20 @@ function AppContent() {
     ebookSearchQuery, setEbookSearchQuery,
     resumeEbookChapter, setResumeEbookChapter,
     resumeEbookScroll, setResumeEbookScroll,
+    // library
+    libraryList, setLibraryList,
+    // watchlist
+    watchlist, setWatchlist,
+    watchlistChecking, setWatchlistChecking,
+    // playlists
+    playlists, setPlaylists,
+    playlistSelectionTrack, setPlaylistSelectionTrack,
+    showPlaylistChoiceModal, setShowPlaylistChoiceModal,
+    pendingPlaylistFiles, setPendingPlaylistFiles,
+    pendingPlaylistName, setPendingPlaylistName,
+    hasAviOrMkvInPending, setHasAviOrMkvInPending,
+    pendingItemId, setPendingItemId,
+    pendingItemType, setPendingItemType,
   } = useAppState();
 
   // --- UI & Application State ---
@@ -201,12 +221,7 @@ function AppContent() {
   });
   const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
   const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
-  const [showPlaylistChoiceModal, setShowPlaylistChoiceModal] = useState(false);
-  const [pendingPlaylistFiles, setPendingPlaylistFiles] = useState([]);
-  const [pendingPlaylistName, setPendingPlaylistName] = useState('');
-  const [hasAviOrMkvInPending, setHasAviOrMkvInPending] = useState(false);
-  const [pendingItemId, setPendingItemId] = useState(null);
-  const [pendingItemType, setPendingItemType] = useState(''); // 'file', 'folder', or 'torrent'
+  // (playlist chooser-modal state moved to usePlaylistsState — via context)
 
   // --- Premiumize AI States ---
   const [aiEnabled, setAiEnabled] = useState(() => {
@@ -268,32 +283,10 @@ function AppContent() {
     return saved ? JSON.parse(saved) : [];
   });
 
-  // --- My Library bookshelf State (Strict Privacy Filtered) ---
-  const [libraryList, setLibraryList] = useState(() => {
-    const saved = localStorage.getItem('premium_search_library');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  // --- Watchlist State (per-profile; track titles to find cached releases) ---
-  const [watchlist, setWatchlist] = useState([]);
-  const [watchlistChecking, setWatchlistChecking] = useState(false);
-  useEffect(() => {
-    if (!activeProfileId) { setWatchlist([]); return; }
-    try {
-      const saved = localStorage.getItem(`premium_search_watchlist_${activeProfileId}`);
-      setWatchlist(saved ? JSON.parse(saved) : []);
-    } catch { setWatchlist([]); }
-  }, [activeProfileId]);
-
-  // --- Continue Watching log --- (state in useContinueWatchingState via context;
-  // cwArtSignature memo + cover-art effect + removeFromContinueWatching stay in AppContent)
-
-  // --- Custom Playlists States ---
-  const [playlists, setPlaylists] = useState(() => {
-    const saved = localStorage.getItem('premium_search_playlists');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [playlistSelectionTrack, setPlaylistSelectionTrack] = useState(null);
+  // --- Library / Watchlist / Continue Watching / Playlists ---
+  // State lives in the provider (useLibraryState, useWatchlistState(activeProfileId),
+  // useContinueWatchingState, usePlaylistsState) and is read via useAppState above.
+  // Their fetch/cache/cover-art effects + cloud merge stay in AppContent.
 
   // --- Cloud Sync States & Actions ---
   const [isSyncing, setIsSyncing] = useState(false);
