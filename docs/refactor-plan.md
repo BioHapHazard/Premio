@@ -33,8 +33,12 @@ commit.
         seeded with profiles + settings; AppContent consumes via `useAppState()`.
   - [x] Folded theme/toast/retro/audio into the provider (`c4b5b70`). useEbookReader
         still in AppContent (needs setContinueWatchingList — migrate with continue-watching).
-  - [ ] `useMetadata` (shared core), `useVideoPlayer`, data domains (search/library/
-        watchlist/continue-watching/playlists), cloud, account, AI, ui-shell, cloud-sync.
+  - [x] `useMetadataState` in provider (`d5e38b1`) — metadata map + drawer item + reviews/lb
+        state + 3 refs. canonicalMeta/activeMeta memos, drawer effect, and fetch logic
+        (fetchMetadataBatch/getMetadata/toggleReviews) stay in AppContent (need category +
+        credentialed fetch); they read metadata via context.
+  - [ ] `useVideoPlayer`, data domains (search/library/watchlist/continue-watching/playlists),
+        cloud, account, AI, ui-shell, cloud-sync.
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
