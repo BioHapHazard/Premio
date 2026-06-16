@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, Fragment, useMemo, createContext, useContext } from 'react';
 import Icon from './Icon';
-import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS } from './lib/constants';
+import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS, RESULTS_BATCH } from './lib/constants';
 import { keyActivate } from './lib/a11y';
 import { hashHue, formatBytes, cleanUrl, extractQuality, matchEpisode, parseShowDetails } from './lib/format';
 import { normalizeTitle, mergeTombstoneLists, mergeProgress } from './lib/progress';
@@ -19,6 +19,7 @@ import { useContinueWatchingState } from './state/useContinueWatchingState';
 import { useLibraryState } from './state/useLibraryState';
 import { useWatchlistState } from './state/useWatchlistState';
 import { usePlaylistsState } from './state/usePlaylistsState';
+import { useSearchState } from './state/useSearchState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -46,7 +47,8 @@ function AppStateProvider({ children }) {
   const library = useLibraryState();
   const watchlist = useWatchlistState(profiles.activeProfileId);
   const playlists = usePlaylistsState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists };
+  const search = useSearchState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -187,31 +189,37 @@ function AppContent() {
     hasAviOrMkvInPending, setHasAviOrMkvInPending,
     pendingItemId, setPendingItemId,
     pendingItemType, setPendingItemType,
+    // search
+    query, setQuery,
+    category, setCategory,
+    rawResults, setRawResults,
+    loading, setLoading,
+    searched, setSearched,
+    searchError, setSearchError,
+    visibleCount, setVisibleCount,
+    loadMoreRef,
+    activeDownloadId, setActiveDownloadId,
+    searchMode, setSearchMode,
+    hideUsenetWarning, setHideUsenetWarning,
+    isDragging, setIsDragging,
+    magnetInput, setMagnetInput,
+    showFilters, setShowFilters,
+    filterQuality, setFilterQuality,
+    filterMaxSize, setFilterMaxSize,
+    filterMinSeeders, setFilterMinSeeders,
+    excludeKeywords, setExcludeKeywords,
+    sortBy, setSortBy,
+    recentSearches, setRecentSearches,
+    recentDownloads, setRecentDownloads,
   } = useAppState();
 
-  // --- UI & Application State ---
-  const [query, setQuery] = useState('');
-  const [category, setCategory] = useState('Movies');
-  const [rawResults, setRawResults] = useState([]);
+  // --- Search domain --- (state in useSearchState via context). The kids-filtered
+  // `results` memo + the `setResults` alias stay here since they derive from profiles.
   const results = useMemo(() => {
     const activeProf = profiles.find(p => p.id === activeProfileId);
     return filterResultsForKids(rawResults, activeProf);
   }, [rawResults, activeProfileId, profiles]);
   const setResults = setRawResults;
-  const [loading, setLoading] = useState(false);
-  const [searched, setSearched] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  // Incremental rendering of search results — render a batch, reveal more on scroll.
-  const RESULTS_BATCH = 40;
-  const [visibleCount, setVisibleCount] = useState(RESULTS_BATCH);
-  const loadMoreRef = useRef(null);
-  const [activeDownloadId, setActiveDownloadId] = useState(null);
-  const [searchMode, setSearchMode] = useState('torrent'); // 'torrent' or 'usenet'
-  const [hideUsenetWarning, setHideUsenetWarning] = useState(() => {
-    return localStorage.getItem('premio_hide_usenet_warning') === 'true';
-  });
-  const [isDragging, setIsDragging] = useState(false);
-  const [magnetInput, setMagnetInput] = useState('');
   
   // --- Settings States ---
   const [showSettings, setShowSettings] = useState(false);
@@ -264,24 +272,7 @@ function AppContent() {
   const logoClicksRef = useRef([]);
   const [adultControlsUnlocked, setAdultControlsUnlocked] = useState(false);
 
-  // --- Dynamic Filters States ---
-  const [showFilters, setShowFilters] = useState(false);
-  const [filterQuality, setFilterQuality] = useState('All');
-  const [filterMaxSize, setFilterMaxSize] = useState(100); // Max size in GB, 100 = Unlimited
-  const [filterMinSeeders, setFilterMinSeeders] = useState(0);
-  const [excludeKeywords, setExcludeKeywords] = useState('');
-  const [sortBy, setSortBy] = useState('cached-seeders'); // Options: cached-seeders, seeders, size-desc, size-asc, date
-
-  // --- Search History & Download Log States (Strict Privacy Filtered) ---
-  const [recentSearches, setRecentSearches] = useState(() => {
-    const saved = localStorage.getItem('premium_search_recent_queries');
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [recentDownloads, setRecentDownloads] = useState(() => {
-    const saved = localStorage.getItem('premium_search_downloads');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // (Dynamic filters + search history state moved to useSearchState — via context)
 
   // --- Library / Watchlist / Continue Watching / Playlists ---
   // State lives in the provider (useLibraryState, useWatchlistState(activeProfileId),

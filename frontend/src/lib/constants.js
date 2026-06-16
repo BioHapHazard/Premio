@@ -17,3 +17,6 @@ export const GRADIENTS = [
 
 export const EMOJIS = ['🦁', '🐯', '🐼', '🦊', '🐨', '🦄', '🦖', '🚀', '🍿', '🎧', '🎮', '👾', '🧙', '🦸'];
 export const COMMON_TRACKERS = ['1337x', 'YTS', 'LimeTorrents', 'Nyaa', 'TorrentGalaxy', 'EZTV'];
+
+// Incremental rendering of search results — render a batch, reveal more on scroll.
+export const RESULTS_BATCH = 40;
