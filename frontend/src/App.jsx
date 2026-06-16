@@ -24,6 +24,8 @@ import { useVideoPlayer } from './state/useVideoPlayer';
 import { useCloudState } from './state/useCloudState';
 import { useAccountState } from './state/useAccountState';
 import { useAiState } from './state/useAiState';
+import { useUiShell } from './state/useUiShell';
+import { useCloudSyncState } from './state/useCloudSyncState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -56,7 +58,9 @@ function AppStateProvider({ children }) {
   const cloud = useCloudState();
   const account = useAccountState();
   const ai = useAiState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai };
+  const ui = useUiShell();
+  const cloudSync = useCloudSyncState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai, ...ui, ...cloudSync };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -75,10 +79,8 @@ export default function App() {
 }
 
 function AppContent() {
-  // --- UI Layout Navigation state ---
-  const [activeTab, setActiveTab] = useState('search'); // Options: search, library, progress, cloud
-  const [librarySubTab, setLibrarySubTab] = useState('All');
-  const [continueSubTab, setContinueSubTab] = useState('All');
+  // --- UI shell --- (activeTab + sub-tabs, showSettings, hideAdult, dev-lock in
+  // useUiShell via context; hideAdult persist effect + logo-click handler stay here)
 
   // --- Cloud Storage Manager --- (state in useCloudState via context; nav/rename/
   // delete/save/playlist-build handlers stay in AppContent and read it via context)
@@ -265,6 +267,17 @@ function AppContent() {
     showAICopilot, setShowAICopilot,
     copilotMessages, setCopilotMessages,
     copilotInput, setCopilotInput,
+    // ui shell
+    activeTab, setActiveTab,
+    librarySubTab, setLibrarySubTab,
+    continueSubTab, setContinueSubTab,
+    showSettings, setShowSettings,
+    hideAdult, setHideAdult,
+    logoClicksRef,
+    adultControlsUnlocked, setAdultControlsUnlocked,
+    // cloud sync status
+    isSyncing, setIsSyncing,
+    lastSynced, setLastSynced,
   } = useAppState();
 
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
@@ -275,21 +288,15 @@ function AppContent() {
   }, [rawResults, activeProfileId, profiles]);
   const setResults = setRawResults;
   
-  // --- Settings States ---
-  const [showSettings, setShowSettings] = useState(false);
-  const [hideAdult, setHideAdult] = useState(() => {
-    const saved = localStorage.getItem('premium_search_hide_adult');
-    return saved !== null ? JSON.parse(saved) : true; // Default to hiding adult for safety
-  });
-  // (cloud playlist build status moved to useCloudState; playlist chooser-modal
-  // state moved to usePlaylistsState — both via context)
+  // (Settings panel toggle + hideAdult moved to useUiShell; cloud playlist build
+  // status to useCloudState; playlist chooser-modal state to usePlaylistsState —
+  // all via context)
 
   // --- Premiumize AI --- (state in useAiState via context; the AI network calls —
   // fetch models, recap, translate, curate, chat — are handlers in AppContent)
 
-  // --- Secret Developer Options states ---
-  const logoClicksRef = useRef([]);
-  const [adultControlsUnlocked, setAdultControlsUnlocked] = useState(false);
+  // (Dev-lock state — logoClicksRef + adultControlsUnlocked — moved to useUiShell;
+  // the 5-click handleLogoClick handler stays in AppContent)
 
   // (Dynamic filters + search history state moved to useSearchState — via context)
 
@@ -298,9 +305,8 @@ function AppContent() {
   // useContinueWatchingState, usePlaylistsState) and is read via useAppState above.
   // Their fetch/cache/cover-art effects + cloud merge stay in AppContent.
 
-  // --- Cloud Sync States & Actions ---
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSynced, setLastSynced] = useState(null);
+  // --- Cloud Sync --- (status isSyncing/lastSynced in useCloudSyncState via context;
+  // the sync engine + autosave effect + autoSaveDataRef stay in AppContent below)
 
   // --- Stateless Custom Fetch Interceptor ---
   const fetchWithCredentials = async (url, options = {}) => {
