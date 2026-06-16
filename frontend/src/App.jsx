@@ -25,7 +25,15 @@ function AppStateProvider({ children }) {
   // Spreading produces a fresh value object per provider render, so consumers
   // re-render whenever profiles/settings change — same cadence as the old
   // single-component App, just sourced from here now.
-  const value = { ...useProfilesState(), ...useSettingsState() };
+  const profiles = useProfilesState();
+  const settings = useSettingsState();
+  // Theme needs the active profile id (per-profile persistence); profiles is in
+  // this provider, so it can be composed here now.
+  const [selectedTheme, setSelectedTheme] = useThemeState(profiles.activeProfileId);
+  const toast = useToast();
+  const retro = useRetroPlayer();
+  const audio = useAudioPlayer();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -115,10 +123,22 @@ function AppContent() {
     showOnboarding, setShowOnboarding,
     onboardingStep, setOnboardingStep,
     keyTestStatus, setKeyTestStatus,
+    // theme
+    selectedTheme, setSelectedTheme,
+    // toast
+    toast, triggerToast,
+    // retro player
+    activeRetroTorrent, setActiveRetroTorrent,
+    selectedRetroRomFile, setSelectedRetroRomFile,
+    retroPlayableFiles, setRetroPlayableFiles,
+    retroSearchQuery, setRetroSearchQuery,
+    // audio player
+    activeAudioTorrent, setActiveAudioTorrent,
+    selectedAudioFile, setSelectedAudioFile,
+    audioPlayableFiles, setAudioPlayableFiles,
+    audioSearchQuery, setAudioSearchQuery,
+    resumeAudioTime, setResumeAudioTime,
   } = useAppState();
-
-  // UI theme (per-profile persistence handled inside the hook).
-  const [selectedTheme, setSelectedTheme] = useThemeState(activeProfileId);
 
   // --- UI & Application State ---
   const [query, setQuery] = useState('');
@@ -1250,16 +1270,8 @@ function AppContent() {
     return localStorage.getItem('premium_search_auto_skip_intro') === 'true';
   });
 
-  // --- Retro Emulation Arcade States --- (state + scroll-lock effect in useRetroPlayer)
-  const {
-    activeRetroTorrent, setActiveRetroTorrent,
-    selectedRetroRomFile, setSelectedRetroRomFile,
-    retroPlayableFiles, setRetroPlayableFiles,
-    retroSearchQuery, setRetroSearchQuery,
-  } = useRetroPlayer();
-
-
-  // --- Digital EBook Reader States --- (state + progress-save effect in useEbookReader)
+  // --- Digital EBook Reader States --- (state + progress-save effect in useEbookReader;
+  // stays in AppContent because it needs setContinueWatchingList, not yet in the provider)
   const {
     activeEbookTorrent, setActiveEbookTorrent,
     selectedEbookFile, setSelectedEbookFile,
@@ -1269,14 +1281,9 @@ function AppContent() {
     resumeEbookScroll, setResumeEbookScroll,
   } = useEbookReader({ setContinueWatchingList });
 
-  // --- Premium Audio Player States --- (iframe progress effect stays in App; see useAudioPlayer)
-  const {
-    activeAudioTorrent, setActiveAudioTorrent,
-    selectedAudioFile, setSelectedAudioFile,
-    audioPlayableFiles, setAudioPlayableFiles,
-    audioSearchQuery, setAudioSearchQuery,
-    resumeAudioTime, setResumeAudioTime,
-  } = useAudioPlayer();
+  // Audio player state now comes from AppStateProvider (via useAppState above);
+  // the audio iframe progress effect still lives in AppContent (uses getMetadata /
+  // setContinueWatchingList / triggerToast).
 
   // --- Netflix-Style Autoplay States ---
   const [nextEpisodeFile, setNextEpisodeFile] = useState(null);
@@ -1573,9 +1580,6 @@ function AppContent() {
     triggerToast(newFinds > 0 ? `${newFinds} watchlist title${newFinds > 1 ? 's have' : ' has'} new cached releases!` : 'Watchlist checked — no new cached releases.', newFinds > 0 ? 'success' : 'info');
   };
 
-  // --- Custom Animated Toast System ---
-  // Toast notification (state + auto-dismiss effect in useToast).
-  const { toast, triggerToast } = useToast();
 
   // Persist show/hide adult configuration
   useEffect(() => {
