@@ -13,6 +13,7 @@ import { useEbookReader } from './state/useEbookReader';
 import { useAudioPlayer } from './state/useAudioPlayer';
 import { useToast } from './state/useToast';
 import { useProfilesState } from './state/useProfilesState';
+import { useSettingsState } from './state/useSettingsState';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -95,63 +96,35 @@ export default function App() {
   
   // --- Settings States ---
   const [showSettings, setShowSettings] = useState(false);
-  // Reveal/mask API keys in Settings. Hidden by default; revealing is PIN-gated
-  // when the active profile has a PIN set.
-  const [showKeys, setShowKeys] = useState(false);
-  const [showKeysPinPrompt, setShowKeysPinPrompt] = useState(false);
-  const [revealPinInput, setRevealPinInput] = useState('');
-  const [revealPinError, setRevealPinError] = useState(false);
+  // BYOK API keys + key-reveal / onboarding state (state + onboarding effect in
+  // useSettingsState). Keys are persisted inline by the Settings onChange handlers.
+  const {
+    showKeys, setShowKeys,
+    showKeysPinPrompt, setShowKeysPinPrompt,
+    revealPinInput, setRevealPinInput,
+    revealPinError, setRevealPinError,
+    userPmKey, setUserPmKey,
+    userTmdbKey, setUserTmdbKey,
+    userOmdbKey, setUserOmdbKey,
+    userOpenSubsKey, setUserOpenSubsKey,
+    userSubdlKey, setUserSubdlKey,
+    userJackettUrl, setUserJackettUrl,
+    userJackettKey, setUserJackettKey,
+    userIndexers, setUserIndexers,
+    showJackettGuide, setShowJackettGuide,
+    newIdxName, setNewIdxName,
+    newIdxUrl, setNewIdxUrl,
+    newIdxKey, setNewIdxKey,
+    showLegalDisclaimer, setShowLegalDisclaimer,
+    showOnboarding, setShowOnboarding,
+    onboardingStep, setOnboardingStep,
+    keyTestStatus, setKeyTestStatus,
+  } = useSettingsState();
+
   const [hideAdult, setHideAdult] = useState(() => {
     const saved = localStorage.getItem('premium_search_hide_adult');
     return saved !== null ? JSON.parse(saved) : true; // Default to hiding adult for safety
   });
-  const [userPmKey, setUserPmKey] = useState(() => {
-    return localStorage.getItem('premio_user_pm_key') || '';
-  });
-  const [userTmdbKey, setUserTmdbKey] = useState(() => {
-    return localStorage.getItem('premio_user_tmdb_key') || '';
-  });
-  const [userOmdbKey, setUserOmdbKey] = useState(() => {
-    return localStorage.getItem('premio_user_omdb_key') || '';
-  });
-  const [userOpenSubsKey, setUserOpenSubsKey] = useState(() => {
-    return localStorage.getItem('premio_user_opensubs_key') || '';
-  });
-  const [userSubdlKey, setUserSubdlKey] = useState(() => {
-    return localStorage.getItem('premio_user_subdl_key') || '';
-  });
-  const [userJackettUrl, setUserJackettUrl] = useState(() => {
-    return localStorage.getItem('premio_user_jackett_url') || '';
-  });
-  const [userJackettKey, setUserJackettKey] = useState(() => {
-    return localStorage.getItem('premio_user_jackett_key') || '';
-  });
-  const [userIndexers, setUserIndexers] = useState(() => {
-    const saved = localStorage.getItem('premio_user_usenet_indexers');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [showJackettGuide, setShowJackettGuide] = useState(false);
-  const [newIdxName, setNewIdxName] = useState('');
-  const [newIdxUrl, setNewIdxUrl] = useState('');
-  const [newIdxKey, setNewIdxKey] = useState('');
-  const [showLegalDisclaimer, setShowLegalDisclaimer] = useState(() => {
-    return localStorage.getItem('premio_legal_acknowledged') !== 'true';
-  });
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingStep, setOnboardingStep] = useState(1);
-  // Onboarding "test key" results: { pm|jackett|tmdb: { state: 'testing'|'ok'|'fail', msg } }
-  const [keyTestStatus, setKeyTestStatus] = useState({});
-
-  // First-run guidance for the bring-your-own-key model: once the legal notice is
-  // dismissed, if no Premiumize key is set and onboarding hasn't been completed,
-  // open the setup wizard so new users are guided to add their key instead of
-  // hitting silent failures.
-  useEffect(() => {
-    if (!showLegalDisclaimer && !userPmKey && localStorage.getItem('premio_onboarding_completed') !== 'true') {
-      setShowOnboarding(true);
-      setOnboardingStep(1);
-    }
-  }, [showLegalDisclaimer]);
   const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
   const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
   const [showPlaylistChoiceModal, setShowPlaylistChoiceModal] = useState(false);
