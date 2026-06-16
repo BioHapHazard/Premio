@@ -47,8 +47,11 @@ commit.
         moved to lib/constants. Derived memos (results/processedResults), search execution,
         cache/cover-art/infinite-scroll effects, and the watchlist availability check stay
         in AppContent and read state via context.
-  - [ ] **Big work next:** `useVideoPlayer` (~20 state + 8 effects; coupled to metadata/AI/CW),
-        then cloud, account, AI, ui-shell, cloud-sync.
+  - [x] `useVideoPlayer` into provider (`5ec20e5`) — ~24 state vars + 2 autoplay refs.
+        State-only: all 8 player effects (progress→CW, subtitles, recap, IntroDB, video
+        element, skip/autoplay timers) + handlers stay in AppContent, read via context.
+  - [ ] Remaining infra domains: cloud (browser/quota/transfers), AI co-pilot, ui-shell
+        (activeTab/sub-tabs/hideAdult/adult-lock), cloud-sync. Then Phase 3/4 (components).
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
