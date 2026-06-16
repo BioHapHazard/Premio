@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment, useMemo, createContext, useContext } from 'react';
+import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
 import Icon from './Icon';
 import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS, RESULTS_BATCH } from './lib/constants';
 import { keyActivate } from './lib/a11y';
@@ -7,68 +7,7 @@ import { normalizeTitle, mergeTombstoneLists, mergeProgress } from './lib/progre
 import { filterResultsForKids, isRatingAllowed } from './lib/ratings';
 import { convertSrtToVtt } from './lib/subtitles';
 import { renderMarkdown } from './lib/markdown';
-import { useThemeState } from './state/useThemeState';
-import { useRetroPlayer } from './state/useRetroPlayer';
-import { useEbookReader } from './state/useEbookReader';
-import { useAudioPlayer } from './state/useAudioPlayer';
-import { useToast } from './state/useToast';
-import { useProfilesState } from './state/useProfilesState';
-import { useSettingsState } from './state/useSettingsState';
-import { useMetadataState } from './state/useMetadataState';
-import { useContinueWatchingState } from './state/useContinueWatchingState';
-import { useLibraryState } from './state/useLibraryState';
-import { useWatchlistState } from './state/useWatchlistState';
-import { usePlaylistsState } from './state/usePlaylistsState';
-import { useSearchState } from './state/useSearchState';
-import { useVideoPlayer } from './state/useVideoPlayer';
-import { useCloudState } from './state/useCloudState';
-import { useAccountState } from './state/useAccountState';
-import { useAiState } from './state/useAiState';
-import { useUiShell } from './state/useUiShell';
-import { useCloudSyncState } from './state/useCloudSyncState';
-
-// Context for the migrated "root" domains. AppStateProvider composes the domain
-// hooks and exposes their values flattened; AppContent (and, later, extracted
-// panel components) read them via useAppState(). More domains move in here as
-// Phase 2 continues.
-const AppStateContext = createContext(null);
-
-function AppStateProvider({ children }) {
-  // Spreading produces a fresh value object per provider render, so consumers
-  // re-render whenever profiles/settings change — same cadence as the old
-  // single-component App, just sourced from here now.
-  const profiles = useProfilesState();
-  const settings = useSettingsState();
-  // Theme needs the active profile id (per-profile persistence); profiles is in
-  // this provider, so it can be composed here now.
-  const [selectedTheme, setSelectedTheme] = useThemeState(profiles.activeProfileId);
-  const toast = useToast();
-  const retro = useRetroPlayer();
-  const audio = useAudioPlayer();
-  const metadata = useMetadataState();
-  const continueWatching = useContinueWatchingState();
-  // eBook progress writes to Continue Watching; now that CW is in the provider its
-  // setter is available, so the reader hook can compose here too.
-  const ebook = useEbookReader({ setContinueWatchingList: continueWatching.setContinueWatchingList });
-  const library = useLibraryState();
-  const watchlist = useWatchlistState(profiles.activeProfileId);
-  const playlists = usePlaylistsState();
-  const search = useSearchState();
-  const video = useVideoPlayer();
-  const cloud = useCloudState();
-  const account = useAccountState();
-  const ai = useAiState();
-  const ui = useUiShell();
-  const cloudSync = useCloudSyncState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai, ...ui, ...cloudSync };
-  return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
-}
-
-function useAppState() {
-  const ctx = useContext(AppStateContext);
-  if (!ctx) throw new Error('useAppState must be used within AppStateProvider');
-  return ctx;
-}
+import { AppStateProvider, useAppState } from './state/AppStateProvider';
 
 export default function App() {
   return (
