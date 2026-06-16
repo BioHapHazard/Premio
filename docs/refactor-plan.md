@@ -31,8 +31,10 @@ commit.
         hideAdult stays in App (its effect touches search category).
   - [x] **AppStateProvider + App→AppContent split** (`5a74cf7`) — context stood up,
         seeded with profiles + settings; AppContent consumes via `useAppState()`.
-  - [ ] Migrate the already-extracted hooks (theme, toast, players) into the provider too.
-  - [ ] `useMetadata`, `useVideoPlayer`, data domains, cloud, AI, ui-shell, cloud-sync.
+  - [x] Folded theme/toast/retro/audio into the provider (`c4b5b70`). useEbookReader
+        still in AppContent (needs setContinueWatchingList — migrate with continue-watching).
+  - [ ] `useMetadata` (shared core), `useVideoPlayer`, data domains (search/library/
+        watchlist/continue-watching/playlists), cloud, account, AI, ui-shell, cloud-sync.
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
