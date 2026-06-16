@@ -22,6 +22,8 @@ import { usePlaylistsState } from './state/usePlaylistsState';
 import { useSearchState } from './state/useSearchState';
 import { useVideoPlayer } from './state/useVideoPlayer';
 import { useCloudState } from './state/useCloudState';
+import { useAccountState } from './state/useAccountState';
+import { useAiState } from './state/useAiState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -52,7 +54,9 @@ function AppStateProvider({ children }) {
   const search = useSearchState();
   const video = useVideoPlayer();
   const cloud = useCloudState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud };
+  const account = useAccountState();
+  const ai = useAiState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -79,10 +83,8 @@ function AppContent() {
   // --- Cloud Storage Manager --- (state in useCloudState via context; nav/rename/
   // delete/save/playlist-build handlers stay in AppContent and read it via context)
 
-  // --- Storage Quota & Active Downloads States ---
-  const [accountInfo, setAccountInfo] = useState(null);
-  const [transfers, setTransfers] = useState([]);
-  const [transfersLoading, setTransfersLoading] = useState(false);
+  // --- Storage Quota & Active Downloads --- (state in useAccountState via context;
+  // account fetch + transfers poll stay in AppContent)
 
   // Root domains (profiles + settings) provided by AppStateProvider via context.
   // Profile lifecycle/switch logic + key onChange persistence stay in AppContent.
@@ -242,6 +244,27 @@ function AppContent() {
     cloudFilter, setCloudFilter,
     cloudPlaylistLoading, setCloudPlaylistLoading,
     cloudPlaylistStatus, setCloudPlaylistStatus,
+    // account / transfers
+    accountInfo, setAccountInfo,
+    transfers, setTransfers,
+    transfersLoading, setTransfersLoading,
+    // AI co-pilot
+    aiEnabled, setAiEnabled,
+    aiToken, setAiToken,
+    aiModel, setAiModel,
+    aiModelsList, setAiModelsList,
+    fetchingModels, setFetchingModels,
+    aiLoading, setAiLoading,
+    aiTranslateLanguage, setAiTranslateLanguage,
+    recapOpen, setRecapOpen,
+    recapText, setRecapText,
+    recapLoading, setRecapLoading,
+    recapError, setRecapError,
+    showAICurateInput, setShowAICurateInput,
+    aiCuratePrompt, setAiCuratePrompt,
+    showAICopilot, setShowAICopilot,
+    copilotMessages, setCopilotMessages,
+    copilotInput, setCopilotInput,
   } = useAppState();
 
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
@@ -261,42 +284,8 @@ function AppContent() {
   // (cloud playlist build status moved to useCloudState; playlist chooser-modal
   // state moved to usePlaylistsState — both via context)
 
-  // --- Premiumize AI States ---
-  const [aiEnabled, setAiEnabled] = useState(() => {
-    return localStorage.getItem('premio_ai_enabled') === 'true';
-  });
-  const [aiToken, setAiToken] = useState(() => {
-    return localStorage.getItem('premio_ai_token') || '';
-  });
-  const [aiModel, setAiModel] = useState(() => {
-    return localStorage.getItem('premio_ai_model') || 'gpt-5.4';
-  });
-  const [aiModelsList, setAiModelsList] = useState(() => {
-    const saved = localStorage.getItem('premio_ai_models_list');
-    return saved ? JSON.parse(saved) : [
-      { id: 'gpt-5.4', name: 'gpt-5.4', owned_by: 'openai' },
-      { id: 'gpt-4o', name: 'gpt-4o', owned_by: 'openai' }
-    ];
-  });
-    const [fetchingModels, setFetchingModels] = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiTranslateLanguage, setAiTranslateLanguage] = useState(() => {
-    return localStorage.getItem('premio_ai_translate_language') || '';
-  });
-  const [recapOpen, setRecapOpen] = useState(false);
-  const [recapText, setRecapText] = useState(null);
-  const [recapLoading, setRecapLoading] = useState(false);
-  const [recapError, setRecapError] = useState('');
-  const [showAICurateInput, setShowAICurateInput] = useState(false);
-  const [aiCuratePrompt, setAiCuratePrompt] = useState('');
-  const [showAICopilot, setShowAICopilot] = useState(false);
-  const [copilotMessages, setCopilotMessages] = useState(() => {
-    const saved = localStorage.getItem('premio_ai_copilot_messages');
-    return saved ? JSON.parse(saved) : [
-      { role: 'assistant', content: 'Hello! I am your Premio AI Co-pilot. How can I help you manage your library or recommend something to stream today?'}
-    ];
-  });
-  const [copilotInput, setCopilotInput] = useState('');
+  // --- Premiumize AI --- (state in useAiState via context; the AI network calls —
+  // fetch models, recap, translate, curate, chat — are handlers in AppContent)
 
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
