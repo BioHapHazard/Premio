@@ -37,7 +37,12 @@ commit.
         state + 3 refs. canonicalMeta/activeMeta memos, drawer effect, and fetch logic
         (fetchMetadataBatch/getMetadata/toggleReviews) stay in AppContent (need category +
         credentialed fetch); they read metadata via context.
-  - [ ] `useVideoPlayer`, data domains (search/library/watchlist/continue-watching/playlists),
+  - [x] `useContinueWatchingState` in provider (`6dc3125`) — continueWatchingList; puts
+        setContinueWatchingList in the provider. cwArtSignature memo + cover-art effect +
+        removeFromContinueWatching stay in AppContent.
+  - [x] Folded `useEbookReader` into the provider (`94e01bd`) — unblocked by CW's setter.
+        (Audio iframe progress effect still in AppContent — uses getMetadata/triggerToast.)
+  - [ ] `useVideoPlayer`, remaining data domains (search/library/watchlist/playlists),
         cloud, account, AI, ui-shell, cloud-sync.
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
