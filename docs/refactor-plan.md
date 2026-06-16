@@ -17,7 +17,8 @@ commit.
 
 - [x] **Phase 1 — Extract pure helpers/constants** → `src/lib/` (commit `3ab8732`, pushed).
       `App.jsx` 9,780 → 9,243 lines.
-- [~] **Phase 2 — Group state into domain hooks** (`src/state/`). ← in progress
+- [x] **Phase 2 — Group state into domain hooks** (`src/state/`). DONE — 16 hooks composed
+      by `AppStateProvider`; `AppContent` declares zero `useState` of its own.
   - [x] `useThemeState` (`7d3374e`) — takes `activeProfileId`.
   - [x] `useRetroPlayer` (`0a59721`) — self-contained (state + scroll-lock effect).
   - [x] `useEbookReader` (`011d4bf`) — state + progress effect; takes `setContinueWatchingList`.
@@ -50,8 +51,20 @@ commit.
   - [x] `useVideoPlayer` into provider (`5ec20e5`) — ~24 state vars + 2 autoplay refs.
         State-only: all 8 player effects (progress→CW, subtitles, recap, IntroDB, video
         element, skip/autoplay timers) + handlers stay in AppContent, read via context.
-  - [ ] Remaining infra domains: cloud (browser/quota/transfers), AI co-pilot, ui-shell
-        (activeTab/sub-tabs/hideAdult/adult-lock), cloud-sync. Then Phase 3/4 (components).
+  - [x] `useCloudState` (`40df1a3`) — cloud browser/rename/filter/playlist-build status.
+  - [x] `useAccountState` + `useAiState` (`f86337d`) — quota/transfers; AI co-pilot.
+  - [x] `useUiShell` + `useCloudSyncState` (`2664506`) — activeTab/sub-tabs/showSettings/
+        hideAdult/dev-lock; sync status. **AppContent now has zero useState.**
+
+  Provider composes 16 hooks: profiles, settings, theme, toast, retro, audio, metadata,
+  continueWatching, ebook, library, watchlist, playlists, search, video, cloud, account,
+  ai, uiShell, cloudSync. (Effects/memos/handlers that orchestrate across domains stay
+  in AppContent and read state via `useAppState()`.)
+
+**Next — Phase 3/4 (the line-count payoff):** extract presentational leaf components
+(cards, pills, shimmer) and then the big JSX panels/overlays (search/library/cloud panels,
+the player modals, detail drawer, settings) as components that consume the context. This
+is where `App.jsx` finally shrinks from ~9.1k lines.
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
