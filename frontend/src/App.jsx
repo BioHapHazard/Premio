@@ -14,6 +14,7 @@ import { useAudioPlayer } from './state/useAudioPlayer';
 import { useToast } from './state/useToast';
 import { useProfilesState } from './state/useProfilesState';
 import { useSettingsState } from './state/useSettingsState';
+import { useMetadataState } from './state/useMetadataState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -33,7 +34,8 @@ function AppStateProvider({ children }) {
   const toast = useToast();
   const retro = useRetroPlayer();
   const audio = useAudioPlayer();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio };
+  const metadata = useMetadataState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -138,6 +140,19 @@ function AppContent() {
     audioPlayableFiles, setAudioPlayableFiles,
     audioSearchQuery, setAudioSearchQuery,
     resumeAudioTime, setResumeAudioTime,
+    // metadata (shared core)
+    metadataCacheRef, metadataInFlightRef, metadataDrawerCloseRef,
+    metadataResults, setMetadataResults,
+    metadataDrawerItem, setMetadataDrawerItem,
+    reviewsOpen, setReviewsOpen,
+    reviewsLoading, setReviewsLoading,
+    reviewsData, setReviewsData,
+    reviewsError, setReviewsError,
+    lbRating, setLbRating,
+    lbReviewsOpen, setLbReviewsOpen,
+    lbReviewsLoading, setLbReviewsLoading,
+    lbReviewsData, setLbReviewsData,
+    lbReviewsError, setLbReviewsError,
   } = useAppState();
 
   // --- UI & Application State ---
@@ -1291,10 +1306,8 @@ function AppContent() {
   const [autoplayCountdown, setAutoplayCountdown] = useState(15);
   const autoplayTimerRef = useRef(null);
 
-  // --- Rich Metadata Enrichment States ---
-  const metadataCacheRef = useRef(new Map());
-  const [metadataResults, setMetadataResults] = useState({});
-  const [metadataDrawerItem, setMetadataDrawerItem] = useState(null);
+  // --- Rich Metadata Enrichment --- (state + refs in useMetadataState via context;
+  // the derived memos below + the drawer effect + fetch logic stay in AppContent)
 
   // Index resolved metadata by normalized title, so a result whose own TMDb lookup
   // missed can borrow info from a sibling release of the same movie/episode.
@@ -1322,21 +1335,6 @@ function AppContent() {
     if (shared) return shared;
     return direct || metadataDrawerItem._metadata || null;
   }, [metadataDrawerItem, metadataResults, canonicalMeta, category]);
-
-  const metadataInFlightRef = useRef(new Set());
-  const metadataDrawerCloseRef = useRef(null);
-  // TMDb reviews panel (detail drawer)
-  const [reviewsOpen, setReviewsOpen] = useState(false);
-  const [reviewsLoading, setReviewsLoading] = useState(false);
-  const [reviewsData, setReviewsData] = useState([]);
-  const [reviewsError, setReviewsError] = useState('');
-
-  // Letterboxd rating + reviews panel (detail drawer) — fetched lazily on open.
-  const [lbRating, setLbRating] = useState(null); // { rating, url } | null
-  const [lbReviewsOpen, setLbReviewsOpen] = useState(false);
-  const [lbReviewsLoading, setLbReviewsLoading] = useState(false);
-  const [lbReviewsData, setLbReviewsData] = useState([]);
-  const [lbReviewsError, setLbReviewsError] = useState('');
 
   // a11y: when the detail dialog opens, move keyboard focus into it (onto the
   // close button) so screen-reader/keyboard users land inside the dialog rather
