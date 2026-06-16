@@ -12,6 +12,7 @@ import { useRetroPlayer } from './state/useRetroPlayer';
 import { useEbookReader } from './state/useEbookReader';
 import { useAudioPlayer } from './state/useAudioPlayer';
 import { useToast } from './state/useToast';
+import { useProfilesState } from './state/useProfilesState';
 
 export default function App() {
   // --- UI Layout Navigation state ---
@@ -36,41 +37,34 @@ export default function App() {
   const [transfers, setTransfers] = useState([]);
   const [transfersLoading, setTransfersLoading] = useState(false);
 
-  // --- Multi-Profile States ---
-  const [profiles, setProfiles] = useState(() => {
-    const saved = localStorage.getItem('premium_search_profiles');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [activeProfileId, setActiveProfileId] = useState(() => {
-    return localStorage.getItem('premium_search_active_profile_id') || '';
-  });
-  const [isProfilePickerOpen, setIsProfilePickerOpen] = useState(false);
-  const [isManagingProfiles, setIsManagingProfiles] = useState(false);
-  const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
-
-  // Profile Edit Form States
-  const [editingProfile, setEditingProfile] = useState(null);
-  const [editName, setEditName] = useState('');
-  const [editAvatar, setEditAvatar] = useState('🦁');
-  const [editColor, setEditColor] = useState('avatar-grad-purple-pink');
-  const [editIsKids, setEditIsKids] = useState(false);
-  const [editAllowedTrackers, setEditAllowedTrackers] = useState([]);
-  const [customTrackerInput, setCustomTrackerInput] = useState('');
-  const [editMaxMovieRating, setEditMaxMovieRating] = useState('PG-13');
-  const [editMaxTvRating, setEditMaxTvRating] = useState('TV-14');
-  const [editBlockUnrated, setEditBlockUnrated] = useState(false);
-  const [pinTargetProfile, setPinTargetProfile] = useState(null);
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState(false);
-  const [editPin, setEditPin] = useState('');
-  const [editEnablePin, setEditEnablePin] = useState(false);
-  const [pinTargetAction, setPinTargetAction] = useState('switch');
-
-  const activeProfile = useMemo(() => {
-    return profiles.find(p => p.id === activeProfileId) || null;
-  }, [profiles, activeProfileId]);
-
-  const isKids = activeProfile ? activeProfile.isKids : false;
+  // --- Multi-Profile States --- (state + dropdown outside-click effect in useProfilesState;
+  // profile lifecycle/switch logic stays in App since it orchestrates other domains)
+  const {
+    profiles, setProfiles,
+    activeProfileId, setActiveProfileId,
+    isProfilePickerOpen, setIsProfilePickerOpen,
+    isManagingProfiles, setIsManagingProfiles,
+    isProfileDropdownOpen, setIsProfileDropdownOpen,
+    editingProfile, setEditingProfile,
+    editName, setEditName,
+    editAvatar, setEditAvatar,
+    editColor, setEditColor,
+    editIsKids, setEditIsKids,
+    editAllowedTrackers, setEditAllowedTrackers,
+    customTrackerInput, setCustomTrackerInput,
+    editMaxMovieRating, setEditMaxMovieRating,
+    editMaxTvRating, setEditMaxTvRating,
+    editBlockUnrated, setEditBlockUnrated,
+    pinTargetProfile, setPinTargetProfile,
+    pinInput, setPinInput,
+    pinError, setPinError,
+    editPin, setEditPin,
+    editEnablePin, setEditEnablePin,
+    pinTargetAction, setPinTargetAction,
+    profileDropdownRef,
+    activeProfile,
+    isKids,
+  } = useProfilesState();
 
   // UI theme (per-profile persistence handled inside the hook).
   const [selectedTheme, setSelectedTheme] = useThemeState(activeProfileId);
@@ -207,17 +201,6 @@ export default function App() {
   // --- Secret Developer Options states ---
   const logoClicksRef = useRef([]);
   const [adultControlsUnlocked, setAdultControlsUnlocked] = useState(false);
-  const profileDropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleOutsideClick = (e) => {
-      if (isProfileDropdownOpen && profileDropdownRef.current && !profileDropdownRef.current.contains(e.target)) {
-        setIsProfileDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [isProfileDropdownOpen]);
 
   // --- Dynamic Filters States ---
   const [showFilters, setShowFilters] = useState(false);
