@@ -25,8 +25,21 @@ commit.
         (its `getMetadata`/`removeFromContinueWatching`/`triggerToast` collaborators are
         declared after the hook call site → TDZ). Fold the effect in once those move to the provider.
   - [x] `useToast` (`fdaeeeb`) — self-contained (toast + triggerToast + auto-dismiss).
-  - [ ] AppStateProvider seeded with `useProfiles` + `useSettings` (next session).
+  - [x] `useProfilesState` (`a3ce14c`) — 21 state vars + dropdown ref/effect + activeProfile/isKids.
+        Migration/switch logic stays in App (cross-domain).
+  - [x] `useSettingsState` (`3ebe501`) — BYOK keys + reveal/onboarding state + onboarding effect.
+        hideAdult stays in App (its effect touches search category).
+  - [x] **AppStateProvider + App→AppContent split** (`5a74cf7`) — context stood up,
+        seeded with profiles + settings; AppContent consumes via `useAppState()`.
+  - [ ] Migrate the already-extracted hooks (theme, toast, players) into the provider too.
   - [ ] `useMetadata`, `useVideoPlayer`, data domains, cloud, AI, ui-shell, cloud-sync.
+
+> **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
+> (fresh per render) — consumers re-render only when profiles/settings change, matching the
+> old single-component cadence, so no render regression. Changing the default export's identity
+> (App → wrapper + new AppContent) makes Fast Refresh fail to hot-reload — always verify with a
+> full reload. Effects/handlers that orchestrate *other* domains (profile migration/switch, key
+> persistence, hideAdult→category) stay in AppContent until those domains also live in the provider.
 - [ ] **Phase 3 — Extract presentational leaf components** (cards, pills, shimmer).
 - [ ] **Phase 4 — Extract panels & player overlays as components** (consume context).
 - [ ] **Phase 5 — Split `App.css`** (optional, deferred).
