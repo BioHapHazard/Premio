@@ -42,8 +42,13 @@ commit.
         removeFromContinueWatching stay in AppContent.
   - [x] Folded `useEbookReader` into the provider (`94e01bd`) — unblocked by CW's setter.
         (Audio iframe progress effect still in AppContent — uses getMetadata/triggerToast.)
-  - [ ] `useVideoPlayer`, remaining data domains (search/library/watchlist/playlists),
-        cloud, account, AI, ui-shell, cloud-sync.
+  - [x] Data domains into provider: `useLibraryState` + `useWatchlistState(activeProfileId)`
+        + `usePlaylistsState` (`a803ad8`), then `useSearchState` (`95800f1`). RESULTS_BATCH
+        moved to lib/constants. Derived memos (results/processedResults), search execution,
+        cache/cover-art/infinite-scroll effects, and the watchlist availability check stay
+        in AppContent and read state via context.
+  - [ ] **Big work next:** `useVideoPlayer` (~20 state + 8 effects; coupled to metadata/AI/CW),
+        then cloud, account, AI, ui-shell, cloud-sync.
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
