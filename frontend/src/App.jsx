@@ -21,6 +21,7 @@ import { useWatchlistState } from './state/useWatchlistState';
 import { usePlaylistsState } from './state/usePlaylistsState';
 import { useSearchState } from './state/useSearchState';
 import { useVideoPlayer } from './state/useVideoPlayer';
+import { useCloudState } from './state/useCloudState';
 
 // Context for the migrated "root" domains. AppStateProvider composes the domain
 // hooks and exposes their values flattened; AppContent (and, later, extracted
@@ -50,7 +51,8 @@ function AppStateProvider({ children }) {
   const playlists = usePlaylistsState();
   const search = useSearchState();
   const video = useVideoPlayer();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video };
+  const cloud = useCloudState();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
@@ -74,17 +76,8 @@ function AppContent() {
   const [librarySubTab, setLibrarySubTab] = useState('All');
   const [continueSubTab, setContinueSubTab] = useState('All');
 
-  // --- Cloud Storage Manager States ---
-  const [cloudContents, setCloudContents] = useState([]);
-  const [cloudFolderId, setCloudFolderId] = useState(null);
-  const [cloudFolderName, setCloudFolderName] = useState('Root Folder');
-  const [cloudBreadcrumbs, setCloudBreadcrumbs] = useState([]);
-  const [cloudLoading, setCloudLoading] = useState(false);
-  const [cloudError, setCloudError] = useState(null);
-  const [cloudRenameId, setCloudRenameId] = useState(null);
-  const [cloudRenameName, setCloudRenameName] = useState('');
-  const [cloudRenameType, setCloudRenameType] = useState('folder');
-  const [cloudFilter, setCloudFilter] = useState('');
+  // --- Cloud Storage Manager --- (state in useCloudState via context; nav/rename/
+  // delete/save/playlist-build handlers stay in AppContent and read it via context)
 
   // --- Storage Quota & Active Downloads States ---
   const [accountInfo, setAccountInfo] = useState(null);
@@ -236,6 +229,19 @@ function AppContent() {
     showAutoplayOverlay, setShowAutoplayOverlay,
     autoplayCountdown, setAutoplayCountdown,
     autoplayTimerRef,
+    // cloud storage manager
+    cloudContents, setCloudContents,
+    cloudFolderId, setCloudFolderId,
+    cloudFolderName, setCloudFolderName,
+    cloudBreadcrumbs, setCloudBreadcrumbs,
+    cloudLoading, setCloudLoading,
+    cloudError, setCloudError,
+    cloudRenameId, setCloudRenameId,
+    cloudRenameName, setCloudRenameName,
+    cloudRenameType, setCloudRenameType,
+    cloudFilter, setCloudFilter,
+    cloudPlaylistLoading, setCloudPlaylistLoading,
+    cloudPlaylistStatus, setCloudPlaylistStatus,
   } = useAppState();
 
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
@@ -252,9 +258,8 @@ function AppContent() {
     const saved = localStorage.getItem('premium_search_hide_adult');
     return saved !== null ? JSON.parse(saved) : true; // Default to hiding adult for safety
   });
-  const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
-  const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
-  // (playlist chooser-modal state moved to usePlaylistsState — via context)
+  // (cloud playlist build status moved to useCloudState; playlist chooser-modal
+  // state moved to usePlaylistsState — both via context)
 
   // --- Premiumize AI States ---
   const [aiEnabled, setAiEnabled] = useState(() => {
