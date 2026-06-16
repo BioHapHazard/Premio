@@ -61,10 +61,21 @@ commit.
   ai, uiShell, cloudSync. (Effects/memos/handlers that orchestrate across domains stay
   in AppContent and read state via `useAppState()`.)
 
-**Next — Phase 3/4 (the line-count payoff):** extract presentational leaf components
-(cards, pills, shimmer) and then the big JSX panels/overlays (search/library/cloud panels,
-the player modals, detail drawer, settings) as components that consume the context. This
-is where `App.jsx` finally shrinks from ~9.1k lines.
+- [~] **Phase 3/4 — Extract JSX into components** (`src/components/`). ← in progress
+  - [x] Moved `AppStateProvider` + `useAppState` into `state/AppStateProvider.jsx` (`ab730c3`)
+        so component files can consume context. (`getEmulatorSystem` → `lib/emulator.js`.)
+  - [x] Player overlays extracted (self-gating, consume `useAppState()`):
+        RetroPlayerModal (`dea1c0e`, also fixed a latent setActiveRetroRomName ReferenceError),
+        EbookReaderModal (`dc924ff`), AudioPlayerModal (`fd06289`, takes syncToCloud prop),
+        VideoPlayerModal (`a7e6517`, the big one — 8 handler props). Each computes its
+        filtered-file list internally. **App.jsx 9,126 → 8,266 lines this session.**
+  - [ ] Remaining overlays: detail drawer (~300 lines), playlist-choice modal, legal/setup
+        modals. Then the big tab panels (search/library/cloud/settings) and leaf cards.
+
+**Component pattern:** module-scope component in `src/components/`, calls `useAppState()`
+for shared state, imports pure helpers from `lib/`, computes view-only derived values
+internally, and receives AppContent-resident handlers as explicit props. Verify with a
+FULL reload (Fast Refresh throws transient errors when App.jsx structure/exports change).
 
 > **Provider notes:** the value object is `{ ...useProfilesState(), ...useSettingsState() }`
 > (fresh per render) — consumers re-render only when profiles/settings change, matching the
