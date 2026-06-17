@@ -83,6 +83,12 @@ commit.
   > block bytes out of App.jsx (node script) rather than retyping — eliminates JSX drift. Then
   > splice the block out of App.jsx and replace with `<Panel ...props/>`. Enumerate context vars
   > AND handler props by scanning the whole block first (read it fully — the second half hides deps).
+  >
+  > **Gotcha (bit us on cloud, `5cc7331`):** the sliced JSX may reference React's `Fragment`
+  > (`<Fragment>`/`<>`) or other App-level imports — these are NOT context/lib symbols, so add
+  > `import { Fragment } from 'react'` etc. Build won't catch undefined identifiers, and a crash
+  > with no error boundary unmounts the whole app. ALWAYS verify a panel after loading real data
+  > (empty initial state can hide the throw). Grep each new component: `grep -c Fragment`.
 
 **Component pattern:** module-scope component in `src/components/`, calls `useAppState()`
 for shared state, imports pure helpers from `lib/`, computes view-only derived values
