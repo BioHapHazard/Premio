@@ -71,8 +71,15 @@ commit.
         filtered-file list internally. **App.jsx 9,126 → 8,266 lines this session.**
   - [x] DetailDrawer (`e115511`) — ~300-line IIFE → component; activeMeta + 12 action
         handlers as props. **App.jsx 8,266 → 7,967 lines.**
-  - [ ] Remaining overlays: playlist-choice modal, playlist-selector modal, legal/setup/
-        playback-mode modals. Then the big tab panels (search/library/cloud/settings) + leaf cards.
+  - [x] SettingsPanel (`f440118`) — ~434-line form → component; ~40 context vars + 4
+        handler props. Body extracted byte-for-byte via script (no retyping). **7,967 → 7,533.**
+  - [ ] Remaining big tab panels: search (~854), cloud (~439), library (~202), progress (~224),
+        transfers (~70). Then smaller overlays (playlist-choice/selector, legal/setup) + leaf cards.
+
+  > **Technique for big panels:** generate the component file by slicing the exact `<section>`/
+  > block bytes out of App.jsx (node script) rather than retyping — eliminates JSX drift. Then
+  > splice the block out of App.jsx and replace with `<Panel ...props/>`. Enumerate context vars
+  > AND handler props by scanning the whole block first (read it fully — the second half hides deps).
 
 **Component pattern:** module-scope component in `src/components/`, calls `useAppState()`
 for shared state, imports pure helpers from `lib/`, computes view-only derived values
