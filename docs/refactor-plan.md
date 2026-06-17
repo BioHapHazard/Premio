@@ -75,9 +75,13 @@ commit.
         handler props. Body extracted byte-for-byte via script (no retyping). **7,967 → 7,533.**
   - [x] CloudBrowserPanel (`ae2f079`) — ~436-line cloud manager → component; ~14 context
         vars + 7 handler props; imports formatBytes + getEmulatorSystem. **7,533 → 7,097.**
-  - [ ] Remaining tab panels: search (~854, ~20 handlers — biggest/most complex), library
-        (~202), progress (~224), transfers (~70). Then smaller overlays (playlist-choice/
-        selector, legal/setup/playback-mode) + leaf cards.
+  - [x] SearchPanel (`08b2364`) — ~850-line tab → component; processedResults/results/
+        cachedCount + 19 handler props. Caught 4 scan-missed refs (userJackettUrl,
+        showSettings, playerLoading, visibleCategories→recomputed). **7,097 → 6,247.**
+        Verified empty + real-search (40 cards) + usenet mode.
+  - [ ] Remaining tab panels (medium): library (~202), progress/continue-watching (~224),
+        transfers (~70). Then smaller overlays (playlist-choice/selector, legal/setup/
+        playback-mode) + leaf cards.
 
   > **Technique for big panels:** generate the component file by slicing the exact `<section>`/
   > block bytes out of App.jsx (node script) rather than retyping — eliminates JSX drift. Then
