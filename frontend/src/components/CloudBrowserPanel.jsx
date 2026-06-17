@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 import { formatBytes } from '../lib/format';
