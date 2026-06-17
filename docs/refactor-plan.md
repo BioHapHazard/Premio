@@ -61,7 +61,9 @@ commit.
   ai, uiShell, cloudSync. (Effects/memos/handlers that orchestrate across domains stay
   in AppContent and read state via `useAppState()`.)
 
-- [~] **Phase 3/4 — Extract JSX into components** (`src/components/`). ← in progress
+- [x] **Phase 3/4 — Extract JSX into components** (`src/components/`). DONE — all 7 tab panels
+      + the detail drawer + 6 player/playlist/legal/onboarding overlays are components (16 total)
+      consuming the provider context. **App.jsx 9,126 → 5,167 lines.**
   - [x] Moved `AppStateProvider` + `useAppState` into `state/AppStateProvider.jsx` (`ab730c3`)
         so component files can consume context. (`getEmulatorSystem` → `lib/emulator.js`.)
   - [x] Player overlays extracted (self-gating, consume `useAppState()`):
@@ -79,9 +81,20 @@ commit.
         cachedCount + 19 handler props. Caught 4 scan-missed refs (userJackettUrl,
         showSettings, playerLoading, visibleCategories→recomputed). **7,097 → 6,247.**
         Verified empty + real-search (40 cards) + usenet mode.
-  - [ ] Remaining tab panels (medium): library (~202), progress/continue-watching (~224),
-        transfers (~70). Then smaller overlays (playlist-choice/selector, legal/setup/
-        playback-mode) + leaf cards.
+  - [x] LibraryPanel (`a35ea98`), WatchlistPanel (`f4f97ac`), ProgressPanel (`c163d2c`,
+        IIFE body w/ local helpers), TransfersPanel (`f7a9bf8`). Then overlays:
+        PlaylistSelectorModal (`a3d7d15`), Legal/Onboarding/PlaylistChoice (`10f63b7`).
+        Each: byte-sliced + static undefined-sweep before splicing. Full tab regression passes.
+
+**Refactor status: panels + overlays COMPLETE.** App.jsx (5,167) is now the AppContent
+shell — header/nav JSX + the ~120 handlers, ~30 effects, and derived memos that orchestrate
+across domains and feed the components via props. Each panel/overlay verified live.
+
+**Optional future decomposition (not required; App.jsx is no longer the bottleneck):**
+- Extract `AppHeader` / `Nav` (small JSX) and leaf cards (`ResultCard`, `LibraryCard`, …)
+  that currently live inside the panels.
+- Organize the AppContent handler/effect layer into domain action-hooks (would let the
+  remaining per-domain handlers move into the provider, shrinking the prop lists).
 
   > **Technique for big panels:** generate the component file by slicing the exact `<section>`/
   > block bytes out of App.jsx (node script) rather than retyping — eliminates JSX drift. Then
