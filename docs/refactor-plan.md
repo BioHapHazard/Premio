@@ -73,8 +73,11 @@ commit.
         handlers as props. **App.jsx 8,266 → 7,967 lines.**
   - [x] SettingsPanel (`f440118`) — ~434-line form → component; ~40 context vars + 4
         handler props. Body extracted byte-for-byte via script (no retyping). **7,967 → 7,533.**
-  - [ ] Remaining big tab panels: search (~854), cloud (~439), library (~202), progress (~224),
-        transfers (~70). Then smaller overlays (playlist-choice/selector, legal/setup) + leaf cards.
+  - [x] CloudBrowserPanel (`ae2f079`) — ~436-line cloud manager → component; ~14 context
+        vars + 7 handler props; imports formatBytes + getEmulatorSystem. **7,533 → 7,097.**
+  - [ ] Remaining tab panels: search (~854, ~20 handlers — biggest/most complex), library
+        (~202), progress (~224), transfers (~70). Then smaller overlays (playlist-choice/
+        selector, legal/setup/playback-mode) + leaf cards.
 
   > **Technique for big panels:** generate the component file by slicing the exact `<section>`/
   > block bytes out of App.jsx (node script) rather than retyping — eliminates JSX drift. Then
