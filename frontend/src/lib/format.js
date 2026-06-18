@@ -147,3 +147,50 @@ export function parseShowDetails(filename) {
 
   return null;
 }
+
+// Helper: resolve clean indexer short names (e.g. Geek, Ninja, Crawler)
+export function getIndexerShortName(name) {
+  if (!name) return 'Usenet';
+  const lower = name.toLowerCase();
+  if (lower.includes('nzbgeek') || lower.includes('geek')) return 'Geek';
+  if (lower.includes('ninja central') || lower.includes('ninja')) return 'Ninja';
+  if (lower.includes('usenet-crawler') || lower.includes('crawler')) return 'Crawler';
+  if (lower.includes('nzbplanet') || lower.includes('planet')) return 'Planet';
+  if (lower.includes('dogfeed') || lower.includes('dognzb')) return 'Dog';
+  if (lower.includes('nzbfinder') || lower.includes('finder')) return 'Finder';
+  if (lower.includes('nzbsu') || lower.includes('su')) return 'SU';
+  if (lower.includes('nzb.su')) return 'SU';
+  
+  let cleaned = name.replace(/^nzb/i, '').trim();
+  cleaned = cleaned.split(/[\s_\-]/)[0];
+  if (!cleaned) return 'Usenet';
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+// Guess or map the category of a SABnzbd job to a standardized Premio category
+export function guessCategory(sabCat, title = '') {
+  const t = title.toLowerCase();
+  
+  if (sabCat) {
+    const c = sabCat.toLowerCase().trim();
+    if (c.includes('movie') || c === 'movies') return 'Movies';
+    if (c.includes('tv') || c.includes('show') || c === 'series' || c.includes('season')) return 'TV';
+    if (c.includes('audiobook') || c === 'audiobooks') return 'Audiobooks';
+    if (c.includes('book') || c.includes('epub') || c.includes('pdf') || c === 'ebooks') return 'Ebooks';
+    if (c.includes('game') || c.includes('retro') || c.includes('rom')) return 'Retro Games';
+    if (c.includes('music') || c.includes('audio')) return 'Music';
+    if (c.includes('software') || c.includes('app')) return 'Software';
+    if (c.includes('vst')) return 'VST';
+    if (c.includes('xxx') || c.includes('adult') || c.includes('erotic')) return 'Adult';
+  }
+
+  // Heuristics based on title
+  if (/\b(audiobook|audio book|unabridged|narrated|m4b)\b/.test(t)) return 'Audiobooks';
+  if (/\.(epub|mobi|azw3?|pdf|cbz|cbr)\b|\bebook\b/.test(t)) return 'Ebooks';
+  if (/\b(vst|vsti|kontakt|sample pack|soundbank|presets?)\b/.test(t)) return 'VST';
+  if (/\bs\d{2}e\d{2}\b|\bseason\b|\bcomplete series\b/.test(t)) return 'TV';
+  if (/\b(flac|mp3|320|album|discography|ost|soundtrack)\b/.test(t)) return 'Music';
+  if (/\b(yify|yts|fgt|psa|qxr|x264|x265|hevc|h264|1080p|720p|2160p|4k|bluray|webrip|brrip|hdtv)\b/.test(t)) return 'Movies';
+
+  return 'Other';
+}

@@ -37,6 +37,13 @@ export function useSettingsState() {
   // Onboarding "test key" results: { pm|jackett|tmdb: { state: 'testing'|'ok'|'fail', msg } }
   const [keyTestStatus, setKeyTestStatus] = useState({});
 
+  const [userSabUrl, setUserSabUrl] = useState(() => localStorage.getItem('premio_user_sab_url') || '');
+  const [userSabKey, setUserSabKey] = useState(() => localStorage.getItem('premio_user_sab_key') || '');
+  const [userSabCategory, setUserSabCategory] = useState(() => localStorage.getItem('premio_user_sab_category') || '');
+  const [userSabCompleteDir, setUserSabCompleteDir] = useState(() => localStorage.getItem('premio_user_sab_complete_dir') || '');
+  const [usenetHandler, setUsenetHandler] = useState(() => localStorage.getItem('premio_usenet_handler') || 'premiumize');
+  const [showSabnzbdGuide, setShowSabnzbdGuide] = useState(false);
+
   // First-run guidance for the bring-your-own-key model: once the legal notice is
   // dismissed, if no Premiumize key is set and onboarding hasn't been completed,
   // open the setup wizard so new users are guided to add their key instead of
@@ -69,5 +76,11 @@ export function useSettingsState() {
     showOnboarding, setShowOnboarding,
     onboardingStep, setOnboardingStep,
     keyTestStatus, setKeyTestStatus,
+    userSabUrl, setUserSabUrl,
+    userSabKey, setUserSabKey,
+    userSabCategory, setUserSabCategory,
+    userSabCompleteDir, setUserSabCompleteDir,
+    usenetHandler, setUsenetHandler,
+    showSabnzbdGuide, setShowSabnzbdGuide,
   };
 }

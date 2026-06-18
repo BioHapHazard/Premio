@@ -5141,3 +5141,51 @@ input:checked + .slider::before {
 .cloud-act-spacer { flex: 1; }
 .cloud-rename-row { display: flex; gap: 0.3rem; width: 100%; align-items: center; }
 
+/* ==========================================================================
+   🟢 SABnzbd Local Downloader Visual Indicators
+   ========================================================================== */
+
+.search-mode-btn.active.sabnzbd-active {
+  background: linear-gradient(135deg, hsl(150, 80%, 35%), hsl(175, 80%, 30%));
+  color: white;
+  box-shadow: 0 0 15px hsla(150, 80%, 35%, 0.35);
+  font-weight: 600;
+}
+
+.stat-badge-usenet-sabnzbd {
+  background: hsla(150, 80%, 15%, 0.4);
+  color: hsl(150, 80%, 75%);
+  border: 1px solid hsla(150, 80%, 45%, 0.4);
+}
+
+.result-card.usenet-sabnzbd-hit {
+  border-left: 4px solid hsl(150, 85%, 40%); /* SABnzbd Emerald Green */
+}
+
+.result-card.usenet-sabnzbd-hit:hover {
+  border-color: hsla(150, 85%, 40%, 0.4);
+  box-shadow: 0 8px 30px hsla(150, 85%, 40%, 0.25);
+  transform: translateY(-2px);
+}
+
+.text-emerald {
+  color: hsl(150, 85%, 75%) !important;
+}
+
+.usenet-switch-inline-btn.sabnzbd-active {
+  background: linear-gradient(135deg, hsl(150, 80%, 35%), hsl(175, 80%, 30%));
+}
+
+.usenet-switch-inline-btn.sabnzbd-active:hover {
+  box-shadow: 0 4px 15px hsla(150, 80%, 35%, 0.4);
+}
+
+.usenet-fallback-btn.sabnzbd-active {
+  background: linear-gradient(135deg, hsl(150, 80%, 35%), hsl(175, 80%, 30%)) !important;
+  box-shadow: 0 4px 15px hsla(150, 80%, 35%, 0.35) !important;
+}
+
+.usenet-fallback-btn.sabnzbd-active:hover {
+  box-shadow: 0 6px 20px hsla(150, 80%, 35%, 0.5) !important;
+}
+

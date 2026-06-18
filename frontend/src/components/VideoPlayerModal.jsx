@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 import { formatBytes, matchEpisode, parseShowDetails } from '../lib/format';
@@ -16,6 +17,7 @@ export default function VideoPlayerModal({
   handleToggleRecap,
   fetchOnlineSubtitles,
   selectOnlineSubtitle,
+  handleTranscodeSeek,
 }) {
   const {
     activePlayerTorrent, setActivePlayerTorrent,
@@ -34,9 +36,66 @@ export default function VideoPlayerModal({
     subSearchLoading, subSearchError, subSearchResults, subDownloadingId,
     libraryList, continueWatchingList,
     triggerToast,
+    setResumeTime,
   } = useAppState();
 
+  const videoRef = useRef(null);
+
   if (!activePlayerTorrent) return null;
+
+  const isLocalUsenet = selectedVideoFile?.link?.includes('/api/sab/stream') || selectedVideoFile?.link?.includes('/api/sab/transcode');
+  const isPlayingTranscoded = selectedVideoFile?.link?.includes('/api/sab/transcode');
+
+  const toggleTranscoding = () => {
+    if (!videoRef.current || !selectedVideoFile) return;
+    
+    const video = videoRef.current;
+    const currentTime = video.currentTime;
+    
+    if (isPlayingTranscoded) {
+      // Switch to native stream
+      try {
+        const url = new URL(selectedVideoFile.link);
+        const ss = parseFloat(url.searchParams.get('ss') || '0');
+        const absoluteTime = ss + currentTime;
+        
+        // Remove transcode route, restore stream route
+        const nativeLink = selectedVideoFile.link
+          .replace('/api/sab/transcode', '/api/sab/stream');
+        
+        // Remove ss parameter from native link
+        const nativeUrl = new URL(nativeLink);
+        nativeUrl.searchParams.delete('ss');
+        
+        setResumeTime(absoluteTime);
+        setSelectedVideoFile({
+          ...selectedVideoFile,
+          link: nativeUrl.toString()
+        });
+        
+        triggerToast('Switching to original stream...', 'info');
+      } catch (err) {
+        console.error('Error switching to original stream:', err);
+      }
+    } else {
+      // Switch to transcoded stream
+      try {
+        const url = new URL(selectedVideoFile.link);
+        url.searchParams.set('ss', Math.round(currentTime).toString());
+        
+        const transcodedLink = url.toString().replace('/api/sab/stream', '/api/sab/transcode');
+        
+        setSelectedVideoFile({
+          ...selectedVideoFile,
+          link: transcodedLink
+        });
+        
+        triggerToast('Starting on-the-fly transcoding...', 'info');
+      } catch (err) {
+        console.error('Error switching to transcoded stream:', err);
+      }
+    }
+  };
 
   const showDetails = parseShowDetails(selectedVideoFile?.name);
   const showRecapOption = showDetails && !(showDetails.season === 1 && showDetails.episode === 1);
@@ -72,12 +131,26 @@ export default function VideoPlayerModal({
             {/* Custom HTML5 Video Player */}
             <div className="video-wrapper">
               <video
+                ref={videoRef}
                 key={selectedVideoFile.link} // Forces reload when active file changes
                 controls
                 autoPlay
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleVideoLoadedMetadata}
                 onEnded={handleVideoEnded}
+                onSeeking={(e) => {
+                  const video = e.target;
+                  const currentSrc = video.src || '';
+                  if (currentSrc.includes('/api/sab/transcode')) {
+                    const url = new URL(currentSrc);
+                    const currentSs = parseFloat(url.searchParams.get('ss') || '0');
+                    const targetTime = video.currentTime;
+                    // If seek is significant (> 3 seconds), restart transcode stream
+                    if (Math.abs(targetTime - currentSs) > 3) {
+                      handleTranscodeSeek(targetTime);
+                    }
+                  }
+                }}
                 className="main-video-player"
                 crossOrigin="anonymous" // Required to inject blob subtitle tracks
               >
@@ -212,6 +285,15 @@ export default function VideoPlayerModal({
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {isLocalUsenet && (
+                <div className="audio-notice-box" style={{ borderColor: 'var(--color-primary)' }}>
+                  <span className="badge-notice" style={{ backgroundColor: 'var(--color-primary)' }}>ℹ Local Playback Transcoding</span>
+                  <p>
+                    If this video shows a black screen, does not start, or lacks audio, it likely uses codecs unsupported by your browser (e.g. HEVC/H.265 video or AC3/DTS audio). Use the <strong>Transcode Stream (ffmpeg)</strong> button below to transcode on-the-fly.
+                  </p>
                 </div>
               )}
 
@@ -421,7 +503,7 @@ export default function VideoPlayerModal({
               )}
             </div>
 
-            {/* External Player deep links */}
+             {/* External Player deep links */}
             <div className="player-actions-row">
 
               {/* Open in VLC Link */}
@@ -432,6 +514,29 @@ export default function VideoPlayerModal({
               >
                  Open in VLC Player
               </a>
+
+              {/* Force Transcode (ffmpeg on-the-fly) for local SABnzbd files */}
+              {isLocalUsenet && (
+                <button
+                  type="button"
+                  className="copy-url-btn"
+                  onClick={toggleTranscoding}
+                  style={{
+                    background: isPlayingTranscoded ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'rgba(255, 255, 255, 0.08)',
+                    borderColor: isPlayingTranscoded ? '#10b981' : 'var(--glass-border)',
+                    color: isPlayingTranscoded ? '#ffffff' : 'var(--text-primary)',
+                    boxShadow: isPlayingTranscoded ? '0 0 12px rgba(16, 185, 129, 0.35)' : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                  title={isPlayingTranscoded ? "Currently playing transcoded stream. Click to switch back to original stream." : "Force transcoding with local ffmpeg (use if video shows black screen, spinner, or has no audio)."}
+                >
+                  <Icon name={isPlayingTranscoded ? "check" : "bolt"} size={14} />
+                  {isPlayingTranscoded ? 'Playing Transcoded (ffmpeg)' : 'Transcode Stream (ffmpeg)'}
+                </button>
+              )}
 
               {/* Copy Stream Link */}
               <button

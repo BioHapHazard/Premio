@@ -4,7 +4,7 @@ import Icon from '../Icon';
 // Settings control panel: BYOK API keys, Premiumize.ai config, Jackett + Usenet
 // indexers, the (unlockable) adult filter, clear-local-data, and cloud sync. Reads
 // its state from context; receives the four action handlers as props.
-export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, clearHistory, syncFromCloud }) {
+export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, clearHistory, syncFromCloud, testSabConnection }) {
   const {
     showKeys,
     setShowSettings, setShowOnboarding, setOnboardingStep,
@@ -15,6 +15,13 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
     userIndexers, setUserIndexers, newIdxName, setNewIdxName, newIdxUrl, setNewIdxUrl, newIdxKey, setNewIdxKey,
     isKids, adultControlsUnlocked, hideAdult, setHideAdult,
     lastSynced, isSyncing,
+    userSabUrl, setUserSabUrl,
+    userSabKey, setUserSabKey,
+    userSabCategory, setUserSabCategory,
+    userSabCompleteDir, setUserSabCompleteDir,
+    usenetHandler, setUsenetHandler,
+    showSabnzbdGuide, setShowSabnzbdGuide,
+    sabConnected, setSabConnected,
     triggerToast,
   } = useAppState();
 
@@ -396,6 +403,129 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Usenet Downloader Selection */}
+              <div className="setting-item full-width-field" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '16px' }}>
+                <div className="setting-info">
+                  <h3>Usenet Downloader</h3>
+                  <p>Choose whether to send Usenet NZB downloads to Premiumize Cloud or your self-hosted SABnzbd instance.</p>
+                </div>
+                <div style={{ display: 'flex', gap: '20px', marginTop: '8px', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    <input 
+                      type="radio" 
+                      name="usenetHandler" 
+                      value="premiumize"
+                      checked={usenetHandler === 'premiumize'}
+                      onChange={() => {
+                        setUsenetHandler('premiumize');
+                        localStorage.setItem('premio_usenet_handler', 'premiumize');
+                      }}
+                    />
+                    <span>Premiumize Cloud (Uses PM Points)</span>
+                  </label>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.9rem' }}>
+                    <input 
+                      type="radio" 
+                      name="usenetHandler" 
+                      value="sabnzbd"
+                      checked={usenetHandler === 'sabnzbd'}
+                      onChange={() => {
+                        setUsenetHandler('sabnzbd');
+                        localStorage.setItem('premio_usenet_handler', 'sabnzbd');
+                      }}
+                    />
+                    <span>SABnzbd (Self-Hosted, No PM Points)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* SABnzbd Configuration */}
+              <div className="setting-item full-width-field" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '16px' }}>
+                <div className="setting-info">
+                  <h3>SABnzbd Integration</h3>
+                  <p>Configure details for your local or LAN SABnzbd service to download Usenet files.</p>
+                </div>
+                <div className="settings-multi-inputs" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px', width: '100%' }}>
+                  <input 
+                    type="text" 
+                    value={userSabUrl}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUserSabUrl(val);
+                      localStorage.setItem('premio_user_sab_url', val);
+                    }}
+                    placeholder="SABnzbd URL (e.g. http://localhost:8080)"
+                    className="settings-text-input small"
+                  />
+                  <input 
+                    type={showKeys ? 'text' : 'password'}
+                    value={userSabKey}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUserSabKey(val);
+                      localStorage.setItem('premio_user_sab_key', val);
+                    }}
+                    placeholder="SABnzbd API Key"
+                    className="settings-text-input small"
+                  />
+                  <input 
+                    type="text" 
+                    value={userSabCategory}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUserSabCategory(val);
+                      localStorage.setItem('premio_user_sab_category', val);
+                    }}
+                    placeholder="Category (e.g. premio - optional)"
+                    className="settings-text-input small"
+                  />
+                  <input 
+                    type="text" 
+                    value={userSabCompleteDir}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUserSabCompleteDir(val);
+                      localStorage.setItem('premio_user_sab_complete_dir', val);
+                    }}
+                    placeholder="Completed Folder Path (optional)"
+                    className="settings-text-input small"
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '12px', marginTop: '12px', alignItems: 'center' }}>
+                  <button 
+                    type="button" 
+                    className="action-btn"
+                    style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+                    onClick={testSabConnection}
+                    disabled={sabConnected === 'testing'}
+                  >
+                    {sabConnected === 'testing' ? 'Testing...' : 'Test Connection'}
+                  </button>
+                  <button 
+                    type="button"
+                    className="help-toggle-btn"
+                    onClick={() => setShowSabnzbdGuide(!showSabnzbdGuide)}
+                    style={{ fontSize: '0.75rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    {showSabnzbdGuide ? 'Hide Setup Guide' : 'How do I set up SABnzbd?'}
+                  </button>
+                  {sabConnected === 'success' && <span style={{ color: '#4caf50', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>● Connected successfully!</span>}
+                  {sabConnected === 'error' && <span style={{ color: '#f44336', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>● Connection failed</span>}
+                </div>
+                {showSabnzbdGuide && (
+                  <div className="onboarding-guide-box glass-panel fade-in" style={{ marginTop: '10px', padding: '12px', fontSize: '0.8rem', color: 'var(--text-muted)', borderLeft: '3px solid var(--color-primary)', width: '100%' }}>
+                    <p style={{ margin: '0 0 6px 0', fontWeight: 'bold', color: 'var(--text-primary)'}}> Quick Start Guide: Setting Up SABnzbd</p>
+                    <ol style={{ margin: '0', paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <li>Download & install SABnzbd for your operating system (from the <a href="https://sabnzbd.org/downloads" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Official Downloads Page</a>).</li>
+                      <li>Start SABnzbd (it runs in the background and opens its web interface, usually at <a href="http://localhost:8080" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)' }}>http://localhost:8080</a>).</li>
+                      <li>Configure your Usenet server (e.g. <b>EasyUseNet</b>) details (host, username, password) inside SABnzbd under <b>Config &gt; Servers</b>.</li>
+                      <li>Copy the <b>API Key</b> from <b>Config &gt; General</b> (under the API key section).</li>
+                      <li>Paste the SABnzbd URL and API Key above, specify an optional category/complete directory, and test the connection!</li>
+                    </ol>
+                  </div>
+                )}
               </div>
 
               {/* Privacy Setting Toggle (Only visible if secretly unlocked) */}

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
 import Icon from './Icon';
 import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS, RESULTS_BATCH } from './lib/constants';
 import { keyActivate } from './lib/a11y';
-import { hashHue, formatBytes, cleanUrl, extractQuality, matchEpisode, parseShowDetails } from './lib/format';
+import { hashHue, formatBytes, cleanUrl, extractQuality, matchEpisode, parseShowDetails, guessCategory } from './lib/format';
 import { normalizeTitle, mergeTombstoneLists, mergeProgress } from './lib/progress';
 import { filterResultsForKids, isRatingAllowed } from './lib/ratings';
 import { convertSrtToVtt } from './lib/subtitles';
@@ -91,8 +91,21 @@ function AppContent() {
     newIdxKey, setNewIdxKey,
     showLegalDisclaimer, setShowLegalDisclaimer,
     showOnboarding, setShowOnboarding,
-    onboardingStep, setOnboardingStep,
     keyTestStatus, setKeyTestStatus,
+    userSabUrl, setUserSabUrl,
+    userSabKey, setUserSabKey,
+    userSabCategory, setUserSabCategory,
+    userSabCompleteDir, setUserSabCompleteDir,
+    usenetHandler, setUsenetHandler,
+    showSabnzbdGuide, setShowSabnzbdGuide,
+    sabQueue, setSabQueue,
+    sabHistory, setSabHistory,
+    sabSpeed, setSabSpeed,
+    sabLoading, setSabLoading,
+    sabConnected, setSabConnected,
+    sabnzbdAutoFallbacks, setSabnzbdAutoFallbacks,
+    completedIndexers, setCompletedIndexers,
+    updateIndexerStats,
     // theme
     selectedTheme, setSelectedTheme,
     // toast
@@ -236,6 +249,11 @@ function AppContent() {
     lastSynced, setLastSynced,
   } = useAppState();
 
+  const processingRetriesRef = useRef(new Set());
+  const sabnzbdAutoFallbacksRef = useRef();
+  sabnzbdAutoFallbacksRef.current = sabnzbdAutoFallbacks;
+  const processedNzoIdsRef = useRef(new Set());
+
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
   // `results` memo + the `setResults` alias stay here since they derive from profiles.
   const results = useMemo(() => {
@@ -275,7 +293,11 @@ function AppContent() {
         'X-SubDL-Key': userSubdlKey || '',
         'X-Jackett-Url': userJackettUrl || '',
         'X-Jackett-Key': userJackettKey || '',
-        'X-Usenet-Indexers': JSON.stringify(userIndexers || [])
+        'X-Usenet-Indexers': JSON.stringify(userIndexers || []),
+        'X-Sabnzbd-Url': userSabUrl || '',
+        'X-Sabnzbd-Key': userSabKey || '',
+        'X-Sabnzbd-Category': userSabCategory || '',
+        'X-Sabnzbd-Complete-Dir': userSabCompleteDir || ''
       };
       
       options.headers = {
@@ -284,6 +306,19 @@ function AppContent() {
       };
     }
     return fetch(url, options);
+  };
+
+  // Build SABnzbd stream/transcode URLs with credentials embedded as query params.
+  // The HTML5 <video> element fetches its src= directly — it does NOT go through
+  // fetchWithCredentials, so custom headers are never sent. By embedding the SABnzbd
+  // URL + key in the query string, resolveSab() on the server can authenticate the
+  // request. This is safe because it's a local LAN-only setup.
+  const buildSabStreamUrl = (nzoId, endpoint = 'stream') => {
+    const params = new URLSearchParams({ nzoId });
+    if (userSabUrl) params.set('sabUrl', userSabUrl);
+    if (userSabKey) params.set('sabKey', userSabKey);
+    if (userSabCompleteDir) params.set('sabCompleteDir', userSabCompleteDir);
+    return `${window.location.origin}/api/sab/${endpoint}?${params.toString()}`;
   };
 
   // Toggle API-key visibility in Settings. Hiding is always allowed; revealing
@@ -827,6 +862,305 @@ function AppContent() {
     }
   };
 
+  // Test SABnzbd Connection
+  const testSabConnection = async () => {
+    setSabConnected('testing');
+    try {
+      const res = await fetchWithCredentials('/api/sab/test');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.status === 'success') {
+        triggerToast(`SABnzbd connected! Version: ${data.version}`, 'success');
+        setSabConnected('success');
+      } else {
+        throw new Error(data.error || 'Connection failed.');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast(`SABnzbd connection failed: ${err.message}`, 'error');
+      setSabConnected('error');
+    }
+  };
+
+  // Process SABnzbd Fallbacks for failed/completed items
+  const processSabnzbdFallbacks = async (active, done) => {
+    const currentFallbacks = sabnzbdAutoFallbacksRef.current || {};
+    const fallbackKeys = Object.keys(currentFallbacks);
+    if (fallbackKeys.length === 0) return;
+
+    for (const nzoId of fallbackKeys) {
+      const fallback = currentFallbacks[nzoId];
+      if (!fallback) continue;
+
+      // Skip already processed nzoIds in this session
+      if (processedNzoIdsRef.current.has(nzoId)) continue;
+
+      // Check if it's still active (downloading/unpacking/etc.)
+      const isActive = active.some(q => q.nzoId === nzoId);
+      if (isActive) continue;
+
+      // Check if it's in the done/completed list
+      const doneItem = done.find(h => h.nzoId === nzoId);
+      if (doneItem) {
+        if (doneItem.status === 'Completed') {
+          processedNzoIdsRef.current.add(nzoId);
+          const successIndexer = fallback.indexersList[fallback.currentIndex]?.name || 'Usenet';
+          console.log(`✅ SABnzbd download "${fallback.title}" completed successfully via indexer: ${successIndexer}`);
+          
+          updateIndexerStats(successIndexer, 'success', doneItem.bytes || 0);
+
+          setCompletedIndexers(prev => {
+            const updated = { ...prev, [fallback.cleanTitle]: successIndexer };
+            localStorage.setItem('premio_completed_indexers', JSON.stringify(updated));
+            return updated;
+          });
+
+          setSabnzbdAutoFallbacks(prev => {
+            const updated = { ...prev };
+            delete updated[nzoId];
+            localStorage.setItem('premio_sab_fallbacks', JSON.stringify(updated));
+            return updated;
+          });
+        } else if (doneItem.status === 'Failed') {
+          if (processingRetriesRef.current.has(nzoId)) continue;
+          processingRetriesRef.current.add(nzoId);
+          processedNzoIdsRef.current.add(nzoId);
+
+          const failedIndexer = fallback.indexersList[fallback.currentIndex]?.name || 'Usenet';
+          updateIndexerStats(failedIndexer, 'failure');
+
+          const nextIndex = fallback.currentIndex + 1;
+          if (nextIndex < fallback.indexersList.length) {
+            const nextIndexer = fallback.indexersList[nextIndex];
+            console.log(`⚠️ SABnzbd download failed for "${fallback.title}" using "${fallback.indexersList[fallback.currentIndex].name}". Retrying next indexer: "${nextIndexer.name}"...`);
+            
+            triggerToast(`Indexer "${fallback.indexersList[fallback.currentIndex].name}" failed. Retrying with "${nextIndexer.name}"...`, 'info');
+
+            try {
+              // Delete failed download from history and disk
+              await fetchWithCredentials('/api/sab/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nzoId, deleteFiles: true })
+              });
+
+              // Update stats for attempting next indexer
+              updateIndexerStats(nextIndexer.name, 'attempt');
+
+              // Add next indexer URL
+              const res = await fetchWithCredentials('/api/sab/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nzbUrl: nextIndexer.nzbUrl })
+              });
+
+              if (res.ok) {
+                const addData = await res.json().catch(() => ({}));
+                if (addData.status === 'success' && addData.nzo_ids && addData.nzo_ids.length > 0) {
+                  const newNzoId = addData.nzo_ids[0];
+                  setSabnzbdAutoFallbacks(prev => {
+                    const updated = { ...prev };
+                    delete updated[nzoId];
+                    updated[newNzoId] = {
+                      ...fallback,
+                      currentIndex: nextIndex,
+                      triedIndexers: [...fallback.triedIndexers, nextIndexer.name]
+                    };
+                    localStorage.setItem('premio_sab_fallbacks', JSON.stringify(updated));
+                    return updated;
+                  });
+                  setTimeout(() => fetchSabStatus(), 1500);
+                } else {
+                  throw new Error('No nzo_ids returned from SABnzbd add URL');
+                }
+              } else {
+                throw new Error(`HTTP ${res.status}`);
+              }
+            } catch (err) {
+              console.error(`❌ Fallback retry failed for "${fallback.title}":`, err);
+              // Roll back BOTH guards so a transient error (network blip, etc.)
+              // doesn't permanently abandon this job — the next poll can retry it.
+              processingRetriesRef.current.delete(nzoId);
+              processedNzoIdsRef.current.delete(nzoId);
+            }
+          } else {
+            console.log(`❌ All indexers failed for "${fallback.title}".`);
+            triggerToast(`All indexers failed for "${fallback.title}".`, 'error');
+
+            setSabnzbdAutoFallbacks(prev => {
+              const updated = { ...prev };
+              delete updated[nzoId];
+              localStorage.setItem('premio_sab_fallbacks', JSON.stringify(updated));
+              return updated;
+            });
+          }
+        }
+      } else {
+        // Not in active queue and not in history. Clean up if lists are loaded.
+        if (active.length > 0 || done.length > 0) {
+          setSabnzbdAutoFallbacks(prev => {
+            const updated = { ...prev };
+            delete updated[nzoId];
+            localStorage.setItem('premio_sab_fallbacks', JSON.stringify(updated));
+            return updated;
+          });
+        }
+      }
+    }
+  };
+
+  // Fetch SABnzbd Status (Queue + History)
+  const fetchSabStatus = async () => {
+    setSabLoading(true);
+    try {
+      const res = await fetchWithCredentials('/api/sab/status');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.status === 'success') {
+        const active = data.active || [];
+        const done = data.done || [];
+        setSabQueue(active);
+        setSabHistory(done);
+        setSabSpeed(data.speed || '0 B/s');
+        
+        // Check for fallbacks in background
+        processSabnzbdFallbacks(active, done);
+      }
+    } catch (err) {
+      console.error('❌ Failed to fetch SABnzbd status:', err);
+    } finally {
+      setSabLoading(false);
+    }
+  };
+
+  // Trigger download via SABnzbd
+  const triggerSabDownload = async (item) => {
+    if (!userSabUrl || !userSabKey) {
+      triggerToast('SABnzbd URL and API Key are required. Configure them in Settings.', 'error');
+      setShowSettings(true);
+      return;
+    }
+
+    const downloadSource = item.nzbUrl || item.importId;
+    if (!downloadSource) {
+      triggerToast('No download link or NZB available for this item.', 'error');
+      return;
+    }
+
+    // Identify this specific item uniquely
+    const itemIdentifier = item.nzbUrl || item.importId;
+    setActiveDownloadId(itemIdentifier);
+
+    try {
+      const res = await fetchWithCredentials('/api/sab/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nzbUrl: item.nzbUrl,
+          importId: item.importId
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Server error: ${res.status}`);
+      }
+
+      if (data.status === 'success') {
+        triggerToast(`Successfully sent "${item.title}" to SABnzbd!`, 'success');
+        
+        // Mark as cached/downloading in results list
+        setResults(prev => prev.map(r => {
+          if ((r.nzbUrl && r.nzbUrl === item.nzbUrl) || (r.importId && r.importId === item.importId)) {
+            return { ...r, cached: true };
+          }
+          return r;
+        }));
+
+        // Initialize fallback tracking if nzo_ids is returned
+        if (data.nzo_ids && data.nzo_ids.length > 0) {
+          const nzoId = data.nzo_ids[0];
+          const cleanTitle = (item.title || '').trim().toLowerCase();
+          
+          const list = item.indexersList && item.indexersList.length > 0
+            ? item.indexersList 
+            : [{ name: item.indexer || 'Usenet', nzbUrl: item.nzbUrl }];
+
+          if (list.length > 0) {
+            updateIndexerStats(list[0].name, 'attempt');
+          }
+
+          setSabnzbdAutoFallbacks(prev => {
+            const updated = {
+              ...prev,
+              [nzoId]: {
+                title: item.title,
+                cleanTitle,
+                indexersList: list,
+                currentIndex: 0,
+                triedIndexers: [list[0].name]
+              }
+            };
+            localStorage.setItem('premio_sab_fallbacks', JSON.stringify(updated));
+            return updated;
+          });
+        }
+      } else {
+        throw new Error(data.error || 'Failed to add download to SABnzbd.');
+      }
+    } catch (err) {
+      console.error(err);
+      triggerToast(err.message, 'error');
+    } finally {
+      setActiveDownloadId(null);
+    }
+  };
+
+  // Cancel active SABnzbd queue item
+  const cancelSabQueueItem = async (nzoId, name) => {
+    try {
+      const res = await fetchWithCredentials('/api/sab/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nzoId, fromQueue: true })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.status === 'success') {
+        triggerToast(`Cancelled SABnzbd download: "${name.slice(0, 30)}..."`, 'success');
+        fetchSabStatus();
+      } else {
+        throw new Error(data.error || 'Failed to cancel item');
+      }
+    } catch (err) {
+      triggerToast(`Cancellation failed: ${err.message}`, 'error');
+    }
+  };
+
+  // Delete completed download from disk & SABnzbd history
+  const deleteSabHistoryItem = async (nzoId, name) => {
+    try {
+      const res = await fetchWithCredentials('/api/sab/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nzoId, deleteFiles: true })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.status === 'success') {
+        triggerToast(`Purged from disk & history: "${name.slice(0, 30)}..."`, 'success');
+        fetchSabStatus();
+      } else {
+        throw new Error(data.error || 'Failed to delete item');
+      }
+    } catch (err) {
+      triggerToast(`Purge failed: ${err.message}`, 'error');
+    }
+  };
+
   // Fetch Active Queue Transfers
   const fetchActiveTransfers = async () => {
     try {
@@ -1001,6 +1335,57 @@ function AppContent() {
       triggerToast('Failed to start browser streaming', 'error');
     } finally {
       setPlayerLoading(false);
+    }
+  };
+
+  // Helper: Open browser transcoding stream for local files
+  const handleLaunchTranscodedPlaylist = async (files, name) => {
+    setShowPlaylistChoiceModal(false);
+    setPlayerLoading(true);
+    try {
+      const transcodedFiles = files.map(file => {
+        if (file.link && file.link.includes('/api/sab/stream')) {
+          return {
+            ...file,
+            link: file.link.replace('/api/sab/stream', '/api/sab/transcode'),
+            forceBrowser: true
+          };
+        }
+        return file;
+      });
+
+      const virtualTorrent = {
+        title: name,
+        category: 'TV', // Set to 'TV' to activate sequential autoplay!
+        isCloudFile: true,
+        isCloudPlaylist: true,
+        forceBrowser: true,
+        isSabnzbd: true,
+        link: transcodedFiles[0].link,
+        files: transcodedFiles
+      };
+      await startStreaming(virtualTorrent);
+    } catch (e) {
+      console.error(e);
+      triggerToast('Failed to start transcoded streaming', 'error');
+    } finally {
+      setPlayerLoading(false);
+    }
+  };
+
+  // Helper: Seek in a live transcoding stream by reloading source with ss offset
+  const handleTranscodeSeek = (targetTime) => {
+    if (!selectedVideoFile || !selectedVideoFile.link || !selectedVideoFile.link.includes('/api/sab/transcode')) return;
+    try {
+      const url = new URL(selectedVideoFile.link);
+      url.searchParams.set('ss', Math.round(targetTime).toString());
+      
+      setSelectedVideoFile({
+        ...selectedVideoFile,
+        link: url.toString()
+      });
+    } catch (e) {
+      console.error('Failed to seek transcoded stream:', e);
     }
   };
 
@@ -1593,14 +1978,23 @@ function AppContent() {
     }
   }, [activeTab]);
 
-  // Active Downloads polling effect (runs every 5s while viewing 'transfers' tab)
+  // Active Downloads polling effect (runs every 5s while viewing 'transfers' tab, or if there are active SABnzbd downloads)
   useEffect(() => {
-    if (activeTab === 'transfers') {
-      fetchActiveTransfers();
-      const interval = setInterval(fetchActiveTransfers, 5000);
+    const hasActiveSabDownloads = sabQueue && sabQueue.length > 0;
+    const shouldPollSab = (activeTab === 'transfers' || hasActiveSabDownloads) && userSabUrl && userSabKey;
+    const shouldPollPm = activeTab === 'transfers';
+
+    if (shouldPollSab || shouldPollPm) {
+      if (shouldPollPm) fetchActiveTransfers();
+      if (shouldPollSab) fetchSabStatus();
+
+      const interval = setInterval(() => {
+        if (shouldPollPm) fetchActiveTransfers();
+        if (shouldPollSab) fetchSabStatus();
+      }, 5000);
       return () => clearInterval(interval);
     }
-  }, [activeTab]);
+  }, [activeTab, userSabUrl, userSabKey, sabQueue.length]);
 
   // Auto-fetch metadata for the DISPLAYED search results (based on visibleCount)
   // This runs whenever search results, categories, sorting, filters, or visibleCount changes.
@@ -2623,7 +3017,42 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       setOnboardingStep(1);
       return;
     }
-    const downloadSource = torrent.magnet || torrent.torrentFile || torrent.link;
+
+    let targetTorrent = torrent;
+
+    // Detect if this is a Usenet item that was completed in SABnzbd
+    const isUsenet = torrent.nzbUrl !== undefined || torrent.importId !== undefined || torrent.isSabnzbd;
+    if (isUsenet && !torrent.isSabnzbd) {
+      // Look up in SABnzbd history
+      const sTitle = (torrent.title || torrent.name || '').toLowerCase();
+      const isMatch = (name) => {
+        if (!name) return false;
+        const n = name.toLowerCase();
+        return n.includes(sTitle) || sTitle.includes(n);
+      };
+      const hMatch = sabHistory.find(h => isMatch(h.name));
+      if (hMatch && hMatch.status === 'Completed') {
+        targetTorrent = {
+          title: hMatch.name,
+          name: hMatch.name,
+          link: buildSabStreamUrl(hMatch.nzoId),
+          size: hMatch.bytes,
+          isCloudFile: true,
+          forceBrowser: false,
+          isSabnzbd: true,
+          nzoId: hMatch.nzoId,
+          files: hMatch.resolvedVideoFile ? [{
+            name: hMatch.resolvedVideoFile,
+            link: buildSabStreamUrl(hMatch.nzoId),
+            size: hMatch.bytes,
+            type: 'video',
+            id: hMatch.nzoId
+          }] : []
+        };
+      }
+    }
+
+    const downloadSource = targetTorrent.magnet || targetTorrent.torrentFile || targetTorrent.link;
     if (!downloadSource) {
       triggerToast('No streamable link available for this item.', 'error');
       return;
@@ -3198,20 +3627,47 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   };
 
   // --- My Library logic ---
+  // --- My Library logic ---
   const isItemInLibrary = (item) => {
-    return libraryList.some(libItem => 
-      (libItem.magnet && libItem.magnet === item.magnet) || 
-      (libItem.torrentFile && libItem.torrentFile === item.torrentFile)
-    );
+    return libraryList.some(libItem => {
+      if (item.nzbUrl && libItem.nzbUrl) {
+        return libItem.nzbUrl === item.nzbUrl;
+      }
+      if (item.importId && libItem.importId) {
+        return libItem.importId === item.importId;
+      }
+      // If either is a Usenet item (has Usenet properties OR has no magnet/torrent links)
+      const isItemUsenet = item.nzbUrl || item.importId || (!item.magnet && !item.torrentFile);
+      const isLibUsenet = libItem.nzbUrl || libItem.importId || (!libItem.magnet && !libItem.torrentFile);
+      if (isItemUsenet && isLibUsenet) {
+        return libItem.title === item.title;
+      }
+      return (
+        (libItem.magnet && libItem.magnet === item.magnet) || 
+        (libItem.torrentFile && libItem.torrentFile === item.torrentFile)
+      );
+    });
   };
 
   const toggleLibraryItem = (torrent) => {
     const alreadyIn = isItemInLibrary(torrent);
 
     if (alreadyIn) {
-      const updated = libraryList.filter(item => 
-        !(item.magnet === torrent.magnet && item.torrentFile === torrent.torrentFile)
-      );
+      const updated = libraryList.filter(item => {
+        if (torrent.nzbUrl && item.nzbUrl) {
+          return item.nzbUrl !== torrent.nzbUrl;
+        }
+        if (torrent.importId && item.importId) {
+          return item.importId !== torrent.importId;
+        }
+        // Cleanup Usenet library entries
+        const isSearchUsenet = torrent.nzbUrl || torrent.importId || (!torrent.magnet && !torrent.torrentFile);
+        const isLibUsenet = item.nzbUrl || item.importId || (!item.magnet && !item.torrentFile);
+        if (isSearchUsenet && isLibUsenet) {
+          return item.title !== torrent.title;
+        }
+        return !(item.magnet === torrent.magnet && item.torrentFile === torrent.torrentFile);
+      });
       setLibraryList(updated);
       localStorage.setItem('premium_search_library', JSON.stringify(updated));
       triggerToast('Removed from your Library.', 'success');
@@ -3222,6 +3678,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         title: torrent.title,
         magnet: torrent.magnet,
         torrentFile: torrent.torrentFile,
+        nzbUrl: torrent.nzbUrl,
+        importId: torrent.importId,
         size: torrent.size,
         seeders: torrent.seeders,
         peers: torrent.peers,
@@ -3229,7 +3687,11 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         tracker: torrent.tracker,
         cached: torrent.cached,
         publishDate: torrent.publishDate,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        isSabnzbd: torrent.isSabnzbd,
+        nzoId: torrent.nzoId,
+        link: torrent.link,
+        files: torrent.files
       };
 
       const updated = [entry, ...libraryList];
@@ -3847,15 +4309,16 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
   // Filter library items by active sub-tab category shelf
   const filteredLibraryList = libraryList.filter(item => {
+    const itemCat = item.category || (item.isSabnzbd ? guessCategory(null, item.title) : 'Other');
     // Globally hide adult items from library views if adult settings are hidden/locked
-    if (item.category === 'Adult' && (!adultControlsUnlocked || hideAdult)) {
+    if (itemCat === 'Adult' && (!adultControlsUnlocked || hideAdult)) {
       return false;
     }
     if (librarySubTab === 'All') return true;
     if (librarySubTab === 'Other') {
-      return item.category === 'Other' || item.category === 'Music';
+      return itemCat === 'Other' || itemCat === 'Music';
     }
-    return item.category === librarySubTab;
+    return itemCat === librarySubTab;
   });
 
   const processedResults = getFilteredResults();
@@ -4918,10 +5381,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       <main className="app-main">
         
         {/* Settings Expander Card */}
-        {showSettings && <SettingsPanel handleToggleShowKeys={handleToggleShowKeys} fetchAiModels={fetchAiModels} clearHistory={clearHistory} syncFromCloud={syncFromCloud} />}
+        {showSettings && <SettingsPanel handleToggleShowKeys={handleToggleShowKeys} fetchAiModels={fetchAiModels} clearHistory={clearHistory} syncFromCloud={syncFromCloud} testSabConnection={testSabConnection} />}
 
         {/* tab: Torrent Searcher */}
-        {activeTab === 'search' && <SearchPanel processedResults={processedResults} results={results} cachedCount={cachedCount} handleSearch={handleSearch} handleAiSemanticSearch={handleAiSemanticSearch} handleDragOver={handleDragOver} handleDragLeave={handleDragLeave} handleDrop={handleDrop} handleImportFile={handleImportFile} handleImportMagnet={handleImportMagnet} deleteHistoryItem={deleteHistoryItem} getMetadata={getMetadata} isItemInLibrary={isItemInLibrary} isInWatchlist={isInWatchlist} toggleLibraryItem={toggleLibraryItem} toggleWatchlist={toggleWatchlist} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} triggerDownload={triggerDownload} />}
+        {activeTab === 'search' && <SearchPanel processedResults={processedResults} results={results} cachedCount={cachedCount} handleSearch={handleSearch} handleAiSemanticSearch={handleAiSemanticSearch} handleDragOver={handleDragOver} handleDragLeave={handleDragLeave} handleDrop={handleDrop} handleImportFile={handleImportFile} handleImportMagnet={handleImportMagnet} deleteHistoryItem={deleteHistoryItem} getMetadata={getMetadata} isItemInLibrary={isItemInLibrary} isInWatchlist={isInWatchlist} toggleLibraryItem={toggleLibraryItem} toggleWatchlist={toggleWatchlist} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} triggerDownload={triggerDownload} triggerSabDownload={triggerSabDownload} buildSabStreamUrl={buildSabStreamUrl} />}
 
         {/* Tab: My Library Bookshelf */}
         {activeTab === 'library' && <LibraryPanel filteredLibraryList={filteredLibraryList} getMetadata={getMetadata} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} toggleLibraryItem={toggleLibraryItem} playPlaylist={playPlaylist} deletePlaylist={deletePlaylist} removeTrackFromPlaylist={removeTrackFromPlaylist} />}
@@ -4935,10 +5398,22 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Tab: Cloud Storage Manager */}
         {activeTab === 'cloud' && <CloudBrowserPanel buildFolderPlaylist={buildFolderPlaylist} fetchAccountQuota={fetchAccountQuota} fetchCloudFolder={fetchCloudFolder} handleAICleanName={handleAICleanName} handleCloudDelete={handleCloudDelete} handleCloudRename={handleCloudRename} handleCloudStream={handleCloudStream} />}
         {/* Tab: Active Downloads Transfer Manager */}
-        {activeTab === 'transfers' && <TransfersPanel cancelTransfer={cancelTransfer} fetchActiveTransfers={fetchActiveTransfers} />}
+        {activeTab === 'transfers' && (
+          <TransfersPanel 
+            cancelTransfer={cancelTransfer} 
+            fetchActiveTransfers={fetchActiveTransfers} 
+            fetchSabStatus={fetchSabStatus}
+            cancelSabQueueItem={cancelSabQueueItem}
+            deleteSabHistoryItem={deleteSabHistoryItem}
+            startStreaming={startStreaming}
+            buildSabStreamUrl={buildSabStreamUrl}
+            isItemInLibrary={isItemInLibrary}
+            toggleLibraryItem={toggleLibraryItem}
+          />
+        )}
 
         {/* Premium Streaming Video Player Modal */}
-        <VideoPlayerModal syncToCloud={syncToCloud} handleTimeUpdate={handleTimeUpdate} handleVideoLoadedMetadata={handleVideoLoadedMetadata} handleVideoEnded={handleVideoEnded} handleSkipIntro={handleSkipIntro} handleToggleRecap={handleToggleRecap} fetchOnlineSubtitles={fetchOnlineSubtitles} selectOnlineSubtitle={selectOnlineSubtitle} />
+        <VideoPlayerModal syncToCloud={syncToCloud} handleTimeUpdate={handleTimeUpdate} handleVideoLoadedMetadata={handleVideoLoadedMetadata} handleVideoEnded={handleVideoEnded} handleSkipIntro={handleSkipIntro} handleToggleRecap={handleToggleRecap} fetchOnlineSubtitles={fetchOnlineSubtitles} selectOnlineSubtitle={selectOnlineSubtitle} handleTranscodeSeek={handleTranscodeSeek} />
 
         {/* Retro Arcade Player Modal */}
         <RetroPlayerModal />
@@ -4952,7 +5427,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Custom Playlist Selection Modal Overlay */}
         {playlistSelectionTrack && <PlaylistSelectorModal addTrackToPlaylist={addTrackToPlaylist} createPlaylistAndAdd={createPlaylistAndAdd} />}
         {/* Metadata Detail Drawer */}
-        <DetailDrawer activeMeta={activeMeta} toggleReviews={toggleReviews} toggleLbReviews={toggleLbReviews} startRetroPlayer={startRetroPlayer} startEbookPlayer={startEbookPlayer} startAudioPlayer={startAudioPlayer} triggerDirectDownload={triggerDirectDownload} startStreaming={startStreaming} triggerDownload={triggerDownload} isItemInLibrary={isItemInLibrary} toggleLibraryItem={toggleLibraryItem} isInWatchlist={isInWatchlist} toggleWatchlist={toggleWatchlist} />
+        <DetailDrawer activeMeta={activeMeta} toggleReviews={toggleReviews} toggleLbReviews={toggleLbReviews} startRetroPlayer={startRetroPlayer} startEbookPlayer={startEbookPlayer} startAudioPlayer={startAudioPlayer} triggerDirectDownload={triggerDirectDownload} startStreaming={startStreaming} triggerDownload={triggerDownload} triggerSabDownload={triggerSabDownload} isItemInLibrary={isItemInLibrary} toggleLibraryItem={toggleLibraryItem} isInWatchlist={isInWatchlist} toggleWatchlist={toggleWatchlist} buildSabStreamUrl={buildSabStreamUrl} />
 
       </main>
 
@@ -4968,7 +5443,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       {showOnboarding && <OnboardingModal testKey={testKey} renderKeyTestResult={renderKeyTestResult} />}
 
       {/* Playlist Choice Modal */}
-      {showPlaylistChoiceModal && <PlaylistChoiceModal handleLaunchBrowserPlaylist={handleLaunchBrowserPlaylist} handleAICuratePlaylist={handleAICuratePlaylist} downloadM3UPlaylist={downloadM3UPlaylist} />}
+      {showPlaylistChoiceModal && <PlaylistChoiceModal handleLaunchBrowserPlaylist={handleLaunchBrowserPlaylist} handleAICuratePlaylist={handleAICuratePlaylist} downloadM3UPlaylist={downloadM3UPlaylist} handleLaunchTranscodedPlaylist={handleLaunchTranscodedPlaylist} />}
 
       {/* Premiumize AI Co-pilot Floating Button & Sidebar */}
       {aiEnabled && (

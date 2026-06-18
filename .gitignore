@@ -72,3 +72,6 @@ Thumbs.db
 .cline/
 .cursorrules
 .aiproj
+
+# Claude Code local agent/session data
+.claude/

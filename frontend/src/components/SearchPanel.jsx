@@ -1,7 +1,7 @@
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 import { CATEGORIES } from '../lib/constants';
-import { formatBytes, extractQuality } from '../lib/format';
+import { formatBytes, extractQuality, getIndexerShortName } from '../lib/format';
 import { getEmulatorSystem } from '../lib/emulator';
 import { keyActivate } from '../lib/a11y';
 
@@ -17,7 +17,8 @@ export default function SearchPanel({
   deleteHistoryItem, getMetadata,
   isItemInLibrary, isInWatchlist, toggleLibraryItem, toggleWatchlist,
   startStreaming, startAudioPlayer, startEbookPlayer, startRetroPlayer,
-  triggerDirectDownload, triggerDownload,
+  triggerDirectDownload, triggerDownload, triggerSabDownload,
+  buildSabStreamUrl,
 }) {
   const {
     query, setQuery,
@@ -38,6 +39,9 @@ export default function SearchPanel({
     recentSearches, recentDownloads,
     aiEnabled, userPmKey, userJackettUrl, hideAdult,
     showSettings, setMetadataDrawerItem, setShowSettings, setShowOnboarding, setOnboardingStep,
+    userSabUrl, userSabKey, userSabCompleteDir, usenetHandler,
+    sabQueue, sabHistory, setActiveTab,
+    sabnzbdAutoFallbacks, completedIndexers,
     triggerToast,
   } = useAppState();
 
@@ -148,7 +152,7 @@ export default function SearchPanel({
                   </button>
                   <button
                     type="button"
-                    className={`search-mode-btn ${searchMode === 'usenet' ? 'active' : ''}`}
+                    className={`search-mode-btn ${searchMode === 'usenet' ? 'active' : ''} ${usenetHandler === 'sabnzbd' ? 'sabnzbd-active' : ''}`}
                     onClick={() => {
                       setSearchMode('usenet');
                       if (searched && query.trim()) {
@@ -156,7 +160,11 @@ export default function SearchPanel({
                       }
                     }}
                   >
-                    <Icon name="bolt" size={14} fill /> Usenet (Double Points Cost)
+                    {usenetHandler === 'sabnzbd' ? (
+                      <><Icon name="download" size={14} /> Usenet (SABnzbd Downloader)</>
+                    ) : (
+                      <><Icon name="bolt" size={14} fill /> Usenet (Double Points Cost)</>
+                    )}
                   </button>
                   <button
                     type="button"
@@ -166,7 +174,7 @@ export default function SearchPanel({
                       setHideUsenetWarning(next);
                       localStorage.setItem('premio_hide_usenet_warning', next ? 'true' : 'false');
                     }}
-                    title="Toggle Usenet Fair-Use points caution panel"
+                    title={usenetHandler === 'sabnzbd' ? "Toggle SABnzbd integration info panel" : "Toggle Usenet Fair-Use points caution panel"}
                   >
                     <Icon name="bulb" size={14} /> {hideUsenetWarning ? 'Show Info' : 'Hide Info'}
                   </button>
@@ -416,43 +424,81 @@ export default function SearchPanel({
               )}
             </section>
 
-            {/* Usenet Fair-Use points caution banner */}
+            {/* Usenet Downloader Info/Caution banner */}
             {searchMode === 'usenet' && !hideUsenetWarning && (
-              <div className="usenet-points-warning glass-panel fade-in">
-                <div className="warning-icon-col"><Icon name="alert-triangle" size={28} /></div>
-                <div className="warning-text-col">
-                  <h3>Usenet Fair-Use Points Notice</h3>
-                  <p>
-                    Adding a release from Usenet is a <strong>double-cost</strong> points transaction on Premiumize:
-                  </p>
-                  <ul>
-                    <li>
-                      <strong>1 point per GB</strong> to cache the release from Usenet to your cloud locker.
-                    </li>
-                    <li>
-                      <strong>1 point per GB</strong> to download or stream the cached file to your local player.
-                    </li>
-                    <li>
-                      <strong>Total cost = 2 points per GB</strong> (compared to cached torrents which only cost 1 point per GB to stream).
-                    </li>
-                  </ul>
-                  <p className="warning-tip">
-                    Prioritize free cached torrents (marked with glowing Instant DL badges) to conserve your daily points balance!
-                  </p>
+              usenetHandler === 'sabnzbd' ? (
+                <div className="usenet-points-warning glass-panel usenet-sabnzbd-info fade-in" style={{ borderColor: 'rgba(52, 211, 153, 0.4)', background: 'rgba(52, 211, 153, 0.03)' }}>
+                  <div className="warning-icon-col" style={{ color: '#34d399' }}><Icon name="info" size={28} /></div>
+                  <div className="warning-text-col">
+                    <h3 style={{ color: '#34d399' }}>SABnzbd Downloader Active</h3>
+                    <p>
+                      Premio is configured to download Usenet releases using your self-hosted <strong>SABnzbd</strong> downloader:
+                    </p>
+                    <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>0 PM Points Cost:</strong> Downloads bypass Premiumize entirely, conserving your cloud storage and points balance.
+                      </li>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>Local Storage:</strong> NZBs are sent to your local SABnzbd client and saved to: <code style={{ color: '#34d399', background: 'rgba(0, 0, 0, 0.2)', padding: '2px 6px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.85em' }}>{userSabCompleteDir || 'configured directory'}</code>.
+                      </li>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>Transfers Monitoring:</strong> You can track download/unpacking speed, ETA, and progress from the <strong>Downloads</strong> panel, play from disk, or delete them when done.
+                      </li>
+                    </ul>
+                    <p className="warning-tip" style={{ color: '#a7f3d0', marginTop: '6px' }}>
+                      Make sure your local SABnzbd application is running in the background!
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="close-warning-btn"
+                    onClick={() => {
+                      setHideUsenetWarning(true);
+                      localStorage.setItem('premio_hide_usenet_warning', 'true');
+                      triggerToast('SABnzbd downloader info dismissed. Review at any time by toggling the button.', 'success');
+                    }}
+                    title="Dismiss info panel permanently"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="close-warning-btn"
-                  onClick={() => {
-                    setHideUsenetWarning(true);
-                    localStorage.setItem('premio_hide_usenet_warning', 'true');
-                    triggerToast('Usenet point warning dismissed. Review at any time by toggling the button.', 'success');
-                  }}
-                  title="Dismiss warning permanently"
-                >
-                  <Icon name="x" size={16} />
-                </button>
-              </div>
+              ) : (
+                <div className="usenet-points-warning glass-panel fade-in">
+                  <div className="warning-icon-col"><Icon name="alert-triangle" size={28} /></div>
+                  <div className="warning-text-col">
+                    <h3>Usenet Fair-Use Points Notice</h3>
+                    <p>
+                      Adding a release from Usenet is a <strong>double-cost</strong> points transaction on Premiumize:
+                    </p>
+                    <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>1 point per GB</strong> to cache the release from Usenet to your cloud locker.
+                      </li>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>1 point per GB</strong> to download or stream the cached file to your local player.
+                      </li>
+                      <li style={{ marginBottom: '4px' }}>
+                        <strong>Total cost = 2 points per GB</strong> (compared to cached torrents which only cost 1 point per GB to stream).
+                      </li>
+                    </ul>
+                    <p className="warning-tip">
+                      Prioritize free cached torrents (marked with glowing Instant DL badges) to conserve your daily points balance!
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="close-warning-btn"
+                    onClick={() => {
+                      setHideUsenetWarning(true);
+                      localStorage.setItem('premio_hide_usenet_warning', 'true');
+                      triggerToast('Usenet point warning dismissed. Review at any time by toggling the button.', 'success');
+                    }}
+                    title="Dismiss warning permanently"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+              )
             )}
 
             {/* Results Grid display */}
@@ -502,8 +548,9 @@ export default function SearchPanel({
                     
                     <div className="stats-badges">
                       {searchMode === 'usenet' ? (
-                        <span className="stat-badge stat-badge-usenet">
-                          <Icon name="bolt" size={14} fill /> {processedResults.length} Usenet NZB Releases
+                        <span className={`stat-badge ${usenetHandler === 'sabnzbd' ? 'stat-badge-usenet-sabnzbd' : 'stat-badge-usenet'}`}>
+                          <Icon name={usenetHandler === 'sabnzbd' ? 'download' : 'bolt'} size={14} fill={usenetHandler !== 'sabnzbd'} />{' '}
+                          {processedResults.length} {usenetHandler === 'sabnzbd' ? 'SABnzbd' : 'Usenet'} NZB Releases
                         </span>
                       ) : (
                         <>
@@ -563,13 +610,17 @@ export default function SearchPanel({
                       </div>
                       <button
                         type="button"
-                        className="usenet-switch-inline-btn active"
+                        className={`usenet-switch-inline-btn active ${usenetHandler === 'sabnzbd' ? 'sabnzbd-active' : ''}`}
                         onClick={() => {
                           setSearchMode('usenet');
                           setTimeout(() => handleSearch(null, 'usenet'), 50);
                         }}
                       >
-                        <Icon name="bolt" size={15} fill /> Search Usenet (Indexers)
+                        {usenetHandler === 'sabnzbd' ? (
+                          <><Icon name="download" size={15} /> Search Usenet (SABnzbd)</>
+                        ) : (
+                          <><Icon name="bolt" size={15} fill /> Search Usenet (Indexers)</>
+                        )}
                       </button>
                     </div>
                   )}
@@ -594,6 +645,45 @@ export default function SearchPanel({
                         const cat = item.detectedType || item.category || category;
                         const isVideo = cat === 'Movies' || cat === 'TV';
                         
+                        // Determine SABnzbd status for Usenet downloads
+                        const getSabnzbdStatus = () => {
+                          if (usenetHandler !== 'sabnzbd' || !isUsenetItem) return null;
+                          const sTitle = item.title.toLowerCase();
+
+                          // Helper to check if name matches
+                          const isMatch = (name) => {
+                            if (!name) return false;
+                            const n = name.toLowerCase();
+                            return n.includes(sTitle) || sTitle.includes(n);
+                          };
+
+                          // Check queue
+                          const qMatch = sabQueue.find(q => isMatch(q.name));
+                          if (qMatch) {
+                            return { status: 'downloading', percent: qMatch.percent, eta: qMatch.eta, nzoId: qMatch.nzoId };
+                          }
+
+                          // Check history
+                          const hMatch = sabHistory.find(h => isMatch(h.name));
+                          if (hMatch) {
+                            if (hMatch.status === 'Completed') {
+                              return { status: 'completed', nzoId: hMatch.nzoId };
+                            } else if (hMatch.status === 'Failed') {
+                              return { status: 'failed', nzoId: hMatch.nzoId };
+                            } else {
+                              return { status: 'processing', stage: hMatch.status, nzoId: hMatch.nzoId };
+                            }
+                          }
+
+                          if (item.cached) {
+                            return { status: 'queued' };
+                          }
+
+                          return null;
+                        };
+
+                        const sabStatus = getSabnzbdStatus();
+                        
                         // Fallback to Usenet indexer custom cover art if TMDb poster is unavailable
                         // For video content, we always reserve poster space to avoid layout shifts.
                         const hasPoster = !!(meta?.poster || item.coverurl || isVideo);
@@ -601,7 +691,7 @@ export default function SearchPanel({
                         const isMetadataLoading = isVideo && !meta;
                         
                         return (
-                          <article key={idx} className={`result-card glass-panel ${isUsenetItem ? 'usenet-hit' : (item.cached ? 'cached-hit' : 'cached-miss')} ${hasPoster ? 'has-poster' : ''}`}>
+                          <article key={idx} className={`result-card glass-panel ${isUsenetItem ? (usenetHandler === 'sabnzbd' ? 'usenet-sabnzbd-hit' : 'usenet-hit') : (item.cached ? 'cached-hit' : 'cached-miss')} ${hasPoster ? 'has-poster' : ''}`}>
                             {hasPoster && (
                               <div className="card-poster-col" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Loading details from TMDb...' } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { poster: item.coverurl, title: item.title, overview: 'Loading details from TMDb...' } }))}>
                                 {posterSrc ? (
@@ -659,13 +749,64 @@ export default function SearchPanel({
                                 </div>
                               ) : null}
                               
-                              {qualityTags.length > 0 && (
-                                <div className="quality-tags">
+                              {(qualityTags.length > 0 || (isUsenetItem && usenetHandler === 'sabnzbd')) && (
+                                <div className="quality-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
                                   {qualityTags.map((tag, tagIdx) => (
                                     <span key={tagIdx} className={`quality-badge q-${tag.type}`}>
                                       {tag.text}
                                     </span>
                                   ))}
+                                  {(() => {
+                                    if (!isUsenetItem || usenetHandler !== 'sabnzbd') return null;
+                                    const cleanTitle = (item.title || '').trim().toLowerCase();
+                                    const successfulIndexerName = completedIndexers && completedIndexers[cleanTitle];
+                                    if (successfulIndexerName) {
+                                      return (
+                                        <span className="indexer-completed-pill" title={`Downloaded from indexer: ${successfulIndexerName}`} style={{
+                                          background: 'rgba(16, 185, 129, 0.15)',
+                                          color: '#10b981',
+                                          border: '1px solid rgba(16, 185, 129, 0.3)',
+                                          borderRadius: '4px',
+                                          padding: '2px 6px',
+                                          fontSize: '0.7rem',
+                                          fontWeight: '600',
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.05em',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                        }}>
+                                          <Icon name="check" size={10} /> {getIndexerShortName(successfulIndexerName)}
+                                        </span>
+                                      );
+                                    }
+
+                                    const fallbackItem = sabnzbdAutoFallbacks && Object.values(sabnzbdAutoFallbacks).find(f => f.cleanTitle === cleanTitle);
+                                    if (fallbackItem) {
+                                      const currentIndexer = fallbackItem.indexersList[fallbackItem.currentIndex]?.name;
+                                      if (currentIndexer) {
+                                        return (
+                                          <span className="indexer-downloading-pill" title={`Downloading from indexer: ${currentIndexer}`} style={{
+                                            background: 'rgba(52, 211, 153, 0.1)',
+                                            color: '#34d399',
+                                            border: '1px solid rgba(52, 211, 153, 0.25)',
+                                            borderRadius: '4px',
+                                            padding: '2px 6px',
+                                            fontSize: '0.7rem',
+                                            fontWeight: '600',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.05em',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                          }}>
+                                            <span className="spinner-micro white small" style={{ borderColor: '#34d399', borderTopColor: 'transparent', width: '8px', height: '8px', borderWidth: '1px' }}></span> {getIndexerShortName(currentIndexer)}
+                                          </span>
+                                        );
+                                      }
+                                    }
+                                    return null;
+                                  })()}
                                 </div>
                               )}
                             </div>
@@ -677,7 +818,7 @@ export default function SearchPanel({
                                 </span>
                                 {isUsenetItem ? (
                                   <>
-                                    <span className={`stat-item ${item.ageDays > 3000 ? 'text-red' : 'text-purple'}`} title="Usenet Age">
+                                    <span className={`stat-item ${item.ageDays > 3000 ? 'text-red' : (usenetHandler === 'sabnzbd' ? 'text-emerald' : 'text-purple')}`} title="Usenet Age">
                                       <Icon name="clock" size={14} /> {item.ageDays}d {item.ageDays > 3000 && <span className="extreme-age-badge" title="Retention limit warn">old</span>}
                                     </span>
                                     <span className="stat-item text-blue" title="NZB Grabs">
@@ -737,7 +878,68 @@ export default function SearchPanel({
                             <div className="card-actions">
                               {/* Cache status pill */}
                               {isUsenetItem ? (
-                                item.cached && <span className="status-pill cached"><Icon name="check" size={13} /> In cloud</span>
+                                usenetHandler === 'sabnzbd' ? (
+                                  sabStatus && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      {sabStatus.status === 'downloading' ? (
+                                        <span className="status-pill downloading-sab" style={{ background: 'rgba(52, 211, 153, 0.1)', color: '#34d399', border: '1px solid rgba(52, 211, 153, 0.3)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                          <span className="spinner-micro white small" style={{ borderColor: '#34d399', borderTopColor: 'transparent' }}></span> Downloading ({sabStatus.percent}%)
+                                        </span>
+                                      ) : sabStatus.status === 'processing' ? (
+                                        <span className="status-pill processing-sab" style={{ background: 'rgba(251, 191, 36, 0.1)', color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.3)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                          <span className="spinner-micro white small" style={{ borderColor: '#fbbf24', borderTopColor: 'transparent' }}></span> {sabStatus.stage}...
+                                        </span>
+                                      ) : sabStatus.status === 'completed' ? (
+                                        <span className="status-pill cached" style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.4)' }}>
+                                          <Icon name="check" size={13} /> Completed
+                                        </span>
+                                      ) : sabStatus.status === 'failed' ? (
+                                        <span className="status-pill uncached" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                                          <Icon name="alert-triangle" size={13} /> Failed
+                                        </span>
+                                      ) : (
+                                        <span className="status-pill queued-sab" style={{ background: 'rgba(156, 163, 175, 0.1)', color: '#9ca3af', border: '1px solid rgba(156, 163, 175, 0.3)' }}>
+                                          <Icon name="clock" size={13} /> Queued
+                                        </span>
+                                      )}
+                                      
+                                      {/* Quick link button to go to transfers page */}
+                                      <button
+                                        type="button"
+                                        className="quick-transfers-link-btn"
+                                        onClick={() => {
+                                          setActiveTab('transfers');
+                                        }}
+                                        title="View download in Transfers page"
+                                        style={{
+                                          background: 'rgba(255, 255, 255, 0.05)',
+                                          border: '1px solid var(--glass-border)',
+                                          borderRadius: '6px',
+                                          padding: '4px 8px',
+                                          color: 'var(--color-text-dim)',
+                                          fontSize: '0.75rem',
+                                          cursor: 'pointer',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          transition: 'all 0.2s ease',
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                                          e.currentTarget.style.color = '#fff';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                          e.currentTarget.style.color = 'var(--color-text-dim)';
+                                        }}
+                                      >
+                                        Track <Icon name="external-link" size={12} />
+                                      </button>
+                                    </div>
+                                  )
+                                ) : (
+                                  item.cached && <span className="status-pill cached"><Icon name="check" size={13} /> In cloud</span>
+                                )
                               ) : item.cached ? (
                                 <span className="status-pill cached"><Icon name="bolt" size={13} /> Instant</span>
                               ) : (
@@ -797,13 +999,60 @@ export default function SearchPanel({
                                     </button>
                                   ) : (
                                     <button className="btn-primary hover-action" onClick={() => startStreaming(item)} disabled={playerLoading} title="Instant stream video in web browser or VLC" id={`btn-stream-${idx}`}>
-                                      <Icon name="player-play" fill size={15} /> Play
+                                      <Icon name="player-play" fill size={15} /> Play PM
                                     </button>
                                   )
                                 ) : isUsenetItem ? (
-                                  <button className="btn-primary subtle hover-action" onClick={() => triggerDownload(item)} disabled={isDownloading} title={`Send this Usenet NZB to your Premiumize cloud queue (~${Math.round(item.size / (1024*1024*1024))} Fair-Use points).`} id={`btn-dl-usenet-${idx}`}>
-                                    {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="bolt" size={15} /> {item.cached ? 'Re-add' : 'Add to cloud'}</>}
-                                  </button>
+                                  <div style={{ display: 'flex', gap: '6px', width: '100%' }}>
+                                    {userSabUrl && userSabKey && usenetHandler === 'sabnzbd' ? (
+                                      sabStatus?.status === 'completed' ? (
+                                        <button className="btn-primary hover-action" style={{ width: '100%', background: '#10b981', borderColor: '#10b981', boxShadow: '0 0 12px rgba(16, 185, 129, 0.35)' }} onClick={() => {
+                                          const virtualTorrent = {
+                                            title: sabStatus.name,
+                                            name: sabStatus.name,
+                                            link: buildSabStreamUrl(sabStatus.nzoId),
+                                            size: sabStatus.bytes,
+                                            isCloudFile: true,
+                                            forceBrowser: false,
+                                            isSabnzbd: true,
+                                            nzoId: sabStatus.nzoId,
+                                            files: sabStatus.resolvedVideoFile ? [{
+                                              name: sabStatus.resolvedVideoFile,
+                                              link: buildSabStreamUrl(sabStatus.nzoId),
+                                              size: sabStatus.bytes,
+                                              type: 'video',
+                                              id: sabStatus.nzoId
+                                            }] : []
+                                          };
+                                          startStreaming(virtualTorrent);
+                                        }} title="Play this Usenet release (no PM points)" id={`btn-play-sab-${idx}`}>
+                                          <Icon name="player-play" fill size={15} /> Play NZB
+                                        </button>
+                                      ) : (
+                                        <>
+                                          <button className="btn-primary subtle hover-action" style={{ flex: 1 }} onClick={() => triggerSabDownload(item)} disabled={isDownloading} title="Download this Usenet NZB via SABnzbd (no Premiumize points)." id={`btn-dl-sab-${idx}`}>
+                                            {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="download" size={15} /> SABnzbd</>}
+                                          </button>
+                                          <button className="action-btn icon-only" style={{ padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => triggerDownload(item)} disabled={isDownloading} title={`Add to Premiumize cloud queue (~${Math.round(item.size / (1024*1024*1024))} Fair-Use points)`}>
+                                            <Icon name="bolt" size={15} />
+                                          </button>
+                                        </>
+                                      )
+                                    ) : userSabUrl && userSabKey ? (
+                                      <>
+                                        <button className="btn-primary subtle hover-action" style={{ flex: 1 }} onClick={() => triggerDownload(item)} disabled={isDownloading} title={`Send this Usenet NZB to your Premiumize cloud queue (~${Math.round(item.size / (1024*1024*1024))} Fair-Use points).`} id={`btn-dl-usenet-${idx}`}>
+                                          {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="bolt" size={15} /> {item.cached ? 'Re-add' : 'Add to cloud'}</>}
+                                        </button>
+                                        <button className="action-btn icon-only" style={{ padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => triggerSabDownload(item)} disabled={isDownloading} title="Download this Usenet NZB via SABnzbd (no Premiumize points).">
+                                          <Icon name="download" size={15} />
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button className="btn-primary subtle hover-action" style={{ width: '100%' }} onClick={() => triggerDownload(item)} disabled={isDownloading} title={`Send this Usenet NZB to your Premiumize cloud queue (~${Math.round(item.size / (1024*1024*1024))} Fair-Use points).`} id={`btn-dl-usenet-${idx}`}>
+                                        {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="bolt" size={15} /> {item.cached ? 'Re-add' : 'Add to cloud'}</>}
+                                      </button>
+                                    )}
+                                  </div>
                                 ) : (
                                   <button className="btn-primary subtle hover-action" onClick={() => triggerDownload(item)} disabled={isDownloading} title={downloadSource ? "Add to Premiumize downloader queue" : "No download URL available"} id={`btn-dl-uncached-${idx}`}>
                                     {isDownloading ? <span className="spinner-micro white"></span> : <><Icon name="cloud-up" size={15} /> Add</>}
@@ -833,17 +1082,21 @@ export default function SearchPanel({
                       <h3> Search Usenet Indexers?</h3>
                       <p>
                         Usenet is a massive alternative repository that might have this release! 
-                        Note: NZB Usenet downloads use Premiumize Fair-Use Points (2 pts/GB total download + stream).
+                        {usenetHandler === 'sabnzbd' ? (
+                          " Note: NZB Usenet downloads will bypass Premiumize and download directly to your local drive via SABnzbd (no Premiumize points)."
+                        ) : (
+                          " Note: NZB Usenet downloads use Premiumize Fair-Use Points (2 pts/GB total download + stream)."
+                        )}
                       </p>
                       <button
                         type="button"
-                        className="usenet-fallback-btn active"
+                        className={`usenet-fallback-btn active ${usenetHandler === 'sabnzbd' ? 'sabnzbd-active' : ''}`}
                         onClick={() => {
                           setSearchMode('usenet');
                           setTimeout(() => handleSearch(null, 'usenet'), 50);
                         }}
                       >
-                         Switch and Search Usenet
+                         {usenetHandler === 'sabnzbd' ? 'Switch to Usenet (SABnzbd)' : 'Switch and Search Usenet'}
                       </button>
                     </div>
                   )}

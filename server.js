@@ -14,6 +14,10 @@ import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import AdmZip from 'adm-zip';
 import { createExtractorFromFile } from 'node-unrar-js';
+import { spawn } from 'node:child_process';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+
+const ffmpegPath = ffmpegInstaller.path;
 
 // Load environment variables from .env
 dotenv.config();
@@ -66,7 +70,8 @@ app.use(cors({
   },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Range', 'Authorization',
-    'X-Premiumize-Key', 'X-TMDb-Key', 'X-Jackett-Url', 'X-Jackett-Key', 'X-Usenet-Indexers'],
+    'X-Premiumize-Key', 'X-TMDb-Key', 'X-Jackett-Url', 'X-Jackett-Key', 'X-Usenet-Indexers',
+    'X-Sabnzbd-Url', 'X-Sabnzbd-Key', 'X-Sabnzbd-Category', 'X-Sabnzbd-Complete-Dir'],
 }));
 
 app.use(express.json({ limit: '5mb' }));
@@ -94,6 +99,10 @@ app.use((req, res, next) => {
   req.userSubdlKey = (req.headers['x-subdl-key'] || '').trim();
   req.userJackettUrl = (req.headers['x-jackett-url'] || '').trim();
   req.userJackettKey = (req.headers['x-jackett-key'] || '').trim();
+  req.userSabUrl = (req.headers['x-sabnzbd-url'] || '').trim();
+  req.userSabKey = (req.headers['x-sabnzbd-key'] || '').trim();
+  req.userSabCategory = (req.headers['x-sabnzbd-category'] || '').trim();
+  req.userSabCompleteDir = (req.headers['x-sabnzbd-complete-dir'] || '').trim();
 
   let indexers = [];
   const headerIndexers = req.headers['x-usenet-indexers'];
@@ -292,6 +301,35 @@ const resolvePremiumizeKey = (req) => {
   if (req.userPmKey) return req.userPmKey;
   if (envKeysAllowed() && process.env.PREMIUMIZE_API_KEY) return process.env.PREMIUMIZE_API_KEY.trim();
   return '';
+};
+
+// Helper: Resolve SABnzbd config prioritizing user settings headers.
+//
+// SECURITY: these routes are intended for a localhost/LAN deployment only. They
+// proxy a user-supplied sabUrl (deliberately exempt from the private-IP SSRF
+// guard, since SABnzbd lives on the local network) and must NOT be exposed
+// publicly without an auth layer in front of them.
+//
+// `allowQueryCreds` is opt-in and granted ONLY to the video-element routes
+// (/api/sab/stream, /api/sab/transcode): the HTML5 <video> element fetches its
+// src directly, bypassing fetchWithCredentials, so those URLs carry credentials
+// as query params. The JSON API routes (test/status/add/delete) always use
+// request headers — they never honor query-param creds, which prevents a
+// cross-site GET from SSRF-triggering them (custom headers can't be set
+// cross-origin). The query-param key is LAN-only and lands in access logs;
+// acceptable for local use, replace with a signed token before any public deploy.
+const resolveSab = (req, { allowQueryCreds = false } = {}) => {
+  const q = allowQueryCreds ? (req.query || {}) : {};
+  const sabUrl = req.userSabUrl || q.sabUrl || (envKeysAllowed() ? process.env.SABNZBD_URL : '') || '';
+  const sabKey = req.userSabKey || q.sabKey || (envKeysAllowed() ? process.env.SABNZBD_API_KEY : '') || '';
+  const sabCategory = req.userSabCategory || q.sabCategory || (envKeysAllowed() ? process.env.SABNZBD_CATEGORY : '') || '';
+  const sabCompleteDir = req.userSabCompleteDir || q.sabCompleteDir || (envKeysAllowed() ? process.env.SABNZBD_COMPLETE_DIR : '') || '';
+  return {
+    sabUrl: sabUrl.replace(/\/+$/, ''),
+    sabKey,
+    sabCategory,
+    sabCompleteDir
+  };
 };
 
 // --- SSRF guard ---------------------------------------------------------------
@@ -1131,14 +1169,30 @@ app.get('/api/usenet/search', async (req, res) => {
     const uniqueItemsMap = new Map();
     allRawResults.forEach(item => {
       const cleanTitle = (item.title || '').trim().toLowerCase();
+      
+      let nzbUrl = null;
+      if (item.enclosure && item.enclosure['@attributes'] && item.enclosure['@attributes'].url) {
+        nzbUrl = item.enclosure['@attributes'].url;
+      } else {
+        nzbUrl = item.link || null;
+      }
+
+      const currentName = item._indexerName || 'Usenet';
+
       if (!uniqueItemsMap.has(cleanTitle)) {
+        item._indexersList = [{ name: currentName, nzbUrl }];
         uniqueItemsMap.set(cleanTitle, item);
       } else {
         const existing = uniqueItemsMap.get(cleanTitle);
         const existingName = existing._indexerName || '';
-        const currentName = item._indexerName || '';
         if (currentName && !existingName.split(', ').includes(currentName)) {
           existing._indexerName = `${existingName}, ${currentName}`;
+        }
+        if (!existing._indexersList) {
+          existing._indexersList = [];
+        }
+        if (currentName && !existing._indexersList.some(i => i.name === currentName)) {
+          existing._indexersList.push({ name: currentName, nzbUrl });
         }
       }
     });
@@ -1268,7 +1322,8 @@ app.get('/api/usenet/search', async (req, res) => {
       coverurl,
       password,
       category: selectedCategory,
-      indexer: item._indexerName || 'Usenet'
+      indexer: item._indexerName || 'Usenet',
+      indexersList: item._indexersList || []
     };
   });
 
@@ -1326,6 +1381,456 @@ function generateMockUsenetResults(q, category) {
 
   return mockReleases;
 }
+
+// --- Helper: Scan directory for the largest video file ---
+const getLargestVideoFile = (dirPath) => {
+  let largestFile = null;
+  let maxSize = 0;
+  const MAX_DEPTH = 16; // guard against pathological nesting
+
+  // Use lstatSync (does NOT follow symlinks) so a symlink loop in a downloaded
+  // folder can't cause infinite recursion / stack overflow. Symlinks are skipped.
+  const traverse = (currentPath, depth) => {
+    if (depth > MAX_DEPTH) return;
+    try {
+      const stats = fs.lstatSync(currentPath);
+      if (stats.isSymbolicLink()) {
+        return;
+      } else if (stats.isDirectory()) {
+        const files = fs.readdirSync(currentPath);
+        for (const file of files) {
+          traverse(path.join(currentPath, file), depth + 1);
+        }
+      } else if (stats.isFile()) {
+        const ext = path.extname(currentPath).toLowerCase().substring(1);
+        const videoExtensions = ['mp4', 'mkv', 'avi', 'ts', 'webm', 'mov', 'm4v'];
+        if (videoExtensions.includes(ext) && stats.size > maxSize) {
+          maxSize = stats.size;
+          largestFile = currentPath;
+        }
+      }
+    } catch (err) {
+      // Ignore errors for unreadable paths
+    }
+  };
+
+  traverse(dirPath, 0);
+  return largestFile;
+};
+
+// --- SABnzbd proxy endpoints ---
+app.get('/api/sab/test', async (req, res) => {
+  const { sabUrl, sabKey } = resolveSab(req);
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd URL and API Key must be configured in Settings.' });
+  }
+
+  try {
+    const testUrl = `${sabUrl}/api?mode=version&apikey=${sabKey}&output=json`;
+    const response = await fetch(testUrl);
+    if (!response.ok) {
+      throw new Error(`SABnzbd returned HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    return res.json({ status: 'success', version: data.version || 'unknown' });
+  } catch (err) {
+    console.error('❌ SABnzbd test connection failed:', err.message);
+    return res.status(500).json({ error: `Connection failed: ${err.message}. Ensure SABnzbd is running and accessible.` });
+  }
+});
+
+app.post('/api/sab/add', async (req, res) => {
+  const { sabUrl, sabKey, sabCategory } = resolveSab(req);
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd URL and API Key must be configured in Settings.' });
+  }
+
+  const { nzbUrl, importId } = req.body;
+  if (!nzbUrl && !importId) {
+    return res.status(400).json({ error: 'Missing nzbUrl or importId in request body.' });
+  }
+
+  try {
+    let addRes;
+    if (importId) {
+      const nzbBuffer = importedNzbsCache.get(importId);
+      if (!nzbBuffer) {
+        return res.status(400).json({ error: 'Imported NZB file has expired or was not found.' });
+      }
+
+      const formData = new FormData();
+      const file = new File([nzbBuffer], `imported_${importId}.nzb`, { type: 'application/x-nzb' });
+      formData.append('name', file);
+      if (sabCategory) {
+        formData.append('cat', sabCategory);
+      }
+
+      addRes = await fetch(`${sabUrl}/api?mode=addfile&apikey=${sabKey}&output=json`, {
+        method: 'POST',
+        body: formData
+      });
+    } else {
+      let addUrl = `${sabUrl}/api?mode=addurl&name=${encodeURIComponent(nzbUrl)}&apikey=${sabKey}&output=json`;
+      if (sabCategory) {
+        addUrl += `&cat=${encodeURIComponent(sabCategory)}`;
+      }
+      addRes = await fetch(addUrl);
+    }
+
+    if (!addRes.ok) {
+      throw new Error(`SABnzbd returned HTTP ${addRes.status}`);
+    }
+
+    const data = await addRes.json();
+    if (data.status === false || (data.error && data.error.length > 0)) {
+      throw new Error(data.error || 'SABnzbd failed to add NZB.');
+    }
+
+    return res.json({ status: 'success', nzo_ids: data.nzo_ids || [] });
+  } catch (err) {
+    console.error('❌ SABnzbd add NZB failed:', err.message);
+    return res.status(500).json({ error: `Failed to add NZB: ${err.message}` });
+  }
+});
+
+app.get('/api/sab/status', async (req, res) => {
+  const { sabUrl, sabKey } = resolveSab(req);
+  if (!sabUrl || !sabKey) {
+    return res.json({ status: 'success', active: [], done: [] });
+  }
+
+  try {
+    const queueUrl = `${sabUrl}/api?mode=queue&apikey=${sabKey}&output=json`;
+    const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+
+    const [queueRes, historyRes] = await Promise.all([
+      fetch(queueUrl),
+      fetch(historyUrl)
+    ]);
+
+    if (!queueRes.ok || !historyRes.ok) {
+      throw new Error(`SABnzbd status fetch failed (Queue: ${queueRes.status}, History: ${historyRes.status})`);
+    }
+
+    const [queueData, historyData] = await Promise.all([
+      queueRes.json(),
+      historyRes.json()
+    ]);
+
+    const active = (queueData?.queue?.slots || []).map(slot => ({
+      nzoId: slot.nzo_id,
+      name: slot.filename,
+      percent: parseFloat(slot.percentage) || 0,
+      mbLeft: parseFloat(slot.mbleft) || 0,
+      eta: slot.timeleft || '',
+      status: slot.status,
+      category: slot.category || ''
+    }));
+
+    const done = (historyData?.history?.slots || []).map(slot => {
+      let resolvedVideoFile = '';
+      const storage = slot.storage || '';
+      if (storage && fs.existsSync(storage)) {
+        try {
+          const stats = fs.statSync(storage);
+          if (stats.isDirectory()) {
+            const largest = getLargestVideoFile(storage);
+            if (largest) resolvedVideoFile = path.basename(largest);
+          } else if (stats.isFile()) {
+            resolvedVideoFile = path.basename(storage);
+          }
+        } catch (e) {
+          // Ignore
+        }
+      }
+      return {
+        nzoId: slot.nzo_id,
+        name: slot.name,
+        status: slot.status,
+        storage,
+        bytes: slot.bytes || 0,
+        resolvedVideoFile,
+        action_line: slot.action_line || '',
+        category: slot.category || ''
+      };
+    });
+
+    return res.json({
+      status: 'success',
+      speed: queueData?.queue?.speed || '0 B',
+      active,
+      done
+    });
+  } catch (err) {
+    console.error('❌ SABnzbd fetch status failed:', err.message);
+    return res.json({ status: 'error', error: err.message, active: [], done: [] });
+  }
+});
+
+app.post('/api/sab/delete', async (req, res) => {
+  const { sabUrl, sabKey } = resolveSab(req);
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd URL and API Key must be configured in Settings.' });
+  }
+
+  const { nzoId, deleteFiles, fromQueue } = req.body;
+  if (!nzoId) {
+    return res.status(400).json({ error: 'Missing nzoId in request body.' });
+  }
+
+  try {
+    // Active downloads live in the queue, completed jobs in history — they are
+    // separate SABnzbd APIs. `fromQueue` cancels an in-progress download;
+    // otherwise we delete the completed history entry (optionally purging files).
+    const mode = fromQueue ? 'queue' : 'history';
+    let delUrl = `${sabUrl}/api?mode=${mode}&name=delete&value=${encodeURIComponent(nzoId)}&apikey=${sabKey}&output=json`;
+    if (deleteFiles) {
+      delUrl += '&del_files=1';
+    }
+
+    const delRes = await fetch(delUrl);
+    if (!delRes.ok) {
+      throw new Error(`SABnzbd returned HTTP ${delRes.status}`);
+    }
+
+    const data = await delRes.json();
+    return res.json({ status: 'success', data });
+  } catch (err) {
+    console.error('❌ SABnzbd delete history failed:', err.message);
+    return res.status(500).json({ error: `Failed to delete item: ${err.message}` });
+  }
+});
+
+app.get('/api/sab/stream', async (req, res) => {
+  const { nzoId } = req.query;
+  if (!nzoId) {
+    return res.status(400).json({ error: 'Missing parameter: nzoId' });
+  }
+
+  // allowQueryCreds: the <video> element can't send custom headers, so this route
+  // (and /transcode) reads credentials from the query string. See resolveSab().
+  const { sabUrl, sabKey, sabCompleteDir } = resolveSab(req, { allowQueryCreds: true });
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd config must be set.' });
+  }
+
+  try {
+    // 1. Fetch completed folder path from history
+    const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+    const historyRes = await fetch(historyUrl);
+    if (!historyRes.ok) {
+      throw new Error(`Failed to fetch history (HTTP ${historyRes.status})`);
+    }
+    const historyData = await historyRes.json();
+    const slots = historyData?.history?.slots || [];
+    const slot = slots.find(s => s.nzo_id === nzoId);
+    if (!slot) {
+      return res.status(404).json({ error: `Completed release for job ID ${nzoId} not found in history.` });
+    }
+
+    const storage = slot.storage;
+    if (!storage) {
+      return res.status(400).json({ error: 'No storage path found for this history item.' });
+    }
+
+    // Find the file to stream (largest video file if it's a directory)
+    let targetPath = storage;
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({ error: `Target path does not exist on disk: ${storage}` });
+    }
+
+    const stats = fs.statSync(targetPath);
+    if (stats.isDirectory()) {
+      const largest = getLargestVideoFile(targetPath);
+      if (!largest) {
+        return res.status(404).json({ error: 'No video files found in completed folder.' });
+      }
+      targetPath = largest;
+    }
+
+    // 2. Resolve complete directory for path allowlist verification
+    let allowedDir = sabCompleteDir;
+    if (!allowedDir) {
+      const configUrl = `${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`;
+      const configRes = await fetch(configUrl);
+      if (configRes.ok) {
+        const configData = await configRes.json();
+        allowedDir = configData?.config?.misc?.complete_dir || '';
+      }
+    }
+
+    if (!allowedDir) {
+      console.warn('⚠️ Could not resolve SABnzbd complete_dir, path verification bypassed. Configure complete_dir or ALLOW_ENV_KEYS if needed.');
+    } else {
+      const resolvedAllowedDir = path.resolve(allowedDir);
+      const absoluteTargetPath = path.resolve(targetPath);
+      if (absoluteTargetPath !== resolvedAllowedDir && !absoluteTargetPath.startsWith(resolvedAllowedDir + path.sep)) {
+        return res.status(403).json({ error: `Access denied: Target path is outside the allowed directory: ${allowedDir}` });
+      }
+    }
+
+    console.log(`🎵 Streaming SABnzbd local file: ${targetPath}`);
+
+    // Same-origin request (URL built from window.location.origin), so no CORS
+    // headers needed — omitting the wildcard keeps streamed bytes unreadable
+    // cross-origin. Accept-Ranges enables native seeking.
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    // Set content type from file extension
+    const ext = path.extname(targetPath).toLowerCase();
+    const contentTypes = {
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
+      '.mkv': 'video/x-matroska',
+      '.avi': 'video/x-msvideo',
+      '.ts': 'video/mp2t',
+      '.mov': 'video/quicktime',
+      '.m4v': 'video/x-m4v'
+    };
+    if (contentTypes[ext]) {
+      res.setHeader('Content-Type', contentTypes[ext]);
+    }
+
+    // Stream the file
+    return res.sendFile(targetPath);
+  } catch (err) {
+    console.error('❌ SABnzbd stream resolution failed:', err.message);
+    return res.status(500).json({ error: `Stream resolution failed: ${err.message}` });
+  }
+});
+
+app.get('/api/sab/transcode', async (req, res) => {
+  const { nzoId, ss } = req.query;
+  if (!nzoId) {
+    return res.status(400).json({ error: 'Missing parameter: nzoId' });
+  }
+
+  // allowQueryCreds: see /api/sab/stream — the <video> element authenticates via
+  // query params because it can't attach custom headers.
+  const { sabUrl, sabKey, sabCompleteDir } = resolveSab(req, { allowQueryCreds: true });
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd config must be set.' });
+  }
+
+  try {
+    // 1. Fetch completed folder path from history
+    const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+    const historyRes = await fetch(historyUrl);
+    if (!historyRes.ok) {
+      throw new Error(`Failed to fetch history (HTTP ${historyRes.status})`);
+    }
+    const historyData = await historyRes.json();
+    const slots = historyData?.history?.slots || [];
+    const slot = slots.find(s => s.nzo_id === nzoId);
+    if (!slot) {
+      return res.status(404).json({ error: `Completed release for job ID ${nzoId} not found in history.` });
+    }
+
+    const storage = slot.storage;
+    if (!storage) {
+      return res.status(400).json({ error: 'No storage path found for this history item.' });
+    }
+
+    // Find the file to stream (largest video file if it's a directory)
+    let targetPath = storage;
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({ error: `Target path does not exist on disk: ${storage}` });
+    }
+
+    const stats = fs.statSync(targetPath);
+    if (stats.isDirectory()) {
+      const largest = getLargestVideoFile(targetPath);
+      if (!largest) {
+        return res.status(404).json({ error: 'No video files found in completed folder.' });
+      }
+      targetPath = largest;
+    }
+
+    // 2. Resolve complete directory for path allowlist verification
+    let allowedDir = sabCompleteDir;
+    if (!allowedDir) {
+      const configUrl = `${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`;
+      const configRes = await fetch(configUrl);
+      if (configRes.ok) {
+        const configData = await configRes.json();
+        allowedDir = configData?.config?.misc?.complete_dir || '';
+      }
+    }
+
+    if (allowedDir) {
+      const resolvedAllowedDir = path.resolve(allowedDir);
+      const absoluteTargetPath = path.resolve(targetPath);
+      if (absoluteTargetPath !== resolvedAllowedDir && !absoluteTargetPath.startsWith(resolvedAllowedDir + path.sep)) {
+        return res.status(403).json({ error: `Access denied: Target path is outside the allowed directory: ${allowedDir}` });
+      }
+    }
+
+    console.log(`🎥 Transcoding SABnzbd local file on-the-fly: ${targetPath}`);
+
+    // Same-origin request — no CORS headers (omitting the wildcard keeps the
+    // transcoded stream unreadable cross-origin). Node manages Transfer-Encoding.
+    res.setHeader('Content-Type', 'video/mp4');
+
+    // Build ffmpeg arguments. Keep stderr quiet (-nostats / -loglevel error) so it
+    // can't fill the OS pipe buffer; we still drain it below as a safeguard.
+    const ffmpegArgs = ['-nostats', '-loglevel', 'error'];
+
+    // Seeking support: if ss is provided, seek input using fast seek (-ss before -i).
+    // Validate it's a finite, non-negative number before handing it to ffmpeg —
+    // no shell injection risk (spawn, not a shell) but this rejects malformed input.
+    if (ss !== undefined) {
+      const ssNum = Number(ss);
+      if (!Number.isFinite(ssNum) || ssNum < 0) {
+        return res.status(400).json({ error: 'Invalid seek parameter: ss must be a non-negative number of seconds.' });
+      }
+      ffmpegArgs.push('-ss', ssNum.toString());
+    }
+
+    ffmpegArgs.push(
+      '-i', targetPath,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-crf', '24',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-ac', '2', // convert to stereo for max browser compatibility
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      'pipe:1'
+    );
+
+    const ffmpegProcess = spawn(ffmpegPath, ffmpegArgs);
+
+    // Pipe ffmpeg stdout directly into response
+    ffmpegProcess.stdout.pipe(res);
+
+    // Drain stderr — if it isn't consumed, a full OS pipe buffer (~64KB) blocks
+    // ffmpeg's writes and stalls the whole transcode. Surface any error output.
+    ffmpegProcess.stderr.on('data', (chunk) => {
+      console.error(`ffmpeg: ${chunk.toString().trim()}`);
+    });
+
+    // Cleanup process when client disconnects
+    req.on('close', () => {
+      console.log('🔌 Client closed transcoding stream. Killing ffmpeg process...');
+      ffmpegProcess.kill('SIGKILL');
+    });
+
+    ffmpegProcess.on('error', (err) => {
+      console.error('❌ ffmpeg spawn error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: `ffmpeg failed: ${err.message}` });
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ SABnzbd transcode failed:', err.message);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: `Transcode failed: ${err.message}` });
+    }
+  }
+});
 
 // 2. Download/Transfer Endpoint
 app.post('/api/download', async (req, res) => {

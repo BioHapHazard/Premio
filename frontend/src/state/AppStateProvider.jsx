@@ -18,6 +18,7 @@ import { useAccountState } from './useAccountState';
 import { useAiState } from './useAiState';
 import { useUiShell } from './useUiShell';
 import { useCloudSyncState } from './useCloudSyncState';
+import { useSabnzbd } from './useSabnzbd';
 
 // Central app-state context. AppStateProvider composes all 16 domain hooks and
 // exposes their values flattened on one context value; AppContent and the extracted
@@ -51,7 +52,8 @@ export function AppStateProvider({ children }) {
   const ai = useAiState();
   const ui = useUiShell();
   const cloudSync = useCloudSyncState();
-  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai, ...ui, ...cloudSync };
+  const sabnzbd = useSabnzbd();
+  const value = { ...profiles, ...settings, selectedTheme, setSelectedTheme, ...toast, ...retro, ...audio, ...metadata, ...continueWatching, ...ebook, ...library, ...watchlist, ...playlists, ...search, ...video, ...cloud, ...account, ...ai, ...ui, ...cloudSync, ...sabnzbd };
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 

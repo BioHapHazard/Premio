@@ -1,6 +1,7 @@
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 import { getEmulatorSystem } from '../lib/emulator';
+import { getIndexerShortName, guessCategory } from '../lib/format';
 
 // Metadata detail drawer: poster/backdrop hero, multi-source rating pills (TMDb /
 // Letterboxd / IMDb / RT / MC) with expandable TMDb + Letterboxd review panels,
@@ -19,23 +20,61 @@ export default function DetailDrawer({
   triggerDirectDownload,
   startStreaming,
   triggerDownload,
+  triggerSabDownload,
   isItemInLibrary,
   toggleLibraryItem,
   isInWatchlist,
   toggleWatchlist,
+  buildSabStreamUrl,
 }) {
   const {
     metadataDrawerItem, setMetadataDrawerItem, metadataDrawerCloseRef,
     category,
     reviewsOpen, setReviewsOpen, reviewsLoading, reviewsError, reviewsData,
     lbRating, lbReviewsOpen, setLbReviewsOpen, lbReviewsLoading, lbReviewsError, lbReviewsData,
+    usenetHandler, sabQueue, sabHistory,
+    sabnzbdAutoFallbacks, completedIndexers,
   } = useAppState();
 
   if (!metadataDrawerItem) return null;
 
   const meta = activeMeta || { title: metadataDrawerItem.title, overview: 'Loading details from TMDb...' };
-  const itemCat = metadataDrawerItem.category || category;
+  const itemCat = metadataDrawerItem.category || (metadataDrawerItem.isSabnzbd ? guessCategory(null, metadataDrawerItem.title) : category);
   const isVideo = itemCat === 'Movies' || itemCat === 'TV';
+
+  const isUsenetItem = metadataDrawerItem.nzbUrl !== undefined || metadataDrawerItem.isSabnzbd === true;
+
+  // Determine SABnzbd status
+  const getSabnzbdStatus = () => {
+    if (usenetHandler !== 'sabnzbd' || !isUsenetItem) return null;
+    const sTitle = metadataDrawerItem.title.toLowerCase();
+    const isMatch = (name) => {
+      if (!name) return false;
+      const n = name.toLowerCase();
+      return n.includes(sTitle) || sTitle.includes(n);
+    };
+
+    const qMatch = sabQueue.find(q => isMatch(q.name));
+    if (qMatch) return { status: 'downloading', percent: qMatch.percent, eta: qMatch.eta, nzoId: qMatch.nzoId };
+
+    const hMatch = sabHistory.find(h => isMatch(h.name));
+    if (hMatch) {
+      if (hMatch.status === 'Completed') {
+        return { status: 'completed', nzoId: hMatch.nzoId, resolvedVideoFile: hMatch.resolvedVideoFile, bytes: hMatch.bytes, name: hMatch.name };
+      } else if (hMatch.status === 'Failed') {
+        return { status: 'failed', nzoId: hMatch.nzoId };
+      } else {
+        return { status: 'processing', stage: hMatch.status, nzoId: hMatch.nzoId };
+      }
+    }
+    
+    if (metadataDrawerItem.cached) {
+      return { status: 'queued' };
+    }
+    return null;
+  };
+
+  const sabStatus = getSabnzbdStatus();
 
   return (
     <div className="player-modal-backdrop metadata-drawer-backdrop" onClick={() => setMetadataDrawerItem(null)} style={{ zIndex: 2800 }}>
@@ -134,6 +173,46 @@ export default function DetailDrawer({
                 {meta.runtime ? <span className="metadata-year-pill">{Math.floor(meta.runtime / 60)}h {meta.runtime % 60}m</span> : null}
                 {meta.trackCount && <span className="metadata-tracks-pill">{meta.trackCount} tracks</span>}
                 {meta.pageCount && <span className="metadata-tracks-pill">{meta.pageCount} pages</span>}
+                {(() => {
+                  if (!isUsenetItem || usenetHandler !== 'sabnzbd') return null;
+                  const cleanTitle = (metadataDrawerItem.title || '').trim().toLowerCase();
+                  const successfulIndexerName = completedIndexers && completedIndexers[cleanTitle];
+                  if (successfulIndexerName) {
+                    return (
+                      <span className="metadata-tracks-pill" title={`Downloaded from indexer: ${successfulIndexerName}`} style={{
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        color: '#10b981',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        textTransform: 'uppercase',
+                        fontWeight: '600',
+                      }}>
+                        <Icon name="check" size={10} /> Indexer: {getIndexerShortName(successfulIndexerName)}
+                      </span>
+                    );
+                  }
+
+                  const fallbackItem = sabnzbdAutoFallbacks && Object.values(sabnzbdAutoFallbacks).find(f => f.cleanTitle === cleanTitle);
+                  if (fallbackItem) {
+                    const currentIndexer = fallbackItem.indexersList[fallbackItem.currentIndex]?.name;
+                    if (currentIndexer) {
+                      return (
+                        <span className="metadata-tracks-pill" title={`Downloading from indexer: ${currentIndexer}`} style={{
+                          background: 'rgba(52, 211, 153, 0.1)',
+                          color: '#34d399',
+                          border: '1px solid rgba(52, 211, 153, 0.25)',
+                          textTransform: 'uppercase',
+                          fontWeight: '600',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}>
+                          <span className="spinner-micro white small" style={{ borderColor: '#34d399', borderTopColor: 'transparent', width: '8px', height: '8px', borderWidth: '1px' }}></span> {getIndexerShortName(currentIndexer)}
+                        </span>
+                      );
+                    }
+                  }
+                  return null;
+                })()}
               </div>
 
               {/* TMDb reviews panel (toggled from the TMDb rating pill) */}
@@ -216,14 +295,68 @@ export default function DetailDrawer({
               {meta.genre && <p className="metadata-genre-line"><Icon name="music" size={14} /> {meta.genre}</p>}
 
               <div className="metadata-actions">
-                {metadataDrawerItem.cached ? (() => {
+                {isUsenetItem && usenetHandler === 'sabnzbd' ? (() => {
                   const it = metadataDrawerItem;
                   const c = it.category || itemCat;
                   const isBook = c === 'Ebooks' || it.title.toLowerCase().endsWith('.epub') || it.title.toLowerCase().endsWith('.pdf');
                   const isAudio = c === 'Audiobooks' || c === 'Music';
                   const isRetro = c === 'Retro Games' || getEmulatorSystem(it.title);
                   const isDl = c === 'Software' || c === 'Other' || c === 'VST';
-                  const label = isBook ? 'Read' : isAudio ? 'Listen' : isRetro ? 'Play' : isDl ? 'Download' : 'Play';
+
+                  if (sabStatus?.status === 'completed' || (it.isSabnzbd === true && !sabStatus)) {
+                    const label = isBook ? 'Read' : isAudio ? 'Listen' : isRetro ? 'Play' : isDl ? 'Download' : 'Play NZB';
+                    const ic = isBook ? 'book' : isAudio ? 'headphones' : isRetro ? 'device-gamepad' : isDl ? 'download' : 'player-play';
+                    const onPlay = () => {
+                      setMetadataDrawerItem(null);
+                      if (isRetro) startRetroPlayer(it);
+                      else if (isBook) startEbookPlayer(it);
+                      else if (isAudio) startAudioPlayer(it);
+                      else {
+                        const playName = sabStatus?.name || it.title || it.name;
+                        const playBytes = sabStatus?.bytes || it.size;
+                        const playNzoId = sabStatus?.nzoId || it.nzoId;
+                        const playResolvedVideoFile = sabStatus?.resolvedVideoFile || (it.files && it.files[0]?.name);
+
+                        const streamLink = playNzoId ? buildSabStreamUrl(playNzoId) : it.link;
+
+                        const virtualTorrent = {
+                          title: playName,
+                          name: playName,
+                          link: streamLink,
+                          size: playBytes,
+                          isCloudFile: true,
+                          forceBrowser: false,
+                          isSabnzbd: true,
+                          nzoId: playNzoId,
+                          files: playResolvedVideoFile ? [{
+                            name: playResolvedVideoFile,
+                            link: streamLink,
+                            size: playBytes,
+                            type: 'video',
+                            id: playNzoId
+                          }] : (it.files || [])
+                        };
+                        startStreaming(virtualTorrent);
+                      }
+                    };
+                    return <button className="btn-primary hover-action" style={{ background: '#10b981', borderColor: '#10b981', boxShadow: '0 0 12px rgba(16, 185, 129, 0.35)' }} onClick={onPlay}><Icon name={ic} fill={ic === 'player-play'} size={16} /> {label}</button>;
+                  } else if (sabStatus?.status === 'downloading') {
+                    return <button className="btn-primary subtle hover-action" disabled style={{ opacity: 0.75 }}><Icon name="clock" size={16} /> Downloading ({sabStatus.percent}%)</button>;
+                  } else if (sabStatus?.status === 'processing') {
+                    return <button className="btn-primary subtle hover-action" disabled style={{ opacity: 0.75 }}><Icon name="clock" size={16} /> {sabStatus.stage}...</button>;
+                  } else if (sabStatus?.status === 'queued') {
+                    return <button className="btn-primary subtle hover-action" disabled style={{ opacity: 0.75 }}><Icon name="clock" size={16} /> Queued in SABnzbd</button>;
+                  } else {
+                    return <button className="btn-primary hover-action" style={{ background: 'linear-gradient(135deg, hsl(150, 80%, 35%), hsl(175, 80%, 30%))', borderColor: 'hsla(150, 80%, 50%, 0.5)' }} onClick={() => triggerSabDownload(it)}><Icon name="download" size={16} /> Download via SABnzbd</button>;
+                  }
+                })() : metadataDrawerItem.cached ? (() => {
+                  const it = metadataDrawerItem;
+                  const c = it.category || itemCat;
+                  const isBook = c === 'Ebooks' || it.title.toLowerCase().endsWith('.epub') || it.title.toLowerCase().endsWith('.pdf');
+                  const isAudio = c === 'Audiobooks' || c === 'Music';
+                  const isRetro = c === 'Retro Games' || getEmulatorSystem(it.title);
+                  const isDl = c === 'Software' || c === 'Other' || c === 'VST';
+                  const label = isBook ? 'Read' : isAudio ? 'Listen' : isRetro ? 'Play' : isDl ? 'Download' : 'Play PM';
                   const ic = isBook ? 'book' : isAudio ? 'headphones' : isRetro ? 'device-gamepad' : isDl ? 'download' : 'player-play';
                   const onPlay = () => {
                     setMetadataDrawerItem(null);

@@ -4,7 +4,7 @@ import Icon from '../Icon';
 // Playback-mode chooser for a folder/playlist: launch as an in-browser playlist or
 // AI-curate the track order. Reads pending-playlist + AI state from context;
 // receives handleLaunchBrowserPlaylist + handleAICuratePlaylist as props.
-export default function PlaylistChoiceModal({ handleLaunchBrowserPlaylist, handleAICuratePlaylist, downloadM3UPlaylist }) {
+export default function PlaylistChoiceModal({ handleLaunchBrowserPlaylist, handleAICuratePlaylist, downloadM3UPlaylist, handleLaunchTranscodedPlaylist }) {
   const {
     pendingPlaylistFiles, pendingPlaylistName, hasAviOrMkvInPending,
     pendingItemId, pendingItemType,
@@ -74,6 +74,32 @@ export default function PlaylistChoiceModal({ handleLaunchBrowserPlaylist, handl
             
             <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
               
+              {/* Option 0.5: Play Transcoded (ffmpeg on-the-fly) if SABnzbd local file */}
+              {pendingPlaylistFiles.some(f => f.link && f.link.includes('/api/sab/stream')) && (
+                <button 
+                  type="button" 
+                  className="action-btn success"
+                  onClick={() => handleLaunchTranscodedPlaylist(pendingPlaylistFiles, pendingPlaylistName)}
+                  style={{ 
+                    width: '100%', 
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    padding: '12px',
+                    fontWeight: 'bold',
+                    border: 'none',
+                    cursor: 'pointer',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(16, 185, 129, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    color: '#ffffff'
+                  }}
+                >
+                  <Icon name="player-play" fill size={14} /> Play Transcoded in Browser (Zero points)
+                </button>
+              )}
+
               {/* Option 1: Download M3U Playlist/File (Recommended for VLC) */}
               <button 
                 type="button" 

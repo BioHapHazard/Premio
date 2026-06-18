@@ -1,6 +1,6 @@
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
-import { formatBytes, hashHue } from '../lib/format';
+import { formatBytes, hashHue, guessCategory } from '../lib/format';
 import { getEmulatorSystem } from '../lib/emulator';
 import { keyActivate } from '../lib/a11y';
 
@@ -191,12 +191,12 @@ export default function LibraryPanel({
                 {filteredLibraryList.map((item, idx) => {
                   const meta = getMetadata(item);
                   const poster = meta?.poster || item.coverurl;
-                  const cat = item.category || 'Other';
+                  const cat = item.category || (item.isSabnzbd ? guessCategory(null, item.title) : 'Other');
                   const typeIcon = cat === 'TV' ? 'device-tv' : (cat === 'Music' ? 'music' : (cat === 'Audiobooks' ? 'headphones' : (cat === 'Ebooks' ? 'book' : (cat === 'Retro Games' ? 'device-gamepad' : ((cat === 'Software' || cat === 'VST') ? 'app' : 'movie')))));
                   const hue = hashHue(item.title);
                   const playItem = (e) => {
                     e.stopPropagation();
-                    if (!item.cached) { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); return; }
+                    if (!item.cached && !item.isSabnzbd) { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); return; }
                     if (cat === 'Retro Games' || getEmulatorSystem(item.title)) startRetroPlayer(item);
                     else if (cat === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) startEbookPlayer(item);
                     else if (cat === 'Audiobooks' || cat === 'Music') startAudioPlayer(item);
@@ -215,7 +215,7 @@ export default function LibraryPanel({
                         </div>
                       </div>
                       <div className="lib-title" title={item.title}>{meta?.title || item.title}</div>
-                      <div className="lib-sub">{meta?.year || item.category}</div>
+                      <div className="lib-sub">{meta?.year || cat}</div>
                     </div>
                   );
                 })}
