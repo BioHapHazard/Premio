@@ -194,3 +194,51 @@ export function guessCategory(sabCat, title = '') {
 
   return 'Other';
 }
+
+// Normalize a release/file name for fuzzy matching: drop extension, lowercase,
+// replace non-alphanumerics with spaces, collapse whitespace.
+export function cleanNameForMatch(name) {
+  if (!name) return '';
+  return name.toLowerCase()
+    .replace(/\.[a-z0-9]{3,4}$/i, '') // remove extension
+    .replace(/[^a-z0-9]/g, ' ')       // replace non-alphanumeric with spaces
+    .replace(/\s+/g, ' ')             // collapse spaces
+    .trim();
+}
+
+// Find the Google Drive file that best matches a completed release, used to
+// restore playback when a local file was deleted. Tries exact, substring, then
+// word-subset matching. NOTE: prefer a stored nzoId→driveFileId mapping when
+// available; this name-based match is the fallback for items not in that registry.
+export function findGdriveMatch(gdriveFilesList, releaseName, resolvedVideoFile = '') {
+  if (!gdriveFilesList || !releaseName) return null;
+  const cleanRelease = cleanNameForMatch(releaseName);
+  const cleanVideoFile = resolvedVideoFile ? cleanNameForMatch(resolvedVideoFile) : '';
+
+  // 1. Try exact clean video-file match first
+  for (const file of gdriveFilesList) {
+    const cleanFile = cleanNameForMatch(file.name);
+    if (cleanVideoFile && cleanFile === cleanVideoFile) {
+      return file;
+    }
+  }
+
+  // 2. Try substring match (file name is part of release name or vice versa)
+  for (const file of gdriveFilesList) {
+    const cleanFile = cleanNameForMatch(file.name);
+    if (cleanFile && cleanRelease && (cleanRelease.includes(cleanFile) || cleanFile.includes(cleanRelease))) {
+      return file;
+    }
+  }
+
+  // 3. Fallback: release name contains all words (>2 chars) of the file name
+  for (const file of gdriveFilesList) {
+    const cleanFile = cleanNameForMatch(file.name);
+    const fileWords = cleanFile.split(' ').filter(w => w.length > 2);
+    if (fileWords.length > 0 && fileWords.every(word => cleanRelease.includes(word))) {
+      return file;
+    }
+  }
+
+  return null;
+}

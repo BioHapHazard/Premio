@@ -74,8 +74,8 @@ export default function PlaylistChoiceModal({ handleLaunchBrowserPlaylist, handl
             
             <div className="modal-footer" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px', width: '100%' }}>
               
-              {/* Option 0.5: Play Transcoded (ffmpeg on-the-fly) if SABnzbd local file */}
-              {pendingPlaylistFiles.some(f => f.link && f.link.includes('/api/sab/stream')) && (
+              {/* Option 0.5: Play Transcoded (ffmpeg on-the-fly) if SABnzbd local file or GDrive file */}
+              {pendingPlaylistFiles.some(f => f.link && (f.link.includes('/api/sab/stream') || f.link.includes('/api/gdrive/stream'))) && (
                 <button 
                   type="button" 
                   className="action-btn success"

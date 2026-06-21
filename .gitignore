@@ -75,3 +75,9 @@ Thumbs.db
 
 # Claude Code local agent/session data
 .claude/
+
+# Google Drive credentials & local upload state
+gdrive_credentials.json
+gdrive_tokens.json
+gdrive_uploads.json
+

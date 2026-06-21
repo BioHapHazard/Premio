@@ -43,6 +43,14 @@ export function useSettingsState() {
   const [userSabCompleteDir, setUserSabCompleteDir] = useState(() => localStorage.getItem('premio_user_sab_complete_dir') || '');
   const [usenetHandler, setUsenetHandler] = useState(() => localStorage.getItem('premio_usenet_handler') || 'premiumize');
   const [showSabnzbdGuide, setShowSabnzbdGuide] = useState(false);
+  const [gdriveAutoArchive, setGdriveAutoArchive] = useState(() => localStorage.getItem('premio_gdrive_auto_archive') === 'true');
+  const [gdriveSyncEnabled, setGdriveSyncEnabled] = useState(() => localStorage.getItem('premio_gdrive_sync_enabled') === 'true');
+  const [gdriveClientId, setGdriveClientId] = useState(() => localStorage.getItem('premio_gdrive_client_id') || '');
+  const [gdriveClientSecret, setGdriveClientSecret] = useState(() => localStorage.getItem('premio_gdrive_client_secret') || '');
+  const [showGdriveGuide, setShowGdriveGuide] = useState(false);
+  const [gdriveConnected, setGdriveConnected] = useState(false);
+  const [gdriveFolderName, setGdriveFolderName] = useState(() => localStorage.getItem('premio_gdrive_folder_name') || 'Premio');
+  const [gdriveFiles, setGdriveFiles] = useState([]);
 
   // First-run guidance for the bring-your-own-key model: once the legal notice is
   // dismissed, if no Premiumize key is set and onboarding hasn't been completed,
@@ -82,5 +90,13 @@ export function useSettingsState() {
     userSabCompleteDir, setUserSabCompleteDir,
     usenetHandler, setUsenetHandler,
     showSabnzbdGuide, setShowSabnzbdGuide,
+    gdriveAutoArchive, setGdriveAutoArchive,
+    gdriveSyncEnabled, setGdriveSyncEnabled,
+    gdriveClientId, setGdriveClientId,
+    gdriveClientSecret, setGdriveClientSecret,
+    showGdriveGuide, setShowGdriveGuide,
+    gdriveConnected, setGdriveConnected,
+    gdriveFolderName, setGdriveFolderName,
+    gdriveFiles, setGdriveFiles,
   };
 }

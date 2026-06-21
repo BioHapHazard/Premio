@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
-import { formatBytes, getIndexerShortName, guessCategory } from '../lib/format';
+import { formatBytes, getIndexerShortName, guessCategory, findGdriveMatch } from '../lib/format';
 
 // Active Downloads / Transfer Manager tab: lists Premiumize transfers or SABnzbd
 // downloads with progress tracking and cancel/refresh/play/deletion actions.
@@ -14,7 +14,10 @@ export default function TransfersPanel({
   startStreaming,
   buildSabStreamUrl,
   isItemInLibrary,
-  toggleLibraryItem
+  toggleLibraryItem,
+  triggerGdriveUpload,
+  gdriveUploads,
+  gdriveConnected
 }) {
   const { 
     transfers, 
@@ -30,6 +33,7 @@ export default function TransfersPanel({
     completedIndexers,
     indexerStats,
     resetIndexerStats,
+    gdriveFiles,
   } = useAppState();
 
   const isSabConfigured = userSabUrl && userSabKey;
@@ -295,6 +299,11 @@ export default function TransfersPanel({
                     const isFailed = item.status === 'Failed';
                     const isPostProcessing = ['Verifying', 'Repairing', 'Unpacking'].includes(item.status);
 
+                    // Check if we have a match in the scanned Google Drive files list
+                    const upload = gdriveUploads && gdriveUploads[item.nzoId];
+                    const gdriveMatch = findGdriveMatch(gdriveFiles, item.name, item.resolvedVideoFile);
+                    const driveFileId = upload?.driveFileId || (gdriveMatch ? gdriveMatch.id : null);
+
                     // Build a virtual torrent object to pass to startStreaming
                     const virtualTorrent = {
                       title: item.name,
@@ -305,6 +314,7 @@ export default function TransfersPanel({
                       forceBrowser: false,
                       isSabnzbd: true,
                       nzoId: item.nzoId,
+                      gdriveFileId: driveFileId || undefined,
                       category: guessCategory(item.category, item.name),
                       files: item.resolvedVideoFile ? [{
                         name: item.resolvedVideoFile,
@@ -358,7 +368,7 @@ export default function TransfersPanel({
 
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem', borderTop: '1px solid var(--glass-border)', paddingTop: '0.75rem' }}>
                           <div style={{ display: 'flex', gap: '8px' }}>
-                            {isFinished && item.resolvedVideoFile && (
+                            {isFinished && (item.resolvedVideoFile || driveFileId) && (
                               <button 
                                 className="btn-primary subtle"
                                 style={{ fontSize: '0.8rem', padding: '4px 10px', height: '28px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
@@ -393,6 +403,56 @@ export default function TransfersPanel({
                                 );
                               })()
                             )}
+
+                            {isFinished && gdriveConnected && (() => {
+                              const upload = gdriveUploads && gdriveUploads[item.nzoId];
+                              if (upload) {
+                                if (upload.status === 'uploading') {
+                                  return (
+                                    <button 
+                                      className="btn-primary subtle"
+                                      disabled
+                                      style={{ fontSize: '0.8rem', padding: '4px 10px', height: '28px', display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(255, 152, 0, 0.15)', borderColor: 'rgba(255, 152, 0, 0.3)', color: '#ff9800' }}
+                                    >
+                                      <span className="spinner-micro white small" style={{ borderLeftColor: '#ff9800' }}></span>
+                                      Uploading ({upload.progress}%)
+                                    </button>
+                                  );
+                                }
+                                if (upload.status === 'completed') {
+                                  return (
+                                    <button 
+                                      className="btn-primary subtle"
+                                      disabled
+                                      style={{ fontSize: '0.8rem', padding: '4px 10px', height: '28px', display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)', color: '#10b981' }}
+                                    >
+                                      <Icon name="check" size={12} /> Uploaded
+                                    </button>
+                                  );
+                                }
+                                if (upload.status === 'failed') {
+                                  return (
+                                    <button 
+                                      className="btn-primary subtle"
+                                      style={{ fontSize: '0.8rem', padding: '4px 10px', height: '28px', display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(244, 67, 54, 0.15)', borderColor: 'rgba(244, 67, 54, 0.3)', color: '#f44336' }}
+                                      onClick={() => triggerGdriveUpload && triggerGdriveUpload(item.nzoId)}
+                                      title={`Click to retry. Error: ${upload.error}`}
+                                    >
+                                      <Icon name="bolt" size={12} /> Retry Upload
+                                    </button>
+                                  );
+                                }
+                              }
+                              return (
+                                <button 
+                                  className="btn-primary subtle"
+                                  style={{ fontSize: '0.8rem', padding: '4px 10px', height: '28px', display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(33, 150, 243, 0.15)', borderColor: 'rgba(33, 150, 243, 0.3)', color: '#2196f3' }}
+                                  onClick={() => triggerGdriveUpload && triggerGdriveUpload(item.nzoId)}
+                                >
+                                  <Icon name="upload" size={12} /> Upload
+                                </button>
+                              );
+                            })()}
                           </div>
                           <button 
                             className="danger-btn text-only"

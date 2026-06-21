@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 import { formatBytes, matchEpisode, parseShowDetails } from '../lib/format';
@@ -41,10 +41,12 @@ export default function VideoPlayerModal({
 
   const videoRef = useRef(null);
 
-  if (!activePlayerTorrent) return null;
-
+  // Stream-type flags — computed from context and null-safe, so they're fine to
+  // evaluate before the early return below (the useEffect deps reference them).
   const isLocalUsenet = selectedVideoFile?.link?.includes('/api/sab/stream') || selectedVideoFile?.link?.includes('/api/sab/transcode');
-  const isPlayingTranscoded = selectedVideoFile?.link?.includes('/api/sab/transcode');
+  const isGdrive = selectedVideoFile?.link?.includes('/api/gdrive/stream') || selectedVideoFile?.link?.includes('/api/gdrive/transcode');
+  const isLocalOrGdrive = isLocalUsenet || isGdrive;
+  const isPlayingTranscoded = selectedVideoFile?.link?.includes('/api/sab/transcode') || selectedVideoFile?.link?.includes('/api/gdrive/transcode');
 
   const toggleTranscoding = () => {
     if (!videoRef.current || !selectedVideoFile) return;
@@ -55,16 +57,17 @@ export default function VideoPlayerModal({
     if (isPlayingTranscoded) {
       // Switch to native stream
       try {
-        const url = new URL(selectedVideoFile.link);
+        const url = new URL(selectedVideoFile.link, window.location.origin);
         const ss = parseFloat(url.searchParams.get('ss') || '0');
         const absoluteTime = ss + currentTime;
         
         // Remove transcode route, restore stream route
         const nativeLink = selectedVideoFile.link
-          .replace('/api/sab/transcode', '/api/sab/stream');
+          .replace('/api/sab/transcode', '/api/sab/stream')
+          .replace('/api/gdrive/transcode', '/api/gdrive/stream');
         
         // Remove ss parameter from native link
-        const nativeUrl = new URL(nativeLink);
+        const nativeUrl = new URL(nativeLink, window.location.origin);
         nativeUrl.searchParams.delete('ss');
         
         setResumeTime(absoluteTime);
@@ -80,10 +83,12 @@ export default function VideoPlayerModal({
     } else {
       // Switch to transcoded stream
       try {
-        const url = new URL(selectedVideoFile.link);
+        const url = new URL(selectedVideoFile.link, window.location.origin);
         url.searchParams.set('ss', Math.round(currentTime).toString());
         
-        const transcodedLink = url.toString().replace('/api/sab/stream', '/api/sab/transcode');
+        const transcodedLink = url.toString()
+          .replace('/api/sab/stream', '/api/sab/transcode')
+          .replace('/api/gdrive/stream', '/api/gdrive/transcode');
         
         setSelectedVideoFile({
           ...selectedVideoFile,
@@ -94,6 +99,112 @@ export default function VideoPlayerModal({
       } catch (err) {
         console.error('Error switching to transcoded stream:', err);
       }
+    }
+  };
+
+  const [audioTracks, setAudioTracks] = useState([]);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState('');
+
+  // Fetch audio tracks if it is local Usenet file or Google Drive file
+  useEffect(() => {
+    if ((!isLocalUsenet && !isGdrive) || !selectedVideoFile?.link) {
+      setAudioTracks([]);
+      setSelectedAudioTrack('');
+      return;
+    }
+
+    const fetchTracks = async () => {
+      try {
+        const urlObj = new URL(selectedVideoFile.link, window.location.origin);
+        let queryUrl = '';
+
+        if (isGdrive) {
+          const fileId = urlObj.searchParams.get('fileId');
+          if (!fileId) return;
+          queryUrl = `/api/gdrive/audio-tracks?fileId=${encodeURIComponent(fileId)}`;
+        } else {
+          const nzoId = urlObj.searchParams.get('nzoId');
+          if (!nzoId) return;
+
+          // Fetch using the same credentials that are embedded in the stream URL
+          const sabUrl = urlObj.searchParams.get('sabUrl') || '';
+          const sabKey = urlObj.searchParams.get('sabKey') || '';
+          const sabCompleteDir = urlObj.searchParams.get('sabCompleteDir') || '';
+
+          queryUrl = `/api/sab/audio-tracks?nzoId=${encodeURIComponent(nzoId)}`;
+          if (sabUrl) queryUrl += `&sabUrl=${encodeURIComponent(sabUrl)}`;
+          if (sabKey) queryUrl += `&sabKey=${encodeURIComponent(sabKey)}`;
+          if (sabCompleteDir) queryUrl += `&sabCompleteDir=${encodeURIComponent(sabCompleteDir)}`;
+        }
+
+        const res = await fetch(queryUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.status === 'success' && data.tracks) {
+          setAudioTracks(data.tracks);
+          
+          // Parse current audioTrack if already playing a transcoded stream with a mapped track
+          const activeTrack = urlObj.searchParams.get('audioTrack') || '';
+          if (activeTrack) {
+            setSelectedAudioTrack(activeTrack);
+          } else {
+            setSelectedAudioTrack('');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load audio tracks:', err);
+      }
+    };
+
+    fetchTracks();
+  }, [isLocalUsenet, isGdrive, selectedVideoFile?.link]);
+
+  // Early return AFTER all hooks — React requires the hook order to be identical
+  // on every render. (Previously this sat above useState/useEffect, so opening the
+  // player changed the hook count and crashed the whole app with no error boundary.)
+  if (!activePlayerTorrent) return null;
+
+  const handleAudioTrackChange = (trackIndex) => {
+    if (!videoRef.current || !selectedVideoFile) return;
+
+    const video = videoRef.current;
+    const currentTime = video.currentTime;
+    
+    // Calculate the absolute position in the video
+    let seekOffset = 0;
+    try {
+      const url = new URL(selectedVideoFile.link, window.location.origin);
+      const ss = parseFloat(url.searchParams.get('ss') || '0');
+      seekOffset = ss + currentTime;
+    } catch (e) {
+      seekOffset = currentTime;
+    }
+
+    setSelectedAudioTrack(trackIndex);
+
+    try {
+      const url = new URL(selectedVideoFile.link, window.location.origin);
+      url.searchParams.set('ss', Math.round(seekOffset).toString());
+      
+      if (trackIndex) {
+        url.searchParams.set('audioTrack', trackIndex);
+      } else {
+        url.searchParams.delete('audioTrack');
+      }
+
+      // Convert to transcode route if not already
+      const transcodedLink = url.toString()
+        .replace('/api/sab/stream', '/api/sab/transcode')
+        .replace('/api/gdrive/stream', '/api/gdrive/transcode');
+
+      triggerToast(`Switching audio track...`, 'info');
+      
+      setSelectedVideoFile({
+        ...selectedVideoFile,
+        link: transcodedLink
+      });
+    } catch (err) {
+      console.error('Error changing audio track:', err);
     }
   };
 
@@ -140,19 +251,35 @@ export default function VideoPlayerModal({
                 onEnded={handleVideoEnded}
                 onSeeking={(e) => {
                   const video = e.target;
-                  const currentSrc = video.src || '';
-                  if (currentSrc.includes('/api/sab/transcode')) {
-                    const url = new URL(currentSrc);
-                    const currentSs = parseFloat(url.searchParams.get('ss') || '0');
-                    const targetTime = video.currentTime;
-                    // If seek is significant (> 3 seconds), restart transcode stream
-                    if (Math.abs(targetTime - currentSs) > 3) {
-                      handleTranscodeSeek(targetTime);
+                  const currentSrc = video.currentSrc || video.src || '';
+                  if (currentSrc.includes('/api/sab/transcode') || currentSrc.includes('/api/gdrive/transcode')) {
+                    try {
+                      const url = new URL(currentSrc, window.location.origin);
+                      const currentSs = parseFloat(url.searchParams.get('ss') || '0');
+                      const targetTime = video.currentTime;
+                      // If seek is significant (> 3 seconds), restart transcode stream
+                      if (Math.abs(targetTime - currentSs) > 3) {
+                        handleTranscodeSeek(targetTime);
+                      }
+                    } catch (urlErr) {
+                      console.error('Failed to parse currentSrc URL in onSeeking:', urlErr);
                     }
                   }
                 }}
                 className="main-video-player"
                 crossOrigin="anonymous" // Required to inject blob subtitle tracks
+                onError={(e) => {
+                  const video = e.target;
+                  const error = video.error;
+                  console.warn("🎬 Video element error:", error);
+                  
+                  // Code 4 represents MEDIA_ERR_SRC_NOT_SUPPORTED.
+                  if (error && error.code === 4 && isLocalOrGdrive && !isPlayingTranscoded) {
+                    console.log("⚠️ Native playback not supported for this video. Attempting automatic transcoding fallback...");
+                    triggerToast("Unsupported codec detected. Automatically starting transcoding stream...", "info");
+                    toggleTranscoding();
+                  }
+                }}
               >
                 <source src={selectedVideoFile.link} type="video/mp4" />
                 <source src={selectedVideoFile.link} type="video/webm" />
@@ -288,19 +415,26 @@ export default function VideoPlayerModal({
                 </div>
               )}
 
-              {isLocalUsenet && (
+              {isLocalOrGdrive && (
                 <div className="audio-notice-box" style={{ borderColor: 'var(--color-primary)' }}>
-                  <span className="badge-notice" style={{ backgroundColor: 'var(--color-primary)' }}>ℹ Local Playback Transcoding</span>
+                  <span className="badge-notice" style={{ backgroundColor: 'var(--color-primary)' }}>ℹ Playback Transcoding</span>
                   <p>
                     If this video shows a black screen, does not start, or lacks audio, it likely uses codecs unsupported by your browser (e.g. HEVC/H.265 video or AC3/DTS audio). Use the <strong>Transcode Stream (ffmpeg)</strong> button below to transcode on-the-fly.
                   </p>
                 </div>
               )}
 
-              <div className="audio-notice-box">
-                <span className="badge-notice">ℹ Multi-Language Audio Info</span>
-                <p>Web browsers do not support switching audio tracks for raw video streams. To play this file in other languages or switch tracks, click the orange <strong>Open in VLC Player</strong> button below!</p>
-              </div>
+              {isLocalOrGdrive ? (
+                <div className="audio-notice-box" style={{ borderColor: 'var(--color-primary)' }}>
+                  <span className="badge-notice" style={{ backgroundColor: 'var(--color-primary)' }}>ℹ Multi-Language Audio Info</span>
+                  <p>To switch audio tracks or play this file in another language, enable <strong>Transcode Stream (ffmpeg)</strong>. An audio track selector will appear next to the transcoding button below!</p>
+                </div>
+              ) : (
+                <div className="audio-notice-box">
+                  <span className="badge-notice">ℹ Multi-Language Audio Info</span>
+                  <p>Web browsers do not support switching audio tracks for raw video streams. To play this file in other languages or switch tracks, click the orange <strong>Open in VLC Player</strong> button below!</p>
+                </div>
+              )}
 
             </div>
 
@@ -508,15 +642,15 @@ export default function VideoPlayerModal({
 
               {/* Open in VLC Link */}
               <a
-                href={selectedVideoFile.link.replace(/^http/, 'vlc')}
+                href={selectedVideoFile?.link ? selectedVideoFile.link.replace(/^http/, 'vlc') : '#'}
                 className="vlc-stream-btn"
                 title="Open this direct network stream inside your VLC Media Player"
               >
                  Open in VLC Player
               </a>
 
-              {/* Force Transcode (ffmpeg on-the-fly) for local SABnzbd files */}
-              {isLocalUsenet && (
+              {/* Force Transcode (ffmpeg on-the-fly) for local SABnzbd files or GDrive files */}
+              {isLocalOrGdrive && (
                 <button
                   type="button"
                   className="copy-url-btn"
@@ -536,6 +670,39 @@ export default function VideoPlayerModal({
                   <Icon name={isPlayingTranscoded ? "check" : "bolt"} size={14} />
                   {isPlayingTranscoded ? 'Playing Transcoded (ffmpeg)' : 'Transcode Stream (ffmpeg)'}
                 </button>
+              )}
+
+              {/* Audio Track Selector for transcoded local streams or GDrive streams */}
+              {isLocalOrGdrive && isPlayingTranscoded && audioTracks.length > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <label htmlFor="audio-track-select" style={{ fontSize: '0.85rem', opacity: 0.8, display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-secondary)' }}>
+                    <Icon name="volume_up" size={14} /> Audio:
+                  </label>
+                  <select
+                    id="audio-track-select"
+                    value={selectedAudioTrack}
+                    onChange={(e) => handleAudioTrackChange(e.target.value)}
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid var(--glass-border)',
+                      borderRadius: '4px',
+                      color: 'var(--text-primary)',
+                      padding: '0 12px',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                      cursor: 'pointer',
+                      height: '38px',
+                      lineHeight: '38px'
+                    }}
+                  >
+                    <option value="" style={{ background: '#181818', color: 'white' }}>Default Track</option>
+                    {audioTracks.map((track) => (
+                      <option key={track.index} value={track.index} style={{ background: '#181818', color: 'white' }}>
+                        {track.title ? `${track.title} (${track.language})` : `Track ${track.index} (${track.language})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
 
               {/* Copy Stream Link */}

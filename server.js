@@ -6,7 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -1418,6 +1418,886 @@ const getLargestVideoFile = (dirPath) => {
   return largestFile;
 };
 
+
+// --- Google Drive Helpers and Endpoints ---
+let activeUploads = {};
+if (fs.existsSync('gdrive_uploads.json')) {
+  try {
+    activeUploads = JSON.parse(fs.readFileSync('gdrive_uploads.json', 'utf8') || '{}');
+  } catch (err) {
+    console.error('Failed to load gdrive_uploads.json:', err.message);
+  }
+}
+
+const saveActiveUploads = () => {
+  try {
+    fs.writeFileSync('gdrive_uploads.json', JSON.stringify(activeUploads, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save gdrive_uploads.json:', err.message);
+  }
+};
+
+const getGdriveFolderName = () => {
+  if (fs.existsSync('gdrive_credentials.json')) {
+    try {
+      const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+      return creds.folderName || 'Premio';
+    } catch (e) {
+      // fallback
+    }
+  }
+  return 'Premio';
+};
+
+const getGdriveAccessToken = async () => {
+  if (!fs.existsSync('gdrive_credentials.json')) {
+    throw new Error('Google Drive is not connected.');
+  }
+  const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+  if (!creds.refreshToken) {
+    throw new Error('Google Drive is not connected.');
+  }
+
+  if (creds.accessToken && creds.expiresAt && (creds.expiresAt - Date.now() > 60000)) {
+    return creds.accessToken;
+  }
+
+  console.log('🔄 Google Drive access token expired or missing. Refreshing...');
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const params = new URLSearchParams();
+  params.append('client_id', creds.clientId);
+  params.append('client_secret', creds.clientSecret);
+  params.append('refresh_token', creds.refreshToken);
+  params.append('grant_type', 'refresh_token');
+
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to refresh Google Drive token: ${errText}`);
+  }
+
+  const data = await res.json();
+  creds.accessToken = data.access_token;
+  creds.expiresAt = Date.now() + (data.expires_in * 1000);
+  fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+  return creds.accessToken;
+};
+
+// SECURITY: the /api/gdrive/* stream, transcode and audio-tracks routes are
+// unauthenticated GETs intended for a localhost/LAN deployment only. They serve
+// any file the stored OAuth token can reach (drive.file scope = files Premio
+// created). Do NOT expose them publicly without an auth layer in front.
+
+// Google Drive search queries wrap string values in single quotes; backslash and
+// single-quote must be escaped or the query breaks (and could be manipulated).
+const escapeDriveQueryValue = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+// Drive file ids are opaque [A-Za-z0-9_-] tokens. Validate before interpolating
+// into the googleapis file URL so a crafted id can't inject path/query segments.
+const isValidDriveFileId = (id) => typeof id === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(id);
+
+// Permanently deletes a single Drive file by id. Treats 404 (already gone) as
+// success since the end state — file not on Drive — is what the caller wants.
+const deleteGdriveFile = async (accessToken, fileId) => {
+  if (!isValidDriveFileId(fileId)) return false;
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  });
+  if (!res.ok && res.status !== 404) {
+    const errText = await res.text();
+    throw new Error(`Drive delete failed (HTTP ${res.status}): ${errText}`);
+  }
+  return true;
+};
+
+const findGdriveFile = async (accessToken, fileName, parentFolderId = null) => {
+  let query = `name='${escapeDriveQueryValue(fileName)}' and trashed=false`;
+  if (parentFolderId) {
+    query += ` and '${parentFolderId}' in parents`;
+  }
+  const encodedQuery = encodeURIComponent(query);
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodedQuery}&fields=files(id,name)`;
+  const res = await fetch(searchUrl, {
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Google Drive search failed (HTTP ${res.status}): ${errText}`);
+  }
+  const data = await res.json();
+  return data.files && data.files.length > 0 ? data.files[0] : null;
+};
+
+const findOrCreateGdriveFolder = async (accessToken, folderName, parentId = null) => {
+  let query = `name='${escapeDriveQueryValue(folderName)}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  if (parentId) {
+    query += ` and '${parentId}' in parents`;
+  }
+  const encodedQuery = encodeURIComponent(query);
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodedQuery}&fields=files(id,name)`;
+  const searchRes = await fetch(searchUrl, {
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  });
+  if (!searchRes.ok) {
+    const errText = await searchRes.ok ? '' : await searchRes.text();
+    throw new Error(`Google Drive folder search failed: ${errText}`);
+  }
+  const searchData = await searchRes.json();
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  console.log(`📁 Creating folder "${folderName}" on Google Drive...`);
+  const createUrl = 'https://www.googleapis.com/drive/v3/files';
+  const body = {
+    name: folderName,
+    mimeType: 'application/vnd.google-apps.folder'
+  };
+  if (parentId) {
+    body.parents = [parentId];
+  }
+  const createRes = await fetch(createUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    throw new Error(`Failed to create Google Drive folder: ${errText}`);
+  }
+  const createData = await createRes.json();
+  return createData.id;
+};
+
+const listGdriveFolderFiles = async (accessToken, folderId) => {
+  const query = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size)&pageSize=1000`;
+  const res = await fetch(listUrl, {
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to list Google Drive files: ${errText}`);
+  }
+  const data = await res.json();
+  return data.files || [];
+};
+
+// Video + sidecar extensions we archive to Drive. (Video list mirrors
+// getLargestVideoFile.) Junk like .par2/.rar/.sfv/.nzb is intentionally skipped.
+const GDRIVE_VIDEO_EXTS = ['mp4', 'mkv', 'avi', 'ts', 'webm', 'mov', 'm4v'];
+const GDRIVE_SIDECAR_EXTS = ['srt', 'sub', 'idx', 'ass', 'ssa', 'vtt', 'nfo'];
+
+// Collect every video + sidecar file under a completed release path so a
+// multi-file release (e.g. a season pack with subtitles) is fully archived
+// before any local deletion. Recursive, skips symlinks, depth-capped.
+const getUploadableReleaseFiles = (rootPath) => {
+  const out = [];
+  const MAX_DEPTH = 16;
+  const walk = (p, depth) => {
+    if (depth > MAX_DEPTH) return;
+    let st;
+    try { st = fs.lstatSync(p); } catch { return; }
+    if (st.isSymbolicLink()) return;
+    if (st.isDirectory()) {
+      let entries = [];
+      try { entries = fs.readdirSync(p); } catch { return; }
+      for (const e of entries) walk(path.join(p, e), depth + 1);
+    } else if (st.isFile()) {
+      const ext = path.extname(p).toLowerCase().slice(1);
+      const isVideo = GDRIVE_VIDEO_EXTS.includes(ext);
+      const isSidecar = GDRIVE_SIDECAR_EXTS.includes(ext);
+      if (isVideo || isSidecar) out.push({ path: p, name: path.basename(p), size: st.size, isVideo });
+    }
+  };
+  walk(rootPath, 0);
+  return out;
+};
+
+// Core single-file resumable upload. Returns the Drive file id; reports per-chunk
+// byte deltas via onProgress so a caller can aggregate progress across files.
+const uploadSingleFileToGdrive = async (accessToken, filePath, filename, parentFolderId, onProgress) => {
+  const totalSize = fs.statSync(filePath).size;
+
+  const initRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': 'application/octet-stream'
+    },
+    body: JSON.stringify({ name: filename, parents: [parentFolderId] })
+  });
+  if (!initRes.ok) {
+    throw new Error(`Failed to initiate Google Drive upload session: ${await initRes.text()}`);
+  }
+  const uploadUrl = initRes.headers.get('Location');
+  if (!uploadUrl) throw new Error('Google Drive API did not return an upload Location header.');
+
+  console.log(`📤 Uploading "${filename}" (${totalSize} bytes) to Google Drive...`);
+
+  const progressTracker = new Transform({
+    transform(chunk, encoding, callback) {
+      if (onProgress) onProgress(chunk.length);
+      callback(null, chunk);
+    }
+  });
+  const trackedStream = fs.createReadStream(filePath).pipe(progressTracker);
+
+  // 0-byte files would produce an invalid "bytes 0--1/0" range header.
+  const headers = { 'Content-Length': totalSize.toString() };
+  if (totalSize > 0) headers['Content-Range'] = `bytes 0-${totalSize - 1}/${totalSize}`;
+
+  const uploadRes = await fetch(uploadUrl, { method: 'PUT', headers, body: trackedStream, duplex: 'half' });
+  if (!uploadRes.ok) {
+    throw new Error(`Google Drive upload failed (HTTP ${uploadRes.status}): ${await uploadRes.text()}`);
+  }
+  return (await uploadRes.json()).id;
+};
+
+// Upload an entire completed release (all videos + sidecars) to Drive under a
+// single nzoId, tracking aggregate progress. The local folder is deleted ONLY
+// after every file uploads successfully (when autoArchive is on); a failure
+// leaves all local files intact. driveFileId points at the largest video so
+// playback resolution keeps working.
+const uploadReleaseToGdrive = async (accessToken, storagePath, parentFolderId, nzoId, autoArchive) => {
+  const rootStats = fs.statSync(storagePath);
+  const files = rootStats.isDirectory()
+    ? getUploadableReleaseFiles(storagePath)
+    : [{ path: storagePath, name: path.basename(storagePath), size: rootStats.size, isVideo: true }];
+
+  if (files.length === 0) {
+    activeUploads[nzoId] = { status: 'failed', progress: 0, filename: path.basename(storagePath), error: 'No video or subtitle files found to upload.' };
+    saveActiveUploads();
+    return;
+  }
+
+  const videos = files.filter(f => f.isVideo);
+  const primary = (videos.length ? videos : files).reduce((a, b) => (b.size > a.size ? b : a));
+  const totalBytes = files.reduce((s, f) => s + f.size, 0) || 1;
+
+  // Resume support: files uploaded in a prior attempt are recorded in driveFiles
+  // (persisted to gdrive_uploads.json, so this survives a server restart). Skip
+  // re-uploading them so a retry after a partial failure never creates Drive
+  // duplicates. Keyed by basename — all files land flat in the Premio folder.
+  const priorDriveFiles = Array.isArray(activeUploads[nzoId]?.driveFiles) ? activeUploads[nzoId].driveFiles : [];
+  const alreadyUploaded = new Map(priorDriveFiles.map(f => [f.name, f]));
+  const driveFiles = [...priorDriveFiles];
+  let primaryDriveFileId = alreadyUploaded.get(primary.name)?.id || null;
+  // Pre-count bytes of already-uploaded files so the progress bar resumes, not resets.
+  let uploadedBytes = files.filter(f => alreadyUploaded.has(f.name)).reduce((s, f) => s + f.size, 0);
+  let lastSaved = 0;
+
+  activeUploads[nzoId] = {
+    status: 'uploading',
+    progress: Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)),
+    filename: primary.name,
+    totalFiles: files.length,
+    completedFiles: driveFiles.length,
+    driveFiles,
+    error: null
+  };
+  saveActiveUploads();
+
+  try {
+    for (const f of files) {
+      if (alreadyUploaded.has(f.name)) {
+        console.log(`⏭️  Resume: skipping already-uploaded "${f.name}" for ${nzoId}.`);
+        continue;
+      }
+      const id = await uploadSingleFileToGdrive(accessToken, f.path, f.name, parentFolderId, (chunkLen) => {
+        uploadedBytes += chunkLen;
+        activeUploads[nzoId].progress = Math.min(99, Math.round((uploadedBytes / totalBytes) * 100));
+        // Throttle disk writes to ~once per 5% so we don't thrash gdrive_uploads.json.
+        if (activeUploads[nzoId].progress - lastSaved >= 5) { lastSaved = activeUploads[nzoId].progress; saveActiveUploads(); }
+      });
+      driveFiles.push({ name: f.name, id, isVideo: f.isVideo });
+      if (f.path === primary.path) primaryDriveFileId = id;
+      activeUploads[nzoId].completedFiles = driveFiles.length;
+      activeUploads[nzoId].driveFiles = driveFiles;
+      saveActiveUploads();
+    }
+
+    activeUploads[nzoId].status = 'completed';
+    activeUploads[nzoId].progress = 100;
+    activeUploads[nzoId].driveFileId = primaryDriveFileId || driveFiles[0]?.id || null;
+    activeUploads[nzoId].driveFiles = driveFiles;
+    saveActiveUploads();
+    console.log(`✅ Release upload complete for ${nzoId}: ${driveFiles.length} file(s).`);
+
+    if (autoArchive) {
+      console.log(`🧹 Auto-Archive: all ${files.length} file(s) uploaded; deleting local folder for ${nzoId}.`);
+      try {
+        if (fs.existsSync(storagePath)) fs.rmSync(storagePath, { recursive: true, force: true });
+      } catch (delErr) {
+        console.error(`⚠️ Auto-Archive delete failed for ${nzoId}:`, delErr.message);
+      }
+    }
+  } catch (err) {
+    // Leave ALL local files in place on any failure — never delete a partial upload.
+    console.error(`❌ Google Drive release upload failed for ${nzoId}:`, err.message);
+    activeUploads[nzoId].status = 'failed';
+    activeUploads[nzoId].error = err.message;
+    saveActiveUploads();
+  }
+};
+
+app.post('/api/gdrive/config', async (req, res) => {
+  const { clientId, clientSecret } = req.body;
+  if (!clientId || !clientSecret) {
+    return res.status(400).json({ error: 'Missing clientId or clientSecret' });
+  }
+  try {
+    let creds = {};
+    if (fs.existsSync('gdrive_credentials.json')) {
+      creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+    }
+    creds.clientId = clientId;
+    creds.clientSecret = clientSecret;
+    fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+    return res.json({ status: 'success' });
+  } catch (err) {
+    return res.status(500).json({ error: `Failed to save Google Drive config: ${err.message}` });
+  }
+});
+
+app.get('/api/gdrive/auth-url', (req, res) => {
+  try {
+    if (!fs.existsSync('gdrive_credentials.json')) {
+      return res.status(400).json({ error: 'Google Drive Client ID and Client Secret must be configured first.' });
+    }
+    const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+    if (!creds.clientId || !creds.clientSecret) {
+      return res.status(400).json({ error: 'Google Drive Client ID and Client Secret must be configured first.' });
+    }
+    
+    const redirectUri = 'http://localhost:3001/api/gdrive/callback';
+    const scope = 'https://www.googleapis.com/auth/drive.file';
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(creds.clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&access_type=offline&prompt=consent`;
+    
+    return res.json({ status: 'success', authUrl });
+  } catch (err) {
+    return res.status(500).json({ error: `Failed to generate Auth URL: ${err.message}` });
+  }
+});
+
+app.get('/api/gdrive/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) {
+    return res.status(400).send('<h1>Error</h1><p>Missing authorization code from Google.</p>');
+  }
+
+  try {
+    if (!fs.existsSync('gdrive_credentials.json')) {
+      throw new Error('Google Drive credentials file not found on server.');
+    }
+    const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+    const redirectUri = 'http://localhost:3001/api/gdrive/callback';
+
+    const tokenUrl = 'https://oauth2.googleapis.com/token';
+    const params = new URLSearchParams();
+    params.append('client_id', creds.clientId);
+    params.append('client_secret', creds.clientSecret);
+    params.append('code', code);
+    params.append('grant_type', 'authorization_code');
+    params.append('redirect_uri', redirectUri);
+
+    const tokenRes = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      throw new Error(`Google returned HTTP ${tokenRes.status}: ${errText}`);
+    }
+
+    const tokenData = await tokenRes.json();
+    
+    creds.accessToken = tokenData.access_token;
+    if (tokenData.refresh_token) {
+      creds.refreshToken = tokenData.refresh_token;
+    }
+    creds.expiresAt = Date.now() + (tokenData.expires_in * 1000);
+    fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Google Drive Authorized</title></head>
+      <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background: #121212; color: #ffffff;">
+        <h2 style="color: #10b981;">🟢 Google Drive Successfully Connected!</h2>
+        <p>This window will close automatically.</p>
+        <script>
+          if (window.opener) {
+            window.opener.postMessage('gdrive-connected', '*');
+          }
+          setTimeout(() => window.close(), 1500);
+        </script>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error('❌ Google Drive OAuth2 callback failed:', err.message);
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Auth Failed</title></head>
+      <body style="font-family: sans-serif; text-align: center; padding-top: 50px; background: #121212; color: #ffffff;">
+        <h2 style="color: #ef4444;">❌ Connection Failed</h2>
+        <p>${err.message}</p>
+      </body>
+      </html>
+    `);
+  }
+});
+
+app.get('/api/gdrive/status', (req, res) => {
+  try {
+    if (!fs.existsSync('gdrive_credentials.json')) {
+      return res.json({ connected: false });
+    }
+    const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+    const hasRefreshToken = !!creds.refreshToken;
+    return res.json({
+      connected: hasRefreshToken,
+      clientId: creds.clientId || '',
+      clientSecret: creds.clientSecret ? '••••••••••••••••' : '',
+      folderName: creds.folderName || 'Premio'
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/gdrive/folder', async (req, res) => {
+  const { folderName } = req.body;
+  if (!folderName || !folderName.trim()) {
+    return res.status(400).json({ error: 'Missing folderName' });
+  }
+  try {
+    let creds = {};
+    if (fs.existsSync('gdrive_credentials.json')) {
+      creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+    }
+    creds.folderName = folderName.trim();
+    fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+    return res.json({ status: 'success', folderName: creds.folderName });
+  } catch (err) {
+    return res.status(500).json({ error: `Failed to save folder config: ${err.message}` });
+  }
+});
+
+app.get('/api/gdrive/files', async (req, res) => {
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const folderName = getGdriveFolderName();
+    const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+    const files = await listGdriveFolderFiles(accessToken, parentFolderId);
+    return res.json({ status: 'success', files });
+  } catch (err) {
+    console.error('❌ Google Drive list files failed:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/gdrive/disconnect', (req, res) => {
+  try {
+    if (fs.existsSync('gdrive_credentials.json')) {
+      const creds = JSON.parse(fs.readFileSync('gdrive_credentials.json', 'utf8') || '{}');
+      delete creds.accessToken;
+      delete creds.refreshToken;
+      delete creds.expiresAt;
+      fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+    }
+    return res.json({ status: 'success' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/gdrive/sync/download', async (req, res) => {
+  const filename = req.query.filename || 'premio_profile_sync.json';
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const folderName = getGdriveFolderName();
+    const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+    const file = await findGdriveFile(accessToken, filename, parentFolderId);
+    if (!file) {
+      return res.json({ success: true, synced: false, data: null });
+    }
+
+    const downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+    const downloadRes = await fetch(downloadUrl, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!downloadRes.ok) {
+      throw new Error(`Failed to download sync file (HTTP ${downloadRes.status})`);
+    }
+
+    const syncData = await downloadRes.json();
+    return res.json({ success: true, synced: true, data: syncData });
+  } catch (err) {
+    console.error(`❌ Google Drive sync download for ${filename} failed:`, err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/gdrive/sync/upload', async (req, res) => {
+  const filename = req.query.filename || 'premio_profile_sync.json';
+  const syncData = req.body.data || req.body.syncData || req.body;
+  if (!syncData) {
+    return res.status(400).json({ success: false, error: 'Missing sync data in request body.' });
+  }
+
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const folderName = getGdriveFolderName();
+    const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+    const file = await findGdriveFile(accessToken, filename, parentFolderId);
+    const fileContent = JSON.stringify(syncData, null, 2);
+    
+    if (file) {
+      const updateUrl = `https://www.googleapis.com/upload/drive/v3/files/${file.id}?uploadType=media`;
+      const updateRes = await fetch(updateUrl, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: fileContent
+      });
+
+      if (!updateRes.ok) {
+        const errText = await updateRes.text();
+        throw new Error(`Failed to update sync file (HTTP ${updateRes.status}): ${errText}`);
+      }
+    } else {
+      const createUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+      const boundary = '-------314159265358979323846';
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelim = `\r\n--${boundary}--`;
+
+      const metadata = {
+        name: filename,
+        mimeType: 'application/json',
+        parents: [parentFolderId]
+      };
+
+      const multipartBody = 
+        delimiter +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        JSON.stringify(metadata) +
+        delimiter +
+        'Content-Type: application/json\r\n\r\n' +
+        fileContent +
+        closeDelim;
+
+      const createRes = await fetch(createUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`
+        },
+        body: multipartBody
+      });
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        throw new Error(`Failed to create sync file (HTTP ${createRes.status}): ${errText}`);
+      }
+    }
+
+    return res.json({ success: true, status: 'success' });
+  } catch (err) {
+    console.error(`❌ Google Drive sync upload for ${filename} failed:`, err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/gdrive/upload', async (req, res) => {
+  const { nzoId, autoArchive = false } = req.body;
+  if (!nzoId) {
+    return res.status(400).json({ error: 'Missing parameter: nzoId' });
+  }
+
+  const { sabUrl, sabKey } = resolveSab(req);
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd config must be set.' });
+  }
+
+  try {
+    const accessToken = await getGdriveAccessToken();
+
+    const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+    const historyRes = await fetch(historyUrl);
+    if (!historyRes.ok) {
+      throw new Error(`Failed to fetch history (HTTP ${historyRes.status})`);
+    }
+    const historyData = await historyRes.json();
+    const slots = historyData?.history?.slots || [];
+    const slot = slots.find(s => s.nzo_id === nzoId);
+    if (!slot) {
+      return res.status(404).json({ error: `Completed release for job ID ${nzoId} not found in history.` });
+    }
+
+    const storage = slot.storage;
+    if (!storage) {
+      return res.status(400).json({ error: 'No storage path found for this history item.' });
+    }
+    if (!fs.existsSync(storage)) {
+      return res.status(404).json({ error: `Target path does not exist on disk: ${storage}` });
+    }
+
+    const folderName = getGdriveFolderName();
+    const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+
+    // Fire-and-forget: uploads ALL videos + sidecars and (if autoArchive) deletes
+    // the local folder only after every file succeeds. Tracks progress via activeUploads[nzoId].
+    uploadReleaseToGdrive(accessToken, storage, parentFolderId, nzoId, autoArchive)
+      .catch((uploadErr) => {
+        console.error(`❌ Background GDrive release upload failed for nzoId ${nzoId}:`, uploadErr.message);
+      });
+
+    return res.json({ status: 'success', message: 'Upload started in background.' });
+  } catch (err) {
+    console.error('❌ Failed to start Google Drive upload:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/gdrive/upload/status', (req, res) => {
+  const { nzoId } = req.query;
+  if (nzoId) {
+    const status = activeUploads[nzoId];
+    if (!status) return res.json({ status: 'unknown' });
+    return res.json(status);
+  }
+  return res.json(activeUploads);
+});
+
+app.get('/api/gdrive/stream', async (req, res) => {
+  const { fileId } = req.query;
+  if (!isValidDriveFileId(fileId)) {
+    return res.status(400).json({ error: 'Missing or invalid parameter: fileId' });
+  }
+
+  // Abort the upstream Google fetch when the client disconnects. The browser
+  // opens a fresh range request on every seek and abandons the previous one —
+  // without aborting, those orphaned fetches keep streaming and pile up against
+  // Google Drive's per-file connection limits, which then starts refusing
+  // requests and surfaces as "connection lost" mid-playback.
+  const controller = new AbortController();
+  req.on('close', () => controller.abort());
+
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+    const headers = { 'Authorization': `Bearer ${accessToken}` };
+    if (req.headers.range) {
+      headers['Range'] = req.headers.range;
+    }
+
+    const driveRes = await fetch(driveUrl, { headers, signal: controller.signal });
+
+    res.status(driveRes.status);
+
+    const headersToCopy = [
+      'content-type',
+      'content-length',
+      'content-range',
+      'accept-ranges',
+      'content-disposition'
+    ];
+    headersToCopy.forEach((h) => {
+      const val = driveRes.headers.get(h);
+      if (val) res.setHeader(h, val);
+    });
+
+    if (!driveRes.body) {
+      if (!res.headersSent) res.status(502).json({ error: 'Empty response from Google Drive.' });
+      return;
+    }
+
+    const nodeStream = Readable.fromWeb(driveRes.body);
+    nodeStream.on('error', (err) => {
+      if (err.name !== 'AbortError') console.error('❌ GDrive stream pipe error:', err.message);
+      res.destroy();
+    });
+    nodeStream.pipe(res);
+
+  } catch (err) {
+    if (err.name === 'AbortError') return; // client disconnected — expected, not an error
+    console.error('❌ Google Drive stream proxy failed:', err.message);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: `Stream failed: ${err.message}` });
+    }
+  }
+});
+
+app.get('/api/gdrive/transcode', async (req, res) => {
+  const { fileId, ss, audioTrack } = req.query;
+  if (!isValidDriveFileId(fileId)) {
+    return res.status(400).json({ error: 'Missing or invalid parameter: fileId' });
+  }
+
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+    console.log(`🎥 Transcoding Google Drive file on-the-fly: ${fileId}`);
+
+    res.setHeader('Content-Type', 'video/mp4');
+
+    const ffmpegArgs = ['-nostats', '-loglevel', 'error'];
+
+    if (ss !== undefined) {
+      const ssNum = Number(ss);
+      if (!Number.isFinite(ssNum) || ssNum < 0) {
+        return res.status(400).json({ error: 'Invalid seek parameter: ss must be a non-negative number of seconds.' });
+      }
+      ffmpegArgs.push('-ss', ssNum.toString());
+    }
+
+    if (audioTrack) {
+      if (/^\d+:\d+$/.test(audioTrack)) {
+        ffmpegArgs.push('-map', '0:v:0', '-map', audioTrack);
+      }
+    }
+
+    ffmpegArgs.push(
+      '-headers', `Authorization: Bearer ${accessToken}\r\n`,
+      '-i', driveUrl,
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-crf', '24',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-ac', '2',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      'pipe:1'
+    );
+
+    const ffmpegProcess = spawn(ffmpegPath, ffmpegArgs);
+
+    ffmpegProcess.stdout.pipe(res);
+
+    ffmpegProcess.stderr.on('data', (chunk) => {
+      console.error(`ffmpeg (gdrive): ${chunk.toString().trim()}`);
+    });
+
+    req.on('close', () => {
+      console.log('🔌 Client closed GDrive transcoding stream. Killing ffmpeg process...');
+      ffmpegProcess.kill('SIGKILL');
+    });
+
+    ffmpegProcess.on('error', (err) => {
+      console.error('❌ ffmpeg spawn error (gdrive):', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: `ffmpeg failed: ${err.message}` });
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Google Drive transcode failed:', err.message);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: `Transcode failed: ${err.message}` });
+    }
+  }
+});
+
+app.get('/api/gdrive/audio-tracks', async (req, res) => {
+  const { fileId } = req.query;
+  if (!isValidDriveFileId(fileId)) {
+    return res.status(400).json({ error: 'Missing or invalid parameter: fileId' });
+  }
+
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+    const tracks = await new Promise((resolve) => {
+      const ffmpegProcess = spawn(ffmpegPath, [
+        '-hide_banner',
+        '-headers', `Authorization: Bearer ${accessToken}\r\n`,
+        '-i', driveUrl
+      ]);
+      let stderr = '';
+      
+      ffmpegProcess.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      
+      ffmpegProcess.on('close', () => {
+        const parsedTracks = [];
+        const lines = stderr.split('\n');
+        let currentTrack = null;
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          const streamMatch = line.match(/Stream\s+#(\d+:\d+)(?:\(([^)]+)\))?:\s+(Audio):\s+(.*)/i);
+          
+          if (streamMatch) {
+            if (currentTrack) {
+              parsedTracks.push(currentTrack);
+            }
+            const index = streamMatch[1];
+            const lang = streamMatch[2] || 'und';
+            const codecInfo = streamMatch[4];
+            
+            currentTrack = {
+              index,
+              language: lang,
+              codec: codecInfo,
+              title: ''
+            };
+          } else if (currentTrack && line.startsWith('Metadata:')) {
+            let j = i + 1;
+            while (j < lines.length) {
+              const nextLine = lines[j].trim();
+              if (nextLine.startsWith('Stream #') || nextLine.startsWith('Input #') || nextLine.startsWith('Output #')) {
+                break;
+              }
+              const titleMatch = nextLine.match(/title\s*:\s*(.*)/i);
+              if (titleMatch) {
+                currentTrack.title = titleMatch[1].trim();
+                break;
+              }
+              j++;
+            }
+          }
+        }
+        
+        if (currentTrack) {
+          parsedTracks.push(currentTrack);
+        }
+        
+        resolve(parsedTracks);
+      });
+    });
+
+    return res.json({ status: 'success', tracks });
+
+  } catch (err) {
+    console.error('❌ Failed to fetch audio tracks (gdrive):', err.message);
+    return res.status(500).json({ error: `Failed to retrieve audio tracks: ${err.message}` });
+  }
+});
+
 // --- SABnzbd proxy endpoints ---
 app.get('/api/sab/test', async (req, res) => {
   const { sabUrl, sabKey } = resolveSab(req);
@@ -1568,7 +2448,7 @@ app.get('/api/sab/status', async (req, res) => {
 });
 
 app.post('/api/sab/delete', async (req, res) => {
-  const { sabUrl, sabKey } = resolveSab(req);
+  const { sabUrl, sabKey, sabCompleteDir } = resolveSab(req);
   if (!sabUrl || !sabKey) {
     return res.status(400).json({ error: 'SABnzbd URL and API Key must be configured in Settings.' });
   }
@@ -1579,9 +2459,101 @@ app.post('/api/sab/delete', async (req, res) => {
   }
 
   try {
-    // Active downloads live in the queue, completed jobs in history — they are
-    // separate SABnzbd APIs. `fromQueue` cancels an in-progress download;
-    // otherwise we delete the completed history entry (optionally purging files).
+    let storagePath = null;
+    if (deleteFiles && !fromQueue) {
+      // Fetch completed folder path from history first (since SABnzbd's history
+      // delete API doesn't purge local files on disk).
+      try {
+        const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+        const historyRes = await fetch(historyUrl);
+        if (historyRes.ok) {
+          const historyData = await historyRes.json();
+          const slots = historyData?.history?.slots || [];
+          const slot = slots.find(s => s.nzo_id === nzoId);
+          if (slot && slot.storage) {
+            storagePath = slot.storage;
+          }
+        }
+      } catch (historyErr) {
+        console.warn('⚠️ Could not resolve storage path from history for deletion:', historyErr.message);
+      }
+    }
+
+    // Perform file deletion if requested and storage path is found
+    if (storagePath) {
+      let allowedDir = sabCompleteDir;
+      let tempDir = '';
+      
+      const configUrl = `${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`;
+      try {
+        const configRes = await fetch(configUrl);
+        if (configRes.ok) {
+          const configData = await configRes.json();
+          if (!allowedDir) {
+            allowedDir = configData?.config?.misc?.complete_dir || '';
+          }
+          tempDir = configData?.config?.misc?.download_dir || '';
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to fetch SABnzbd config for directory validation:', e.message);
+      }
+
+      let isPathAllowed = false;
+      const absoluteStoragePath = path.resolve(storagePath);
+
+      if (allowedDir) {
+        const resolvedAllowedDir = path.resolve(allowedDir);
+        if (absoluteStoragePath === resolvedAllowedDir || absoluteStoragePath.startsWith(resolvedAllowedDir + path.sep)) {
+          isPathAllowed = true;
+        }
+      }
+      if (!isPathAllowed && tempDir) {
+        const resolvedTempDir = path.resolve(tempDir);
+        if (absoluteStoragePath === resolvedTempDir || absoluteStoragePath.startsWith(resolvedTempDir + path.sep)) {
+          isPathAllowed = true;
+        }
+      }
+
+      if (isPathAllowed || (!allowedDir && !tempDir)) {
+        if (fs.existsSync(storagePath)) {
+          console.log(`🗑️ Deleting folder from disk: ${storagePath}`);
+          fs.rmSync(storagePath, { recursive: true, force: true });
+        }
+      } else {
+        console.warn(`⚠️ Security warning: Deletion target ${storagePath} lies outside allowed directories. Skipping filesystem delete.`);
+      }
+    }
+
+    // If this release was archived to Google Drive, purge it there too so
+    // "delete disk & history" actually removes every copy. Best-effort: a
+    // missing/expired Drive connection or a single file's failure shouldn't
+    // block the local SABnzbd deletion below.
+    const deletedDriveFiles = [];
+    if (deleteFiles) {
+      const uploadRecord = activeUploads[nzoId];
+      const driveFiles = Array.isArray(uploadRecord?.driveFiles) ? uploadRecord.driveFiles : [];
+      if (driveFiles.length > 0) {
+        try {
+          const accessToken = await getGdriveAccessToken();
+          for (const f of driveFiles) {
+            try {
+              await deleteGdriveFile(accessToken, f.id);
+              deletedDriveFiles.push(f);
+            } catch (fileErr) {
+              console.warn(`⚠️ Failed to delete Drive file ${f.name} (${f.id}):`, fileErr.message);
+            }
+          }
+        } catch (tokenErr) {
+          console.warn('⚠️ Skipping Google Drive cleanup (not connected or token error):', tokenErr.message);
+        }
+      }
+      if (uploadRecord) {
+        delete activeUploads[nzoId];
+        saveActiveUploads();
+      }
+    }
+
+    // Call SABnzbd API to delete from history or queue
     const mode = fromQueue ? 'queue' : 'history';
     let delUrl = `${sabUrl}/api?mode=${mode}&name=delete&value=${encodeURIComponent(nzoId)}&apikey=${sabKey}&output=json`;
     if (deleteFiles) {
@@ -1594,7 +2566,7 @@ app.post('/api/sab/delete', async (req, res) => {
     }
 
     const data = await delRes.json();
-    return res.json({ status: 'success', data });
+    return res.json({ status: 'success', data, deletedDriveFiles });
   } catch (err) {
     console.error('❌ SABnzbd delete history failed:', err.message);
     return res.status(500).json({ error: `Failed to delete item: ${err.message}` });
@@ -1699,8 +2671,141 @@ app.get('/api/sab/stream', async (req, res) => {
   }
 });
 
+app.get('/api/sab/audio-tracks', async (req, res) => {
+  const { nzoId } = req.query;
+  if (!nzoId) {
+    return res.status(400).json({ error: 'Missing parameter: nzoId' });
+  }
+
+  // allowQueryCreds is allowed for safety since this is a read-only metadata route.
+  const { sabUrl, sabKey, sabCompleteDir } = resolveSab(req, { allowQueryCreds: true });
+  if (!sabUrl || !sabKey) {
+    return res.status(400).json({ error: 'SABnzbd config must be set.' });
+  }
+
+  try {
+    // 1. Fetch completed folder path from history
+    const historyUrl = `${sabUrl}/api?mode=history&apikey=${sabKey}&output=json`;
+    const historyRes = await fetch(historyUrl);
+    if (!historyRes.ok) {
+      throw new Error(`Failed to fetch history (HTTP ${historyRes.status})`);
+    }
+    const historyData = await historyRes.json();
+    const slots = historyData?.history?.slots || [];
+    const slot = slots.find(s => s.nzo_id === nzoId);
+    if (!slot) {
+      return res.status(404).json({ error: `Completed release for job ID ${nzoId} not found in history.` });
+    }
+
+    const storage = slot.storage;
+    if (!storage) {
+      return res.status(400).json({ error: 'No storage path found for this history item.' });
+    }
+
+    // Find the file (largest video file if it's a directory)
+    let targetPath = storage;
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({ error: `Target path does not exist on disk: ${storage}` });
+    }
+
+    const stats = fs.statSync(targetPath);
+    if (stats.isDirectory()) {
+      const largest = getLargestVideoFile(targetPath);
+      if (!largest) {
+        return res.status(404).json({ error: 'No video files found in completed folder.' });
+      }
+      targetPath = largest;
+    }
+
+    // 2. Resolve complete directory for path allowlist verification
+    let allowedDir = sabCompleteDir;
+    if (!allowedDir) {
+      const configUrl = `${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`;
+      const configRes = await fetch(configUrl);
+      if (configRes.ok) {
+        const configData = await configRes.json();
+        allowedDir = configData?.config?.misc?.complete_dir || '';
+      }
+    }
+
+    if (allowedDir) {
+      const resolvedAllowedDir = path.resolve(allowedDir);
+      const absoluteTargetPath = path.resolve(targetPath);
+      if (absoluteTargetPath !== resolvedAllowedDir && !absoluteTargetPath.startsWith(resolvedAllowedDir + path.sep)) {
+        return res.status(403).json({ error: `Access denied: Target path is outside the allowed directory: ${allowedDir}` });
+      }
+    }
+
+    // 3. Query audio tracks using ffmpeg
+    const tracks = await new Promise((resolve) => {
+      const ffmpegProcess = spawn(ffmpegPath, ['-hide_banner', '-i', targetPath]);
+      let stderr = '';
+      
+      ffmpegProcess.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      
+      ffmpegProcess.on('close', () => {
+        const parsedTracks = [];
+        const lines = stderr.split('\n');
+        let currentTrack = null;
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          
+          // Match Stream lines (e.g. Stream #0:1(eng): Audio: ac3...)
+          const streamMatch = line.match(/Stream\s+#(\d+:\d+)(?:\(([^)]+)\))?:\s+(Audio):\s+(.*)/i);
+          
+          if (streamMatch) {
+            if (currentTrack) {
+              parsedTracks.push(currentTrack);
+            }
+            const index = streamMatch[1];
+            const lang = streamMatch[2] || 'und';
+            const codecInfo = streamMatch[4];
+            
+            currentTrack = {
+              index,
+              language: lang,
+              codec: codecInfo,
+              title: ''
+            };
+          } else if (currentTrack && line.startsWith('Metadata:')) {
+            // Parse subsequent metadata block for title
+            let j = i + 1;
+            while (j < lines.length) {
+              const nextLine = lines[j].trim();
+              if (nextLine.startsWith('Stream #') || nextLine.startsWith('Input #') || nextLine.startsWith('Output #')) {
+                break;
+              }
+              const titleMatch = nextLine.match(/title\s*:\s*(.*)/i);
+              if (titleMatch) {
+                currentTrack.title = titleMatch[1].trim();
+                break;
+              }
+              j++;
+            }
+          }
+        }
+        
+        if (currentTrack) {
+          parsedTracks.push(currentTrack);
+        }
+        
+        resolve(parsedTracks);
+      });
+    });
+
+    return res.json({ status: 'success', tracks });
+
+  } catch (err) {
+    console.error('❌ Failed to fetch audio tracks:', err.message);
+    return res.status(500).json({ error: `Failed to retrieve audio tracks: ${err.message}` });
+  }
+});
+
 app.get('/api/sab/transcode', async (req, res) => {
-  const { nzoId, ss } = req.query;
+  const { nzoId, ss, audioTrack } = req.query;
   if (!nzoId) {
     return res.status(400).json({ error: 'Missing parameter: nzoId' });
   }
@@ -1784,6 +2889,14 @@ app.get('/api/sab/transcode', async (req, res) => {
         return res.status(400).json({ error: 'Invalid seek parameter: ss must be a non-negative number of seconds.' });
       }
       ffmpegArgs.push('-ss', ssNum.toString());
+    }
+
+    // Audio track mapping support: if audioTrack parameter is specified, map it
+    if (audioTrack) {
+      // Validate it matches format "0:x" where x is a digit to prevent command argument issues
+      if (/^\d+:\d+$/.test(audioTrack)) {
+        ffmpegArgs.push('-map', '0:v:0', '-map', audioTrack);
+      }
     }
 
     ffmpegArgs.push(

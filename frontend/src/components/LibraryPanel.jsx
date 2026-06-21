@@ -21,6 +21,8 @@ export default function LibraryPanel({
     category,
     hideAdult, isKids, adultControlsUnlocked,
     setMetadataDrawerItem,
+    sabHistory,
+    gdriveFiles,
   } = useAppState();
 
   return (
@@ -197,9 +199,20 @@ export default function LibraryPanel({
                   const playItem = (e) => {
                     e.stopPropagation();
                     if (!item.cached && !item.isSabnzbd) { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); return; }
+                    
+                    const hMatch = item.nzoId ? (sabHistory || []).find(h => h.nzoId === item.nzoId) : (sabHistory || []).find(h => h.name === item.title || h.name === item.name);
+                    const resolvedVideo = item.resolvedVideoFile || hMatch?.resolvedVideoFile || '';
+                    const hasVideoFile = (item.files && item.files.some(f => f.type === 'video')) || resolvedVideo;
+                    const isVideoExt = (item.title && /\.(mp4|mkv|avi|mov|m4v|flv|ts|wmv)$/i.test(item.title)) || (resolvedVideo && /\.(mp4|mkv|avi|mov|m4v|flv|ts|wmv)$/i.test(resolvedVideo));
+                    const isGdriveFile = item.gdriveFileId || (gdriveFiles && gdriveFiles.some(gf => gf.name && (gf.name === item.title || gf.name === item.name || (resolvedVideo && gf.name.includes(resolvedVideo)))));
+                    const hasVideoKeywords = item.title && /\b(yify|yts|fgt|psa|qxr|x264|x265|hevc|h264|1080p|720p|2160p|4k|bluray|webrip|brrip|hdtv|mkv|mp4|avi|mov|wmv)\b/i.test(item.title);
+                    
+                    const isVideo = hasVideoFile || isVideoExt || isGdriveFile || cat === 'Movies' || cat === 'TV' || hasVideoKeywords;
+
                     if (cat === 'Retro Games' || getEmulatorSystem(item.title)) startRetroPlayer(item);
                     else if (cat === 'Ebooks' || item.title.toLowerCase().endsWith('.epub') || item.title.toLowerCase().endsWith('.pdf')) startEbookPlayer(item);
                     else if (cat === 'Audiobooks' || cat === 'Music') startAudioPlayer(item);
+                    else if (isVideo) startStreaming(item);
                     else if (cat === 'Software' || cat === 'Other' || cat === 'VST') triggerDirectDownload(item);
                     else startStreaming(item);
                   };

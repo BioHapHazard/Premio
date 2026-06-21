@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useAppState } from '../state/AppStateProvider';
 import Icon from '../Icon';
 
@@ -22,8 +23,143 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
     usenetHandler, setUsenetHandler,
     showSabnzbdGuide, setShowSabnzbdGuide,
     sabConnected, setSabConnected,
+    gdriveAutoArchive, setGdriveAutoArchive,
+    gdriveSyncEnabled, setGdriveSyncEnabled,
+    gdriveClientId, setGdriveClientId,
+    gdriveClientSecret, setGdriveClientSecret,
+    showGdriveGuide, setShowGdriveGuide,
+    gdriveConnected, setGdriveConnected,
+    gdriveFolderName, setGdriveFolderName,
+    gdriveFiles, setGdriveFiles,
     triggerToast,
   } = useAppState();
+
+  const [verifyingGdrive, setVerifyingGdrive] = useState(false);
+  const [scanningGdrive, setScanningGdrive] = useState(false);
+
+  const fetchGdriveStatus = async () => {
+    try {
+      const res = await fetch('/api/gdrive/status');
+      if (res.ok) {
+        const data = await res.json();
+        setGdriveConnected(data.connected);
+        localStorage.setItem('premio_gdrive_connected', data.connected ? 'true' : 'false');
+        if (data.connected) {
+          if (data.clientId && !gdriveClientId) {
+            setGdriveClientId(data.clientId);
+            localStorage.setItem('premio_gdrive_client_id', data.clientId);
+          }
+          if (data.clientSecret && !gdriveClientSecret) {
+            setGdriveClientSecret('••••••••••••••••');
+            localStorage.setItem('premio_gdrive_client_secret', '••••••••••••••••');
+          }
+          if (data.folderName) {
+            setGdriveFolderName(data.folderName);
+            localStorage.setItem('premio_gdrive_folder_name', data.folderName);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch GDrive status:', err);
+    }
+  };
+
+  const handleGdriveScan = async () => {
+    try {
+      setScanningGdrive(true);
+      const res = await fetch('/api/gdrive/files');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success') {
+          setGdriveFiles(data.files || []);
+          triggerToast(`Scanned ${data.files?.length || 0} files in Google Drive target folder.`, 'success');
+        } else {
+          throw new Error(data.error || 'Failed to list files');
+        }
+      } else {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
+    } catch (err) {
+      triggerToast(`Folder scan failed: ${err.message}`, 'error');
+    } finally {
+      setScanningGdrive(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchGdriveStatus();
+  }, []);
+
+  useEffect(() => {
+    const handleOAuthMessage = (event) => {
+      if (event.data === 'gdrive-connected') {
+        triggerToast('Google Drive connected successfully!', 'success');
+        fetchGdriveStatus();
+      }
+    };
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, []);
+
+  const handleGdriveConnect = async () => {
+    if (!gdriveClientId.trim() || !gdriveClientSecret.trim()) {
+      triggerToast('Please fill out both Google Client ID and Secret.', 'error');
+      return;
+    }
+
+    try {
+      setVerifyingGdrive(true);
+      const configRes = await fetch('/api/gdrive/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: gdriveClientId.trim(), clientSecret: gdriveClientSecret.trim() })
+      });
+
+      if (!configRes.ok) {
+        throw new Error(`Failed to save config: HTTP ${configRes.status}`);
+      }
+
+      const authRes = await fetch('/api/gdrive/auth-url');
+      if (!authRes.ok) {
+        const data = await authRes.json();
+        throw new Error(data.error || 'Failed to fetch Auth URL');
+      }
+
+      const authData = await authRes.json();
+      
+      const width = 600;
+      const height = 650;
+      const left = window.screen.width / 2 - width / 2;
+      const top = window.screen.height / 2 - height / 2;
+      
+      window.open(
+        authData.authUrl,
+        'Connect Google Drive',
+        `width=${width},height=${height},top=${top},left=${left},resizable=yes,scrollbars=yes`
+      );
+
+    } catch (err) {
+      triggerToast(`Connection failed: ${err.message}`, 'error');
+    } finally {
+      setVerifyingGdrive(false);
+    }
+  };
+
+  const handleGdriveDisconnect = async () => {
+    try {
+      const res = await fetch('/api/gdrive/disconnect', { method: 'POST' });
+      if (res.ok) {
+        triggerToast('Google Drive disconnected successfully.', 'success');
+        setGdriveConnected(false);
+        localStorage.setItem('premio_gdrive_connected', 'false');
+        setGdriveFiles([]);
+      } else {
+        throw new Error('Server returned error');
+      }
+    } catch (err) {
+      triggerToast(`Disconnection failed: ${err.message}`, 'error');
+    }
+  };
 
   return (
           <section className="settings-card glass-panel fade-in" id="settings-panel">
@@ -524,6 +660,223 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
                       <li>Copy the <b>API Key</b> from <b>Config &gt; General</b> (under the API key section).</li>
                       <li>Paste the SABnzbd URL and API Key above, specify an optional category/complete directory, and test the connection!</li>
                     </ol>
+                  </div>
+                )}
+              </div>
+
+              {/* Google Drive Configuration */}
+              <div className="setting-item full-width-field" style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '16px' }}>
+                <div className="setting-info">
+                  <h3>Google Drive Integration</h3>
+                  <p>Connect your Google Drive to enable zero-cost cloud syncing and upload completed local Usenet downloads to the cloud.</p>
+                </div>
+                
+                <div className="settings-multi-inputs" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '8px', width: '100%', marginTop: '8px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.8rem', opacity: 0.7 }}>Google Client ID:</label>
+                    <input 
+                      type="text" 
+                      value={gdriveClientId}
+                      onChange={(e) => {
+                        setGdriveClientId(e.target.value);
+                        localStorage.setItem('premio_gdrive_client_id', e.target.value);
+                      }}
+                      placeholder="Enter Google OAuth Client ID..."
+                      className="settings-text-input small"
+                      disabled={gdriveConnected}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '0.8rem', opacity: 0.7 }}>Google Client Secret:</label>
+                    <input 
+                      type={showKeys ? 'text' : 'password'}
+                      value={gdriveClientSecret}
+                      onChange={(e) => {
+                        setGdriveClientSecret(e.target.value);
+                        localStorage.setItem('premio_gdrive_client_secret', e.target.value);
+                      }}
+                      placeholder="Enter Google OAuth Client Secret..."
+                      className="settings-text-input small"
+                      disabled={gdriveConnected}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', marginTop: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {gdriveConnected ? (
+                    <button 
+                      type="button" 
+                      className="danger-btn"
+                      style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+                      onClick={handleGdriveDisconnect}
+                    >
+                      Disconnect Google Drive
+                    </button>
+                  ) : (
+                    <button 
+                      type="button" 
+                      className="action-btn"
+                      style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+                      onClick={handleGdriveConnect}
+                      disabled={verifyingGdrive}
+                    >
+                      {verifyingGdrive ? 'Connecting...' : 'Connect Google Drive'}
+                    </button>
+                  )}
+                  
+                  <button 
+                    type="button"
+                    className="help-toggle-btn"
+                    onClick={() => setShowGdriveGuide(!showGdriveGuide)}
+                    style={{ fontSize: '0.75rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    {showGdriveGuide ? 'Hide Setup Guide' : 'How do I generate Client ID & Secret?'}
+                  </button>
+
+                  {gdriveConnected ? (
+                    <span style={{ color: '#4caf50', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      ● Connected to Google Drive!
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      ● Not connected
+                    </span>
+                  )}
+                </div>
+
+                {showGdriveGuide && (
+                  <div className="onboarding-guide-box glass-panel fade-in" style={{ marginTop: '10px', padding: '12px', fontSize: '0.8rem', color: 'var(--text-muted)', borderLeft: '3px solid var(--color-primary)', width: '100%' }}>
+                    <p style={{ margin: '0 0 6px 0', fontWeight: 'bold', color: 'var(--text-primary)'}}> Quick Start Guide: Generating Google Drive Credentials</p>
+                    <ol style={{ margin: '0', paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <li>Go to the <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Google Cloud Console</a> and create a new project.</li>
+                      <li>Go to <b>API &amp; Services &gt; Library</b>, search for <b>Google Drive API</b>, and click <b>Enable</b>.</li>
+                      <li>Go to <b>OAuth consent screen</b>, select <b>External</b>, enter any App Name/email, and save. Under <b>Scopes</b>, add `.../auth/drive.file`. Add your Google email as a **Test User** (since your app will be in testing mode).</li>
+                      <li>Go to <b>Credentials &gt; Create Credentials &gt; OAuth client ID</b>.</li>
+                      <li>Select Application type: <b>Web application</b>.</li>
+                      <li>Under <b>Authorized redirect URIs</b>, click Add URI and enter exactly: <code style={{ color: 'var(--text-primary)', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: '4px' }}>http://localhost:3001/api/gdrive/callback</code>.</li>
+                      <li>Click <b>Create</b>, copy your <b>Client ID</b> and <b>Client Secret</b>, paste them above, and click Connect!</li>
+                    </ol>
+                  </div>
+                )}
+
+                {gdriveConnected && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '6px', border: '1px solid var(--glass-border)', width: '100%' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>Google Drive Features:</span>
+                    <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={gdriveSyncEnabled} 
+                          onChange={(e) => {
+                            const val = e.target.checked;
+                            setGdriveSyncEnabled(val);
+                            localStorage.setItem('premio_gdrive_sync_enabled', val);
+                            triggerToast(val ? 'Google Drive Cloud Sync enabled!' : 'Google Drive Cloud Sync disabled.', 'info');
+                          }} 
+                        />
+                        <span>Enable Google Drive Sync (Saves PM points)</span>
+                      </label>
+
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={gdriveAutoArchive} 
+                          onChange={(e) => {
+                            const val = e.target.checked;
+                            setGdriveAutoArchive(val);
+                            localStorage.setItem('premio_gdrive_auto_archive', val);
+                            triggerToast(val ? 'Auto-Archive to Google Drive enabled!' : 'Auto-Archive disabled.', 'info');
+                          }} 
+                        />
+                        <span>Auto-Archive Completed Usenet Downloads</span>
+                      </label>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--glass-border)', paddingTop: '10px', marginTop: '4px', width: '100%' }}>
+                      <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexGrow: 1, minWidth: '200px' }}>
+                          <label style={{ fontSize: '0.8rem', opacity: 0.7 }}>Target Upload Folder Name:</label>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <input 
+                              type="text" 
+                              value={gdriveFolderName}
+                              onChange={(e) => {
+                                setGdriveFolderName(e.target.value);
+                                localStorage.setItem('premio_gdrive_folder_name', e.target.value);
+                              }}
+                              placeholder="e.g. Premio..."
+                              className="settings-text-input small"
+                              style={{ flexGrow: 1, height: '28px', fontSize: '0.8rem' }}
+                            />
+                            <button 
+                              type="button" 
+                              className="action-btn"
+                              style={{ fontSize: '0.75rem', padding: '4px 12px', height: '28px', borderRadius: '4px', whiteSpace: 'nowrap' }}
+                              onClick={async () => {
+                                if (!gdriveFolderName.trim()) {
+                                  triggerToast('Folder name cannot be empty.', 'error');
+                                  return;
+                                }
+                                try {
+                                  const res = await fetch('/api/gdrive/folder', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ folderName: gdriveFolderName.trim() })
+                                  });
+                                  if (res.ok) {
+                                    triggerToast(`Target folder updated to "${gdriveFolderName.trim()}"!`, 'success');
+                                  } else {
+                                    const d = await res.json();
+                                    throw new Error(d.error || 'Server error');
+                                  }
+                                } catch (err) {
+                                  triggerToast(`Failed to update folder: ${err.message}`, 'error');
+                                }
+                              }}
+                            >
+                              Save Folder
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignSelf: 'flex-end' }}>
+                          <button 
+                            type="button" 
+                            className="action-btn subtle"
+                            style={{ 
+                              fontSize: '0.75rem', 
+                              padding: '4px 12px', 
+                              height: '28px', 
+                              borderRadius: '4px', 
+                              whiteSpace: 'nowrap', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '6px',
+                              background: 'rgba(33, 150, 243, 0.15)',
+                              color: '#2196f3',
+                              borderColor: 'rgba(33, 150, 243, 0.3)'
+                            }}
+                            onClick={handleGdriveScan}
+                            disabled={scanningGdrive}
+                          >
+                            {scanningGdrive ? (
+                              <>
+                                <span className="spinner-micro white small" style={{ borderLeftColor: '#2196f3' }}></span> Scanning...
+                              </>
+                            ) : (
+                              <>
+                                <Icon name="search" size={12} /> Scan Google Drive
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                      {gdriveFiles.length > 0 && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          📁 Found {gdriveFiles.length} file{gdriveFiles.length === 1 ? '' : 's'} in target folder.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

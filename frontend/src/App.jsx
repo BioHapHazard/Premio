@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, Fragment, useMemo } from 'react';
 import Icon from './Icon';
 import { PM_SIGNUP_URL, CATEGORIES, GRADIENTS, EMOJIS, COMMON_TRACKERS, RESULTS_BATCH } from './lib/constants';
 import { keyActivate } from './lib/a11y';
-import { hashHue, formatBytes, cleanUrl, extractQuality, matchEpisode, parseShowDetails, guessCategory } from './lib/format';
+import { hashHue, formatBytes, cleanUrl, extractQuality, matchEpisode, parseShowDetails, guessCategory, findGdriveMatch, cleanNameForMatch } from './lib/format';
 import { normalizeTitle, mergeTombstoneLists, mergeProgress } from './lib/progress';
 import { filterResultsForKids, isRatingAllowed } from './lib/ratings';
 import { convertSrtToVtt } from './lib/subtitles';
@@ -98,6 +98,14 @@ function AppContent() {
     userSabCompleteDir, setUserSabCompleteDir,
     usenetHandler, setUsenetHandler,
     showSabnzbdGuide, setShowSabnzbdGuide,
+    gdriveAutoArchive, setGdriveAutoArchive,
+    gdriveSyncEnabled, setGdriveSyncEnabled,
+    gdriveClientId, setGdriveClientId,
+    gdriveClientSecret, setGdriveClientSecret,
+    showGdriveGuide, setShowGdriveGuide,
+    gdriveConnected, setGdriveConnected,
+    gdriveFolderName, setGdriveFolderName,
+    gdriveFiles, setGdriveFiles,
     sabQueue, setSabQueue,
     sabHistory, setSabHistory,
     sabSpeed, setSabSpeed,
@@ -253,6 +261,37 @@ function AppContent() {
   const sabnzbdAutoFallbacksRef = useRef();
   sabnzbdAutoFallbacksRef.current = sabnzbdAutoFallbacks;
   const processedNzoIdsRef = useRef(new Set());
+  const [gdriveUploads, setGdriveUploads] = useState({});
+
+  // Persistent registry mapping a release's clean title → its primary Drive file id.
+  // Populated whenever an upload completes; lets playback resolve the Drive file id
+  // directly (reliable) instead of falling back to fuzzy filename matching. Survives
+  // sessions and outlives the server's gdrive_uploads.json being pruned.
+  const [gdriveRegistry, setGdriveRegistry] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('premio_gdrive_registry') || '{}'); }
+    catch { return {}; }
+  });
+
+  // Merge any completed uploads from a status map into the persistent registry,
+  // keyed by clean filename so title-based lookups resolve later.
+  const recordGdriveCompletions = (uploadsMap) => {
+    if (!uploadsMap) return;
+    setGdriveRegistry(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const info of Object.values(uploadsMap)) {
+        if (info?.status === 'completed' && info.driveFileId && info.filename) {
+          const key = cleanNameForMatch(info.filename);
+          if (key && next[key]?.driveFileId !== info.driveFileId) {
+            next[key] = { driveFileId: info.driveFileId, name: info.filename };
+            changed = true;
+          }
+        }
+      }
+      if (changed) localStorage.setItem('premio_gdrive_registry', JSON.stringify(next));
+      return changed ? next : prev;
+    });
+  };
 
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
   // `results` memo + the `setResults` alias stay here since they derive from profiles.
@@ -380,13 +419,27 @@ function AppContent() {
 
   const syncProfilesToCloud = async (currentProfiles = profiles) => {
     try {
+      if (gdriveSyncEnabled && gdriveConnected) {
+        const res = await fetch('/api/gdrive/sync/upload?filename=profiles_list.json', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: currentProfiles })
+        });
+        if (res.ok) {
+          console.log('✅ Profiles list synced to Google Drive successfully.');
+        } else {
+          console.error('❌ Google Drive profiles sync upload failed.');
+        }
+        return;
+      }
+
       const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentProfiles)
       });
       if (res.ok) {
-        console.log('✅ Profiles list synced to cloud successfully.');
+        console.log('✅ Profiles list synced to Premiumize successfully.');
       }
     } catch (err) {
       console.error('❌ Syncing profiles to cloud failed:', err.message);
@@ -395,11 +448,76 @@ function AppContent() {
 
   const syncProfilesFromCloud = async () => {
     try {
-      const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json');
-      if (!res.ok) throw new Error('Could not contact sync endpoint.');
-      const data = await res.json();
-      if (data.success && data.synced && data.data) {
-        const cloudProfiles = data.data;
+      let syncData = null;
+
+      if (gdriveSyncEnabled && gdriveConnected) {
+        try {
+          const res = await fetch('/api/gdrive/sync/download?filename=profiles_list.json');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success) {
+              if (data.data) {
+                syncData = data.data;
+                console.log('✅ Profiles list fetched from Google Drive successfully.');
+              } else if (!data.synced) {
+                // If GDrive sync file doesn't exist, and we have local profiles, back them up
+                if (profiles.length > 0) {
+                  await syncProfilesToCloud(profiles);
+                }
+                return;
+              }
+            }
+          }
+        } catch (gErr) {
+          console.error('Google Drive profiles sync download failed:', gErr.message);
+        }
+
+        if (syncData) {
+          const cloudProfiles = syncData;
+          setProfiles(cloudProfiles);
+          localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
+          
+          const activeId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
+          if (activeId) {
+            const profileExists = cloudProfiles.some(p => p.id === activeId);
+            if (profileExists) {
+              const activeProf = cloudProfiles.find(p => p.id === activeId);
+              if (activeProf && activeProf.pin) {
+                setActiveProfileId('');
+                setIsProfilePickerOpen(true);
+              } else {
+                await syncProfileDataFromCloud(activeId);
+              }
+            } else {
+              setActiveProfileId('');
+              localStorage.removeItem('premium_search_active_profile_id');
+              setIsProfilePickerOpen(true);
+            }
+          } else {
+            setIsProfilePickerOpen(true);
+          }
+        }
+        return;
+      }
+
+      if (!syncData) {
+        const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json');
+        if (!res.ok) throw new Error('Could not contact sync endpoint.');
+        const data = await res.json();
+        if (data.success && data.synced && data.data) {
+          syncData = data.data;
+          console.log('✅ Profiles list fetched from Premiumize successfully.');
+        } else if (data.success && !data.synced) {
+          // If file doesn't exist, and we have local profiles, back them up
+          if (profiles.length > 0) {
+            await syncProfilesToCloud(profiles);
+          }
+          return;
+        }
+      }
+
+      if (syncData) {
+        const cloudProfiles = syncData;
         setProfiles(cloudProfiles);
         localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
         
@@ -423,11 +541,6 @@ function AppContent() {
         } else {
           setIsProfilePickerOpen(true);
         }
-      } else {
-        // If file doesn't exist, and we have local profiles, back them up
-        if (profiles.length > 0) {
-          await syncProfilesToCloud(profiles);
-        }
       }
     } catch (err) {
       console.error('❌ Syncing profiles from cloud failed:', err.message);
@@ -438,62 +551,49 @@ function AppContent() {
     if (!profileId) return;
     setIsSyncing(true);
     try {
-      const res = await fetchWithCredentials(`/api/sync?filename=profile_${profileId}_sync.json`);
-      if (!res.ok) throw new Error('Could not contact sync endpoint.');
-      const data = await res.json();
-      
-      if (data.success) {
-        if (data.synced && data.data) {
-          const cloudLib = data.data.libraryList || [];
-          const cloudProgress = data.data.continueWatchingList || [];
-          const cloudTombstones = data.data.removedProgress || [];
-          const cloudPlaylists = data.data.playlists || [];
-          const cloudTheme = data.data.selectedTheme || 'midnight-nebula';
+      let syncData = null;
 
-          // Continue-Watching is MERGED, never overwritten — union local + cloud,
-          // newest timestamp wins, deletions honored via tombstones. This stops a
-          // peer/stale pull from wiping the movie you're actively watching.
-          const localProgress = JSON.parse(localStorage.getItem(`premium_search_continue_watching_${profileId}`) || '[]');
-          const mergedTombstones = mergeTombstoneLists(readTombstones(profileId), cloudTombstones);
-          const mergedProgress = mergeProgress(localProgress, cloudProgress, mergedTombstones);
-          localStorage.setItem(tombstoneKeyFor(profileId), JSON.stringify(mergedTombstones));
-
-          // Save profile-specific local storage (library/playlists/theme keep
-          // last-writer-wins; only Continue-Watching needed conflict-free merge).
-          localStorage.setItem(`premium_search_library_${profileId}`, JSON.stringify(cloudLib));
-          localStorage.setItem(`premium_search_continue_watching_${profileId}`, JSON.stringify(mergedProgress));
-          localStorage.setItem(`premium_search_playlists_${profileId}`, JSON.stringify(cloudPlaylists));
-          localStorage.setItem(`premium_search_theme_${profileId}`, cloudTheme);
-
-          // If this is still the active profile, update states
-          const currentActiveId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
-          if (profileId === currentActiveId) {
-            setLibraryList(cloudLib);
-            localStorage.setItem('premium_search_library', JSON.stringify(cloudLib));
-
-            setContinueWatchingList(mergedProgress);
-            localStorage.setItem('premium_search_continue_watching', JSON.stringify(mergedProgress));
-
-            setPlaylists(cloudPlaylists);
-            localStorage.setItem('premium_search_playlists', JSON.stringify(cloudPlaylists));
-
-            setSelectedTheme(cloudTheme);
-            localStorage.setItem('premium_search_theme', cloudTheme);
-
-            setLastSynced(new Date());
-            triggerToast('Cloud profile storage synchronized!', 'success');
+      // --- Try Google Drive Sync first (when enabled) ---
+      if (gdriveSyncEnabled && gdriveConnected) {
+        try {
+          const gRes = await fetch(`/api/gdrive/sync/download?filename=profile_${encodeURIComponent(profileId)}_sync.json`);
+          if (gRes.ok) {
+            const gData = await gRes.json();
+            if (gData.success) {
+              if (gData.data) {
+                syncData = gData.data;
+              } else if (!gData.synced) {
+                // No cloud data found on GDrive — upload current local state
+                const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
+                const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
+                const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
+                const localTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
+                
+                const parsedLib = localLib ? JSON.parse(localLib) : [];
+                const parsedCW = localCW ? JSON.parse(localCW) : [];
+                const parsedPL = localPL ? JSON.parse(localPL) : [];
+                
+                if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
+                  console.log('ℹ️ Syncing local profile data up to Google Drive...');
+                  await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
+                  triggerToast('Cloud profile sync backup created on Google Drive!', 'success');
+                }
+                return;
+              }
+            }
           }
-
-          // If our merge differs from the cloud (kept a movie the peer lacked, or
-          // applied a deletion), push the converged result back so instances agree.
-          // Idempotent — once everyone matches, this no-ops (no sync loop).
-          const changed = JSON.stringify(mergedProgress) !== JSON.stringify(cloudProgress)
-            || JSON.stringify(mergedTombstones) !== JSON.stringify(cloudTombstones);
-          if (changed) {
-            syncToCloud(cloudLib, mergedProgress, cloudPlaylists, cloudTheme, profileId);
-          }
-        } else {
-          // If no cloud data found for this profile, upload current local state
+        } catch (gErr) {
+          console.error('Google Drive sync download failed:', gErr.message);
+        }
+      } else {
+        // --- Premiumize fallback ---
+        const res = await fetchWithCredentials(`/api/sync?filename=profile_${profileId}_sync.json`);
+        if (!res.ok) throw new Error('Could not contact sync endpoint.');
+        const data = await res.json();
+        if (data.success && data.synced && data.data) {
+          syncData = data.data;
+        } else if (data.success && !data.synced) {
+          // No cloud data found — upload current local state
           const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
           const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
           const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
@@ -508,6 +608,54 @@ function AppContent() {
             await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
             triggerToast('Cloud profile sync backup created!', 'success');
           }
+          return;
+        }
+      }
+
+      if (syncData) {
+        const cloudLib = syncData.libraryList || [];
+        const cloudProgress = syncData.continueWatchingList || [];
+        const cloudTombstones = syncData.removedProgress || [];
+        const cloudPlaylists = syncData.playlists || [];
+        const cloudTheme = syncData.selectedTheme || 'midnight-nebula';
+
+        // Continue-Watching is MERGED, never overwritten — union local + cloud,
+        // newest timestamp wins, deletions honored via tombstones.
+        const localProgress = JSON.parse(localStorage.getItem(`premium_search_continue_watching_${profileId}`) || '[]');
+        const mergedTombstones = mergeTombstoneLists(readTombstones(profileId), cloudTombstones);
+        const mergedProgress = mergeProgress(localProgress, cloudProgress, mergedTombstones);
+        localStorage.setItem(tombstoneKeyFor(profileId), JSON.stringify(mergedTombstones));
+
+        // Save profile-specific local storage
+        localStorage.setItem(`premium_search_library_${profileId}`, JSON.stringify(cloudLib));
+        localStorage.setItem(`premium_search_continue_watching_${profileId}`, JSON.stringify(mergedProgress));
+        localStorage.setItem(`premium_search_playlists_${profileId}`, JSON.stringify(cloudPlaylists));
+        localStorage.setItem(`premium_search_theme_${profileId}`, cloudTheme);
+
+        // If this is still the active profile, update states
+        const currentActiveId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
+        if (profileId === currentActiveId) {
+          setLibraryList(cloudLib);
+          localStorage.setItem('premium_search_library', JSON.stringify(cloudLib));
+
+          setContinueWatchingList(mergedProgress);
+          localStorage.setItem('premium_search_continue_watching', JSON.stringify(mergedProgress));
+
+          setPlaylists(cloudPlaylists);
+          localStorage.setItem('premium_search_playlists', JSON.stringify(cloudPlaylists));
+
+          setSelectedTheme(cloudTheme);
+          localStorage.setItem('premium_search_theme', cloudTheme);
+
+          setLastSynced(new Date());
+          triggerToast('Cloud profile storage synchronized!', 'success');
+        }
+
+        // If our merge differs from the cloud, push the converged result back
+        const changed = JSON.stringify(mergedProgress) !== JSON.stringify(cloudProgress)
+          || JSON.stringify(mergedTombstones) !== JSON.stringify(cloudTombstones);
+        if (changed) {
+          syncToCloud(cloudLib, mergedProgress, cloudPlaylists, cloudTheme, profileId);
         }
       }
     } catch (err) {
@@ -538,16 +686,35 @@ function AppContent() {
       localStorage.setItem('premium_search_playlists', JSON.stringify(currentPlaylists));
       localStorage.setItem('premium_search_theme', currentTheme);
 
+      const syncPayload = {
+        libraryList: currentLib,
+        continueWatchingList: currentProgress,
+        removedProgress: readTombstones(targetProfileId),
+        playlists: currentPlaylists,
+        selectedTheme: currentTheme
+      };
+
+      // --- Google Drive Sync (when enabled) ---
+      // Routes profile data to Google Drive instead of Premiumize, saving Fair Use points.
+      if (gdriveSyncEnabled && gdriveConnected) {
+        const gRes = await fetch(`/api/gdrive/sync/upload?filename=profile_${encodeURIComponent(targetProfileId)}_sync.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: syncPayload })
+        });
+        if (gRes.ok) {
+          setLastSynced(new Date());
+        } else {
+          console.error('❌ Google Drive sync upload failed.');
+        }
+        return; // Skip Premiumize sync completely
+      }
+
+      // --- Premiumize Sync (default fallback) ---
       const res = await fetchWithCredentials(`/api/sync?filename=profile_${targetProfileId}_sync.json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          libraryList: currentLib,
-          continueWatchingList: currentProgress,
-          removedProgress: readTombstones(targetProfileId), // sync deletions so peers honor them
-          playlists: currentPlaylists,
-          selectedTheme: currentTheme
-        })
+        body: JSON.stringify(syncPayload)
       });
       if (res.ok) {
         setLastSynced(new Date());
@@ -1140,7 +1307,10 @@ function AppContent() {
     }
   };
 
-  // Delete completed download from disk & SABnzbd history
+  // Delete completed download from disk & SABnzbd history. If the release was
+  // also archived to Google Drive, the backend deletes those files too and
+  // reports them back here so local state (upload status + registry) doesn't
+  // keep pointing at files that no longer exist.
   const deleteSabHistoryItem = async (nzoId, name) => {
     try {
       const res = await fetchWithCredentials('/api/sab/delete', {
@@ -1151,7 +1321,30 @@ function AppContent() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.status === 'success') {
-        triggerToast(`Purged from disk & history: "${name.slice(0, 30)}..."`, 'success');
+        const deletedDriveFiles = data.deletedDriveFiles || [];
+        if (deletedDriveFiles.length > 0) {
+          const deletedIds = new Set(deletedDriveFiles.map(f => f.id));
+          setGdriveUploads(prev => {
+            if (!prev[nzoId]) return prev;
+            const next = { ...prev };
+            delete next[nzoId];
+            return next;
+          });
+          setGdriveRegistry(prev => {
+            let changed = false;
+            const next = {};
+            for (const [key, info] of Object.entries(prev)) {
+              if (deletedIds.has(info?.driveFileId)) { changed = true; continue; }
+              next[key] = info;
+            }
+            if (changed) localStorage.setItem('premio_gdrive_registry', JSON.stringify(next));
+            return changed ? next : prev;
+          });
+          fetchGdriveFiles();
+          triggerToast(`Purged from disk, history & Google Drive: "${name.slice(0, 30)}..."`, 'success');
+        } else {
+          triggerToast(`Purged from disk & history: "${name.slice(0, 30)}..."`, 'success');
+        }
         fetchSabStatus();
       } else {
         throw new Error(data.error || 'Failed to delete item');
@@ -1160,6 +1353,137 @@ function AppContent() {
       triggerToast(`Purge failed: ${err.message}`, 'error');
     }
   };
+
+  // --- Google Drive Upload Trigger ---
+  // Fires a background upload of a completed SABnzbd item's largest video file
+  // to Google Drive. The backend handles folder creation and chunked streaming.
+  const triggerGdriveUpload = async (nzoId, autoArchive = false) => {
+    try {
+      setGdriveUploads(prev => ({ ...prev, [nzoId]: { status: 'uploading', progress: 0 } }));
+      const res = await fetchWithCredentials('/api/gdrive/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nzoId, autoArchive })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      triggerToast('Google Drive upload started in background.', 'success');
+    } catch (err) {
+      setGdriveUploads(prev => ({ ...prev, [nzoId]: { status: 'failed', progress: 0, error: err.message } }));
+      triggerToast(`Google Drive upload failed: ${err.message}`, 'error');
+    }
+  };
+
+  const fetchGdriveFiles = async () => {
+    try {
+      const res = await fetch('/api/gdrive/files');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success') {
+          setGdriveFiles(data.files || []);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch Google Drive files list:', err);
+    }
+  };
+
+  // --- Google Drive Upload Status Poller ---
+  // Polls every 3 seconds when there are active GDrive uploads. Updates local
+  // state with backend progress percentages so the TransfersPanel progress bars
+  // animate in real time. Also triggers folder scan refresh when an upload finishes.
+  useEffect(() => {
+    const hasActive = Object.values(gdriveUploads || {}).some(u => u.status === 'uploading');
+    if (!hasActive) return;
+
+    const pollUploadStatus = async () => {
+      try {
+        const res = await fetch('/api/gdrive/upload/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        let hasCompleted = false;
+        setGdriveUploads(prev => {
+          const next = { ...prev };
+          for (const [nzoId, info] of Object.entries(data)) {
+            if (prev[nzoId]?.status === 'uploading' && info.status === 'completed') {
+              hasCompleted = true;
+            }
+            next[nzoId] = info;
+          }
+          return next;
+        });
+
+        recordGdriveCompletions(data);
+
+        if (hasCompleted) {
+          fetchGdriveFiles();
+        }
+      } catch (_) { /* silently retry next tick */ }
+    };
+
+    const id = setInterval(pollUploadStatus, 3000);
+    return () => clearInterval(id);
+  }, [gdriveUploads]);
+
+  // --- Google Drive Startup/Connection Watcher ---
+  useEffect(() => {
+    const initGdrive = async () => {
+      try {
+        const statusRes = await fetch('/api/gdrive/status');
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setGdriveConnected(statusData.connected);
+          localStorage.setItem('premio_gdrive_connected', statusData.connected ? 'true' : 'false');
+          if (statusData.connected) {
+            if (statusData.folderName) {
+              setGdriveFolderName(statusData.folderName);
+              localStorage.setItem('premio_gdrive_folder_name', statusData.folderName);
+            }
+            // Fetch files list
+            const filesRes = await fetch('/api/gdrive/files');
+            if (filesRes.ok) {
+              const filesData = await filesRes.json();
+              if (filesData.status === 'success') {
+                setGdriveFiles(filesData.files || []);
+              }
+            }
+            // Fetch initial uploads dictionary
+            const uploadsRes = await fetch('/api/gdrive/upload/status');
+            if (uploadsRes.ok) {
+              const uploadsData = await uploadsRes.json();
+              setGdriveUploads(uploadsData);
+              recordGdriveCompletions(uploadsData);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to initialize Google Drive integration:', err);
+      }
+    };
+    initGdrive();
+  }, []);
+
+  // --- Google Drive Auto-Archive ---
+  // When auto-archive is enabled and GDrive is connected, automatically trigger
+  // uploads for newly completed SABnzbd history items (once per item).
+  const autoArchiveTriggeredRef = useRef(new Set());
+  useEffect(() => {
+    if (!gdriveAutoArchive || !gdriveConnected) return;
+
+    sabHistory.forEach(item => {
+      if (
+        item.status === 'Completed' &&
+        !autoArchiveTriggeredRef.current.has(item.nzoId) &&
+        (!gdriveUploads || !gdriveUploads[item.nzoId] || gdriveUploads[item.nzoId].status === 'failed')
+      ) {
+        autoArchiveTriggeredRef.current.add(item.nzoId);
+        triggerGdriveUpload(item.nzoId, true);
+      }
+    });
+  }, [sabHistory, gdriveAutoArchive, gdriveConnected]);
 
   // Fetch Active Queue Transfers
   const fetchActiveTransfers = async () => {
@@ -1321,11 +1645,14 @@ function AppContent() {
     setShowPlaylistChoiceModal(false);
     setPlayerLoading(true);
     try {
+      const isGdrive = files[0]?.link && (files[0].link.includes('/api/gdrive/stream') || files[0].link.includes('/api/gdrive/transcode'));
       const virtualTorrent = {
         title: name,
         category: 'TV', // Set to 'TV' to activate sequential autoplay!
         isCloudFile: true,
         isCloudPlaylist: true,
+        forceBrowser: true, // Force browser playback to bypass isUnplayable checks and break loop!
+        isGdriveResolved: isGdrive,
         link: files[0].link,
         files: files
       };
@@ -1338,7 +1665,7 @@ function AppContent() {
     }
   };
 
-  // Helper: Open browser transcoding stream for local files
+  // Helper: Open browser transcoding stream for local files or Google Drive files
   const handleLaunchTranscodedPlaylist = async (files, name) => {
     setShowPlaylistChoiceModal(false);
     setPlayerLoading(true);
@@ -1351,8 +1678,18 @@ function AppContent() {
             forceBrowser: true
           };
         }
+        if (file.link && file.link.includes('/api/gdrive/stream')) {
+          return {
+            ...file,
+            link: file.link.replace('/api/gdrive/stream', '/api/gdrive/transcode'),
+            forceBrowser: true
+          };
+        }
         return file;
       });
+
+      const isSab = transcodedFiles[0]?.link && transcodedFiles[0].link.includes('/api/sab/transcode');
+      const isGdrive = transcodedFiles[0]?.link && transcodedFiles[0].link.includes('/api/gdrive/transcode');
 
       const virtualTorrent = {
         title: name,
@@ -1360,7 +1697,8 @@ function AppContent() {
         isCloudFile: true,
         isCloudPlaylist: true,
         forceBrowser: true,
-        isSabnzbd: true,
+        isSabnzbd: isSab,
+        isGdriveResolved: isGdrive,
         link: transcodedFiles[0].link,
         files: transcodedFiles
       };
@@ -1375,9 +1713,10 @@ function AppContent() {
 
   // Helper: Seek in a live transcoding stream by reloading source with ss offset
   const handleTranscodeSeek = (targetTime) => {
-    if (!selectedVideoFile || !selectedVideoFile.link || !selectedVideoFile.link.includes('/api/sab/transcode')) return;
+    if (!selectedVideoFile || !selectedVideoFile.link || 
+       (!selectedVideoFile.link.includes('/api/sab/transcode') && !selectedVideoFile.link.includes('/api/gdrive/transcode'))) return;
     try {
-      const url = new URL(selectedVideoFile.link);
+      const url = new URL(selectedVideoFile.link, window.location.origin);
       url.searchParams.set('ss', Math.round(targetTime).toString());
       
       setSelectedVideoFile({
@@ -3011,11 +3350,71 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
   // Trigger Instant Stream Playback
   const startStreaming = async (torrent, seekTimeSec = 0, resumeFileName = null) => {
-    if (!userPmKey) {
-      triggerToast('Premiumize API Key is required to stream files. Please configure it in onboarding/settings.', 'error');
-      setShowOnboarding(true);
-      setOnboardingStep(1);
+    if (!torrent) {
+      triggerToast('No streamable item specified.', 'error');
       return;
+    }
+
+    // --- Google Drive Uploading Block ---
+    const activeUploadEntry = Object.entries(gdriveUploads || {}).find(
+      ([nzoId, u]) => u && u.status === 'uploading' && 
+      (nzoId === torrent.nzoId || 
+       (u.filename && (u.filename === torrent.name || u.filename === torrent.resolvedVideoFile || (torrent.title && u.filename.includes(torrent.title))))
+      )
+    );
+    if (activeUploadEntry) {
+      const u = activeUploadEntry[1];
+      const nameOfUpload = u.filename || torrent.title || torrent.name || 'Video';
+      triggerToast(`"${nameOfUpload}" is currently uploading to Google Drive (${u.progress}%). Please wait for it to complete.`, 'info');
+      return;
+    }
+
+    // --- Google Drive Stream Intercept ---
+    // If the item was uploaded to Google Drive (has a driveFileId or a completed
+    // GDrive upload matches this nzoId), stream directly from Google Drive
+    // instead of Premiumize, saving Fair Use points.
+    let gdriveFileId = torrent.gdriveFileId || null;
+    if (!gdriveFileId && torrent.nzoId && gdriveUploads && gdriveUploads[torrent.nzoId]?.status === 'completed') {
+      gdriveFileId = gdriveUploads[torrent.nzoId]?.driveFileId;
+    }
+    // Persistent registry lookup (reliable): match this release's clean title or
+    // resolved video filename against recorded completed uploads.
+    if (!gdriveFileId) {
+      const keys = [torrent.resolvedVideoFile, torrent.title, torrent.name]
+        .filter(Boolean)
+        .map(cleanNameForMatch);
+      for (const k of keys) {
+        if (k && gdriveRegistry[k]?.driveFileId) {
+          gdriveFileId = gdriveRegistry[k].driveFileId;
+          break;
+        }
+      }
+    }
+    // Last resort: fuzzy-match against the scanned Drive folder listing.
+    if (!gdriveFileId) {
+      const match = findGdriveMatch(gdriveFiles, torrent.title || torrent.name, torrent.resolvedVideoFile || '');
+      if (match) {
+        gdriveFileId = match.id;
+      }
+    }
+    if (gdriveFileId && !torrent.isGdriveResolved) {
+      const streamUrl = `${window.location.origin}/api/gdrive/stream?fileId=${encodeURIComponent(gdriveFileId)}`;
+      const gdriveWrapped = {
+        ...torrent,
+        link: streamUrl,
+        isCloudFile: true,
+        isGdriveResolved: true,
+        forceBrowser: false,
+        files: [{
+          name: torrent.title || torrent.name || 'Google Drive Video',
+          link: streamUrl,
+          size: torrent.size || 0,
+          type: 'video',
+          id: gdriveFileId
+        }]
+      };
+      // Delegate to the cloud file path below (reuse same startStreaming logic)
+      return startStreaming(gdriveWrapped, seekTimeSec, resumeFileName);
     }
 
     let targetTorrent = torrent;
@@ -3052,6 +3451,15 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       }
     }
 
+    // Skip Premiumize API key validation for local Usenet and Google Drive streams
+    const isLocalOrGdriveFile = targetTorrent.isGdriveResolved || targetTorrent.isSabnzbd;
+    if (!isLocalOrGdriveFile && !userPmKey) {
+      triggerToast('Premiumize API Key is required to stream files. Please configure it in onboarding/settings.', 'error');
+      setShowOnboarding(true);
+      setOnboardingStep(1);
+      return;
+    }
+
     const downloadSource = targetTorrent.magnet || targetTorrent.torrentFile || targetTorrent.link;
     if (!downloadSource) {
       triggerToast('No streamable link available for this item.', 'error');
@@ -3059,10 +3467,10 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     }
 
     const activeProf = profiles.find(p => p.id === activeProfileId);
-    if (activeProf && activeProf.isKids && (category === 'Movies' || category === 'TV' || torrent.category === 'Movies' || torrent.category === 'TV')) {
-      const activeCat = torrent.category || category;
+    if (activeProf && activeProf.isKids && (category === 'Movies' || category === 'TV' || targetTorrent.category === 'Movies' || targetTorrent.category === 'TV')) {
+      const activeCat = targetTorrent.category || category;
       try {
-        const metadataUrl = `/api/metadata?title=${encodeURIComponent(torrent.title || torrent.name)}&category=${activeCat}`;
+        const metadataUrl = `/api/metadata?title=${encodeURIComponent(targetTorrent.title || targetTorrent.name)}&category=${activeCat}`;
         const metaRes = await fetchWithCredentials(metadataUrl);
         if (metaRes.ok) {
           const metaData = await metaRes.json();
@@ -3080,7 +3488,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     }
 
     setPlayerLoading(true);
-    setActivePlayerTorrent(torrent);
+    setActivePlayerTorrent(targetTorrent);
     setActiveRetroTorrent(null); // Clear active retro arcade session
     setSelectedRetroRomFile(null);
     setPlayerFiles([]);
@@ -3090,13 +3498,13 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     setResumeTime(seekTimeSec); // Track if we need to seek on load
 
     // If it's a direct cloud file link (starts with http/https and is not a magnet), bypass API backend stream-link parsing
-    if (torrent.isCloudFile || (downloadSource && (downloadSource.startsWith('http://') || downloadSource.startsWith('https://')) && !downloadSource.includes('magnet:'))) {
-      const files = torrent.files || [{
-        name: torrent.title || torrent.name || 'Cloud Video',
+    if (targetTorrent.isCloudFile || (downloadSource && (downloadSource.startsWith('http://') || downloadSource.startsWith('https://')) && !downloadSource.includes('magnet:'))) {
+      const files = targetTorrent.files || [{
+        name: targetTorrent.title || targetTorrent.name || 'Cloud Video',
         link: downloadSource,
-        size: torrent.size || 0,
+        size: targetTorrent.size || 0,
         type: 'video',
-        id: torrent.id || null
+        id: targetTorrent.id || null
       }];
       
       setPlayerFiles(files);
@@ -3104,14 +3512,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       const videos = files.filter(f => f.type === 'video');
       const selectedVideo = videos.length > 0 ? videos[0] : files[0];
       
+      if (!selectedVideo) {
+        triggerToast('No streamable video files found.', 'error');
+        setPlayerLoading(false);
+        return;
+      }
+
       const ext = selectedVideo.name.split('.').pop().toLowerCase();
       const isUnplayable = ['avi', 'mkv', 'ts', 'divx', 'xvid'].includes(ext);
       
-      if (isUnplayable && !torrent.forceBrowser) {
+      if (isUnplayable && !targetTorrent.forceBrowser) {
         setPendingPlaylistFiles(files);
-        setPendingPlaylistName(torrent.title || torrent.name || selectedVideo.name);
-        setPendingItemId(selectedVideo.id || torrent.id || null);
-        setPendingItemType(selectedVideo.id || torrent.id ? 'file' : 'torrent');
+        setPendingPlaylistName(targetTorrent.title || targetTorrent.name || selectedVideo.name);
+        setPendingItemId(selectedVideo.id || targetTorrent.id || null);
+        setPendingItemType(selectedVideo.id || targetTorrent.id ? 'file' : 'torrent');
         setHasAviOrMkvInPending(true);
         setPlayerLoading(false);
         setShowPlaylistChoiceModal(true);
@@ -3691,7 +4105,8 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         isSabnzbd: torrent.isSabnzbd,
         nzoId: torrent.nzoId,
         link: torrent.link,
-        files: torrent.files
+        files: torrent.files,
+        gdriveFileId: torrent.gdriveFileId || (torrent.nzoId && gdriveUploads && gdriveUploads[torrent.nzoId]?.driveFileId) || null
       };
 
       const updated = [entry, ...libraryList];
@@ -5409,6 +5824,9 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
             buildSabStreamUrl={buildSabStreamUrl}
             isItemInLibrary={isItemInLibrary}
             toggleLibraryItem={toggleLibraryItem}
+            triggerGdriveUpload={triggerGdriveUpload}
+            gdriveUploads={gdriveUploads}
+            gdriveConnected={gdriveConnected}
           />
         )}
 
