@@ -99,7 +99,7 @@ function AppContent() {
     usenetHandler, setUsenetHandler,
     showSabnzbdGuide, setShowSabnzbdGuide,
     gdriveAutoArchive, setGdriveAutoArchive,
-    gdriveSyncEnabled, setGdriveSyncEnabled,
+    syncProvider, setSyncProvider,
     gdriveClientId, setGdriveClientId,
     gdriveClientSecret, setGdriveClientSecret,
     showGdriveGuide, setShowGdriveGuide,
@@ -417,29 +417,65 @@ function AppContent() {
     );
   };
 
+  // Resolve where profile/library/continue-watching data syncs. The user picks a
+  // preferred provider (syncProvider); when BOTH are set up we honor that choice,
+  // when only one is available we use it, and when neither is we stay local-only
+  // (localStorage). Premiumize is used for sync ONLY as a deliberate user choice or
+  // sole available provider — never as a hidden fallback that could surprise-spend.
+  const resolveSyncTarget = () => {
+    const gdriveReady = gdriveConnected;
+    const pmReady = !!userPmKey;
+    if (gdriveReady && pmReady) return syncProvider === 'premiumize' ? 'premiumize' : 'gdrive';
+    if (gdriveReady) return 'gdrive';
+    if (pmReady) return 'premiumize';
+    return 'local';
+  };
+
+  // Apply a freshly-fetched cloud profiles list to local state and open the right
+  // profile gate. Shared by both the Google Drive and Premiumize fetch paths.
+  const applyCloudProfiles = async (cloudProfiles) => {
+    setProfiles(cloudProfiles);
+    localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
+    const activeId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
+    if (activeId) {
+      const profileExists = cloudProfiles.some(p => p.id === activeId);
+      if (profileExists) {
+        const activeProf = cloudProfiles.find(p => p.id === activeId);
+        if (activeProf && activeProf.pin) {
+          setActiveProfileId('');
+          setIsProfilePickerOpen(true);
+        } else {
+          await syncProfileDataFromCloud(activeId);
+        }
+      } else {
+        setActiveProfileId('');
+        localStorage.removeItem('premium_search_active_profile_id');
+        setIsProfilePickerOpen(true);
+      }
+    } else {
+      setIsProfilePickerOpen(true);
+    }
+  };
+
   const syncProfilesToCloud = async (currentProfiles = profiles) => {
+    const target = resolveSyncTarget();
+    if (target === 'local') return; // no cloud provider set up — localStorage only
     try {
-      if (gdriveSyncEnabled && gdriveConnected) {
+      if (target === 'gdrive') {
         const res = await fetch('/api/gdrive/sync/upload?filename=profiles_list.json', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data: currentProfiles })
         });
-        if (res.ok) {
-          console.log('✅ Profiles list synced to Google Drive successfully.');
-        } else {
-          console.error('❌ Google Drive profiles sync upload failed.');
-        }
-        return;
-      }
-
-      const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentProfiles)
-      });
-      if (res.ok) {
-        console.log('✅ Profiles list synced to Premiumize successfully.');
+        if (res.ok) console.log('✅ Profiles list synced to Google Drive.');
+        else console.error('❌ Google Drive profiles sync upload failed.');
+      } else {
+        const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentProfiles)
+        });
+        if (res.ok) console.log('✅ Profiles list synced to Premiumize.');
       }
     } catch (err) {
       console.error('❌ Syncing profiles to cloud failed:', err.message);
@@ -447,10 +483,12 @@ function AppContent() {
   };
 
   const syncProfilesFromCloud = async () => {
+    const target = resolveSyncTarget();
+    if (target === 'local') return; // local profiles already loaded by startup effect
     try {
       let syncData = null;
 
-      if (gdriveSyncEnabled && gdriveConnected) {
+      if (target === 'gdrive') {
         try {
           const res = await fetch('/api/gdrive/sync/download?filename=profiles_list.json');
           if (res.ok) {
@@ -458,12 +496,9 @@ function AppContent() {
             if (data.success) {
               if (data.data) {
                 syncData = data.data;
-                console.log('✅ Profiles list fetched from Google Drive successfully.');
-              } else if (!data.synced) {
-                // If GDrive sync file doesn't exist, and we have local profiles, back them up
-                if (profiles.length > 0) {
-                  await syncProfilesToCloud(profiles);
-                }
+                console.log('✅ Profiles list fetched from Google Drive.');
+              } else if (!data.synced && profiles.length > 0) {
+                await syncProfilesToCloud(profiles); // first run — back up local profiles
                 return;
               }
             }
@@ -471,77 +506,20 @@ function AppContent() {
         } catch (gErr) {
           console.error('Google Drive profiles sync download failed:', gErr.message);
         }
-
-        if (syncData) {
-          const cloudProfiles = syncData;
-          setProfiles(cloudProfiles);
-          localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
-          
-          const activeId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
-          if (activeId) {
-            const profileExists = cloudProfiles.some(p => p.id === activeId);
-            if (profileExists) {
-              const activeProf = cloudProfiles.find(p => p.id === activeId);
-              if (activeProf && activeProf.pin) {
-                setActiveProfileId('');
-                setIsProfilePickerOpen(true);
-              } else {
-                await syncProfileDataFromCloud(activeId);
-              }
-            } else {
-              setActiveProfileId('');
-              localStorage.removeItem('premium_search_active_profile_id');
-              setIsProfilePickerOpen(true);
-            }
-          } else {
-            setIsProfilePickerOpen(true);
-          }
-        }
-        return;
-      }
-
-      if (!syncData) {
+      } else {
         const res = await fetchWithCredentials('/api/sync?filename=profiles_list.json');
         if (!res.ok) throw new Error('Could not contact sync endpoint.');
         const data = await res.json();
         if (data.success && data.synced && data.data) {
           syncData = data.data;
-          console.log('✅ Profiles list fetched from Premiumize successfully.');
-        } else if (data.success && !data.synced) {
-          // If file doesn't exist, and we have local profiles, back them up
-          if (profiles.length > 0) {
-            await syncProfilesToCloud(profiles);
-          }
+          console.log('✅ Profiles list fetched from Premiumize.');
+        } else if (data.success && !data.synced && profiles.length > 0) {
+          await syncProfilesToCloud(profiles); // first run — back up local profiles
           return;
         }
       }
 
-      if (syncData) {
-        const cloudProfiles = syncData;
-        setProfiles(cloudProfiles);
-        localStorage.setItem('premium_search_profiles', JSON.stringify(cloudProfiles));
-        
-        // If there's an active profile, sync its data too
-        const activeId = localStorage.getItem('premium_search_active_profile_id') || activeProfileId;
-        if (activeId) {
-          const profileExists = cloudProfiles.some(p => p.id === activeId);
-          if (profileExists) {
-            const activeProf = cloudProfiles.find(p => p.id === activeId);
-            if (activeProf && activeProf.pin) {
-              setActiveProfileId('');
-              setIsProfilePickerOpen(true);
-            } else {
-              await syncProfileDataFromCloud(activeId);
-            }
-          } else {
-            setActiveProfileId('');
-            localStorage.removeItem('premium_search_active_profile_id');
-            setIsProfilePickerOpen(true);
-          }
-        } else {
-          setIsProfilePickerOpen(true);
-        }
-      }
+      if (syncData) await applyCloudProfiles(syncData);
     } catch (err) {
       console.error('❌ Syncing profiles from cloud failed:', err.message);
     }
@@ -553,64 +531,45 @@ function AppContent() {
     try {
       let syncData = null;
 
-      // --- Try Google Drive Sync first (when enabled) ---
-      if (gdriveSyncEnabled && gdriveConnected) {
+      const target = resolveSyncTarget();
+
+      // First run on this provider (no cloud file yet) — seed it from local state.
+      const backupLocalProfileData = async () => {
+        const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
+        const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
+        const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
+        const localTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
+        const parsedLib = localLib ? JSON.parse(localLib) : [];
+        const parsedCW = localCW ? JSON.parse(localCW) : [];
+        const parsedPL = localPL ? JSON.parse(localPL) : [];
+        if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
+          console.log('ℹ️ Backing up local profile data to cloud...');
+          await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
+          triggerToast('Cloud profile sync backup created!', 'success');
+        }
+      };
+
+      if (target === 'gdrive') {
         try {
           const gRes = await fetch(`/api/gdrive/sync/download?filename=profile_${encodeURIComponent(profileId)}_sync.json`);
           if (gRes.ok) {
             const gData = await gRes.json();
             if (gData.success) {
-              if (gData.data) {
-                syncData = gData.data;
-              } else if (!gData.synced) {
-                // No cloud data found on GDrive — upload current local state
-                const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
-                const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
-                const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
-                const localTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
-                
-                const parsedLib = localLib ? JSON.parse(localLib) : [];
-                const parsedCW = localCW ? JSON.parse(localCW) : [];
-                const parsedPL = localPL ? JSON.parse(localPL) : [];
-                
-                if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
-                  console.log('ℹ️ Syncing local profile data up to Google Drive...');
-                  await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
-                  triggerToast('Cloud profile sync backup created on Google Drive!', 'success');
-                }
-                return;
-              }
+              if (gData.data) syncData = gData.data;
+              else if (!gData.synced) { await backupLocalProfileData(); return; }
             }
           }
         } catch (gErr) {
           console.error('Google Drive sync download failed:', gErr.message);
         }
-      } else {
-        // --- Premiumize fallback ---
+      } else if (target === 'premiumize') {
         const res = await fetchWithCredentials(`/api/sync?filename=profile_${profileId}_sync.json`);
         if (!res.ok) throw new Error('Could not contact sync endpoint.');
         const data = await res.json();
-        if (data.success && data.synced && data.data) {
-          syncData = data.data;
-        } else if (data.success && !data.synced) {
-          // No cloud data found — upload current local state
-          const localLib = localStorage.getItem(`premium_search_library_${profileId}`);
-          const localCW = localStorage.getItem(`premium_search_continue_watching_${profileId}`);
-          const localPL = localStorage.getItem(`premium_search_playlists_${profileId}`);
-          const localTheme = localStorage.getItem(`premium_search_theme_${profileId}`) || 'midnight-nebula';
-          
-          const parsedLib = localLib ? JSON.parse(localLib) : [];
-          const parsedCW = localCW ? JSON.parse(localCW) : [];
-          const parsedPL = localPL ? JSON.parse(localPL) : [];
-          
-          if (parsedLib.length > 0 || parsedCW.length > 0 || parsedPL.length > 0) {
-            console.log('ℹ️ Syncing local profile data up to cloud...');
-            await syncToCloud(parsedLib, parsedCW, parsedPL, localTheme, profileId);
-            triggerToast('Cloud profile sync backup created!', 'success');
-          }
-          return;
-        }
+        if (data.success && data.synced && data.data) syncData = data.data;
+        else if (data.success && !data.synced) { await backupLocalProfileData(); return; }
       }
+      // target === 'local' → no cloud provider; leave syncData null (localStorage only)
 
       if (syncData) {
         const cloudLib = syncData.libraryList || [];
@@ -694,30 +653,25 @@ function AppContent() {
         selectedTheme: currentTheme
       };
 
-      // --- Google Drive Sync (when enabled) ---
-      // Routes profile data to Google Drive instead of Premiumize, saving Fair Use points.
-      if (gdriveSyncEnabled && gdriveConnected) {
+      // Push to the user's chosen sync provider. Local state above is always saved;
+      // the cloud copy goes to Google Drive or Premiumize per resolveSyncTarget(),
+      // or nowhere ('local') when neither provider is set up.
+      const target = resolveSyncTarget();
+      if (target === 'gdrive') {
         const gRes = await fetch(`/api/gdrive/sync/upload?filename=profile_${encodeURIComponent(targetProfileId)}_sync.json`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data: syncPayload })
         });
-        if (gRes.ok) {
-          setLastSynced(new Date());
-        } else {
-          console.error('❌ Google Drive sync upload failed.');
-        }
-        return; // Skip Premiumize sync completely
-      }
-
-      // --- Premiumize Sync (default fallback) ---
-      const res = await fetchWithCredentials(`/api/sync?filename=profile_${targetProfileId}_sync.json`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(syncPayload)
-      });
-      if (res.ok) {
-        setLastSynced(new Date());
+        if (gRes.ok) setLastSynced(new Date());
+        else console.error('❌ Google Drive sync upload failed.');
+      } else if (target === 'premiumize') {
+        const res = await fetchWithCredentials(`/api/sync?filename=profile_${targetProfileId}_sync.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(syncPayload)
+        });
+        if (res.ok) setLastSynced(new Date());
       }
     } catch (err) {
       console.error('Cloud sync upload failed:', err.message);
@@ -1001,8 +955,10 @@ function AppContent() {
       }
     }
     
-    // 2. Perform Cloud Sync
-    if (userPmKey) {
+    // 2. Perform Cloud Sync from the resolved provider (Google Drive or Premiumize
+    // per the user's choice; both connection states are seeded synchronously from
+    // localStorage so there's no first-render race). 'local' means neither is set up.
+    if (resolveSyncTarget() !== 'local') {
       syncProfilesFromCloud();
     } else {
       const activeId = localStorage.getItem('premium_search_active_profile_id');
@@ -4326,14 +4282,28 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
     ]);
     
     try {
-      // Overwrite the cloud sync file with empty states to purge data on Premiumize
-      await fetchWithCredentials('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ libraryList: [], continueWatchingList: [] })
-      });
-      setLastSynced(new Date());
-      triggerToast('All local logs and Premiumize Cloud records cleared successfully!', 'success');
+      // Wipe the cloud copy on whichever provider this profile syncs to.
+      const target = activeProfileId ? resolveSyncTarget() : 'local';
+      const emptyPayload = { libraryList: [], continueWatchingList: [], removedProgress: [], playlists: [] };
+      if (target === 'gdrive') {
+        await fetch(`/api/gdrive/sync/upload?filename=profile_${encodeURIComponent(activeProfileId)}_sync.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: emptyPayload })
+        });
+        setLastSynced(new Date());
+        triggerToast('All local logs and Google Drive records cleared successfully!', 'success');
+      } else if (target === 'premiumize') {
+        await fetchWithCredentials(`/api/sync?filename=profile_${activeProfileId}_sync.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(emptyPayload)
+        });
+        setLastSynced(new Date());
+        triggerToast('All local logs and Premiumize Cloud records cleared successfully!', 'success');
+      } else {
+        triggerToast('All local logs cleared successfully!', 'success');
+      }
     } catch (err) {
       console.error('Failed to clear cloud sync:', err.message);
       triggerToast('Local logs cleared, but cloud sync wipe encountered an error.', 'error');

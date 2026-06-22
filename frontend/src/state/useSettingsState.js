@@ -44,11 +44,17 @@ export function useSettingsState() {
   const [usenetHandler, setUsenetHandler] = useState(() => localStorage.getItem('premio_usenet_handler') || 'premiumize');
   const [showSabnzbdGuide, setShowSabnzbdGuide] = useState(false);
   const [gdriveAutoArchive, setGdriveAutoArchive] = useState(() => localStorage.getItem('premio_gdrive_auto_archive') === 'true');
-  const [gdriveSyncEnabled, setGdriveSyncEnabled] = useState(() => localStorage.getItem('premio_gdrive_sync_enabled') === 'true');
+  // Where profile/library/continue-watching data syncs when both providers are set
+  // up: 'gdrive' or 'premiumize'. Defaults to Google Drive. If only one provider is
+  // actually available the app uses it regardless; if neither, sync stays local.
+  const [syncProvider, setSyncProvider] = useState(() => localStorage.getItem('premio_sync_provider') === 'premiumize' ? 'premiumize' : 'gdrive');
   const [gdriveClientId, setGdriveClientId] = useState(() => localStorage.getItem('premio_gdrive_client_id') || '');
   const [gdriveClientSecret, setGdriveClientSecret] = useState(() => localStorage.getItem('premio_gdrive_client_secret') || '');
   const [showGdriveGuide, setShowGdriveGuide] = useState(false);
-  const [gdriveConnected, setGdriveConnected] = useState(false);
+  // Seed from localStorage so the startup sync knows the connection state
+  // synchronously and can target Drive immediately (avoids a first-render race
+  // where sync would otherwise have no cloud target).
+  const [gdriveConnected, setGdriveConnected] = useState(() => localStorage.getItem('premio_gdrive_connected') === 'true');
   const [gdriveFolderName, setGdriveFolderName] = useState(() => localStorage.getItem('premio_gdrive_folder_name') || 'Premio');
   const [gdriveFiles, setGdriveFiles] = useState([]);
 
@@ -91,7 +97,7 @@ export function useSettingsState() {
     usenetHandler, setUsenetHandler,
     showSabnzbdGuide, setShowSabnzbdGuide,
     gdriveAutoArchive, setGdriveAutoArchive,
-    gdriveSyncEnabled, setGdriveSyncEnabled,
+    syncProvider, setSyncProvider,
     gdriveClientId, setGdriveClientId,
     gdriveClientSecret, setGdriveClientSecret,
     showGdriveGuide, setShowGdriveGuide,

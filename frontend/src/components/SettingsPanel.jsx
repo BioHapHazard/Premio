@@ -24,7 +24,7 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
     showSabnzbdGuide, setShowSabnzbdGuide,
     sabConnected, setSabConnected,
     gdriveAutoArchive, setGdriveAutoArchive,
-    gdriveSyncEnabled, setGdriveSyncEnabled,
+    syncProvider, setSyncProvider,
     gdriveClientId, setGdriveClientId,
     gdriveClientSecret, setGdriveClientSecret,
     showGdriveGuide, setShowGdriveGuide,
@@ -762,35 +762,61 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
                 {gdriveConnected && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: '6px', border: '1px solid var(--glass-border)', width: '100%' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>Google Drive Features:</span>
-                    <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
-                        <input 
-                          type="checkbox" 
-                          checked={gdriveSyncEnabled} 
-                          onChange={(e) => {
-                            const val = e.target.checked;
-                            setGdriveSyncEnabled(val);
-                            localStorage.setItem('premio_gdrive_sync_enabled', val);
-                            triggerToast(val ? 'Google Drive Cloud Sync enabled!' : 'Google Drive Cloud Sync disabled.', 'info');
-                          }} 
-                        />
-                        <span>Enable Google Drive Sync (Saves PM points)</span>
-                      </label>
 
-                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
-                        <input 
-                          type="checkbox" 
-                          checked={gdriveAutoArchive} 
-                          onChange={(e) => {
-                            const val = e.target.checked;
-                            setGdriveAutoArchive(val);
-                            localStorage.setItem('premio_gdrive_auto_archive', val);
-                            triggerToast(val ? 'Auto-Archive to Google Drive enabled!' : 'Auto-Archive disabled.', 'info');
-                          }} 
-                        />
-                        <span>Auto-Archive Completed Usenet Downloads</span>
-                      </label>
+                    {/* Sync provider selector — choose where profile/library/continue-watching
+                        data is stored for cross-device sync. Premiumize is disabled until a PM
+                        key is set. When only one provider is available the app uses it anyway. */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '0.85rem' }}>Sync profile data via:</span>
+                      <div style={{ display: 'inline-flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="action-btn"
+                          style={{ fontSize: '0.78rem', padding: '5px 12px', borderRadius: '6px', opacity: syncProvider === 'gdrive' ? 1 : 0.55 }}
+                          onClick={() => {
+                            setSyncProvider('gdrive');
+                            localStorage.setItem('premio_sync_provider', 'gdrive');
+                            triggerToast('Profile data now syncs via Google Drive.', 'info');
+                          }}
+                        >
+                          {syncProvider === 'gdrive' ? '● ' : ''}Google Drive
+                        </button>
+                        <button
+                          type="button"
+                          className="action-btn"
+                          disabled={!userPmKey}
+                          title={!userPmKey ? 'Add a Premiumize API key in Settings to use it for sync' : ''}
+                          style={{ fontSize: '0.78rem', padding: '5px 12px', borderRadius: '6px', opacity: syncProvider === 'premiumize' && userPmKey ? 1 : 0.55, cursor: userPmKey ? 'pointer' : 'not-allowed' }}
+                          onClick={() => {
+                            if (!userPmKey) return;
+                            setSyncProvider('premiumize');
+                            localStorage.setItem('premio_sync_provider', 'premiumize');
+                            triggerToast('Profile data now syncs via Premiumize.', 'info');
+                          }}
+                        >
+                          {syncProvider === 'premiumize' ? '● ' : ''}Premiumize
+                        </button>
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        {!userPmKey
+                          ? 'Syncing to Google Drive. Add a Premiumize key to enable it as an alternative for cross-device sync.'
+                          : `Cross-device sync uses ${syncProvider === 'premiumize' ? 'Premiumize' : 'Google Drive'}. Switching leaves the other provider untouched.`}
+                      </span>
                     </div>
+
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={gdriveAutoArchive}
+                        onChange={(e) => {
+                          const val = e.target.checked;
+                          setGdriveAutoArchive(val);
+                          localStorage.setItem('premio_gdrive_auto_archive', val);
+                          triggerToast(val ? 'Auto-Archive to Google Drive enabled!' : 'Auto-Archive disabled.', 'info');
+                        }}
+                      />
+                      <span>Auto-Archive Completed Usenet Downloads</span>
+                    </label>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--glass-border)', paddingTop: '10px', marginTop: '4px', width: '100%' }}>
                       <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
