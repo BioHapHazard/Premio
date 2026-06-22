@@ -4099,8 +4099,14 @@ function parseReleaseTitle(rawTitle, category) {
   title = title.replace(/\[([^\]]*)\]/g, '');
   title = title.replace(/\((?!\d{4}\))[^)]*\)/g, '');
 
-  // 5. Remove domain names and websites
-  title = title.replace(/\b(?:https?:\/\/)?(?:www\.)?[\w-]+\.(?:com|org|net|me|tv|cc|cx|xyz|to|in|is|biz|info|ws|eu|uk|us|ca|tw|hk|cn|la)\b/gi, '');
+  // 5. Remove websites/domains — but NOT real title words. The old single regex
+  // treated "Time.to" / "Loathing.in" as domains (.to/.in/.is/.me/.us are valid
+  // TLDs) and ate the word, mangling titles like "No Time to Die". So: strip
+  // protocol/www. URLs with ANY tld, but strip BARE domains only for unambiguous
+  // tlds that don't collide with common English words.
+  title = title.replace(/\bhttps?:\/\/[\w.-]+/gi, ' ');
+  title = title.replace(/\b(?:https?:\/\/)?www\.[\w.-]+\b/gi, ' ');
+  title = title.replace(/\b[\w-]+\.(?:com|org|net|xyz)\b/gi, ' ');
 
   // 6. Remove audio channel patterns (5.1, 7.1, 2.0, 5 1, 7 1, 2 0)
   title = title.replace(/\b(?:5\.1|7\.1|2\.0|2\.1|5\s+1|7\s+1|2\s+0)\b/gi, '');
@@ -4108,8 +4114,11 @@ function parseReleaseTitle(rawTitle, category) {
   // 7. Remove quality tags
   title = title.replace(/\b(1080p|2160p|720p|480p|4K|UHD|HDR10|HDR|DV|SDR)\b/gi, '');
 
-  // 8. Remove encoding tags
-  title = title.replace(/\b(x264|x265|h\.?264|h\.?265|HEVC|AVC|AAC|DTS|DDP|Atmos|TrueHD|FLAC)\b/gi, '');
+  // 8. Remove encoding/audio tags, including glued channel layouts the later
+  // dot→space pass would otherwise leave behind (e.g. "DDP5.1" → "DDP5 1",
+  // "H.264" → "H 264", "DD+ 5 1").
+  title = title.replace(/\b(?:x264|x265|h[\s.]?26[45]|HEVC|AVC|VC-?1|AV1)\b/gi, ' ');
+  title = title.replace(/\b(?:DDP?\+?|DD\+|E?-?AC-?3|DTS(?:[ .-]?HD)?(?:[ .]?MA)?|TrueHD|Atmos|AAC|FLAC|LPCM|Opus|MP3)(?:[\s.]?\d(?:[\s.]?\d)?)?\b/gi, ' ');
 
   // 9. Remove source tags
   title = title.replace(/\b(BluRay|Blu-Ray|WEB-DL|WEBRip|WEB|HDTV|BDRip|BRRip|DVDRip|REMUX|REPACK)\b/gi, '');
@@ -4148,6 +4157,22 @@ function parseReleaseTitle(rawTitle, category) {
 
   // 13. Collapse whitespace and trim
   title = title.replace(/\s+/g, ' ').trim();
+
+  // 13b. Strip low-quality SOURCE tags the earlier passes miss (cam/telesync/
+  // screener etc.) plus trailing LANGUAGE/format tags (e.g. "Bring Her Back TS EN",
+  // "... MULTI VFF"). Without this a scene release like
+  // "Bring.Her.Back.2025.TS.EN-RGB" cleans to "Bring Her Back TS EN" and misses on
+  // TMDb. Guarded so it can never blank a legitimate one-word title (Cam, It, Us…):
+  // if stripping would empty the title we keep the pre-strip value, and the trailing
+  // tags require a preceding space so a bare one-word title is never touched.
+  {
+    let t2 = title.replace(/\b(?:ts|telesync|telecine|cam|camrip|hdcam|hdts|hqcam|scr|screener|dvdscr|bdscr|r5|r6|ppv|workprint|predvd|pdvd|hdrip|webcap)\b/gi, ' ');
+    const trailingTag = /\s+(?:en|fr|de|es|nl|sv|da|fi|pt|ru|jp|kr|cn|hk|gr|th|ar|ja|ko|zh|pl|cz|ro|hu|tr|ua|vff?|vostfr|vo|multi|dual|dubbed|dub|subs?)$/i;
+    let prevT;
+    do { prevT = t2; t2 = t2.replace(trailingTag, '').trim(); } while (t2 !== prevT && t2);
+    t2 = t2.replace(/\s+/g, ' ').trim();
+    if (t2) title = t2; // only apply if it didn't nuke the whole title
+  }
 
   // 14. If title starts or ends with a dash, slash, or colon, trim it
   title = title.replace(/^[\s-:/]+|[\s-:/]+$/g, '').trim();

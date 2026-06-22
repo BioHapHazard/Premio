@@ -7,7 +7,14 @@ import { cleanUrl } from './format';
 // didn't (because its messy release name cleaned to a non-matching title).
 export const normalizeTitle = (raw) => {
   if (!raw) return '';
-  const t = String(raw).toLowerCase().replace(/[._]/g, ' ');
+  let t = String(raw).toLowerCase().replace(/[._]/g, ' ');
+  // Strip scene/tracker site tags that prefix many releases (e.g.
+  // "www.UIndex.org - Title", "www.Torrenting.com Title"). Run AFTER the dot→space
+  // pass so the match is on whitespace-separated tokens — this avoids false hits on
+  // dotted release names (e.g. ".to." inside a scene name). Without this, a release
+  // tagged with a site forks into its own canonical key and can't share metadata
+  // with clean releases of the same movie.
+  t = t.replace(/\bwww\s+[a-z0-9-]+\s+(?:com|org|net|me|tv|cc|cx|xyz|to|in|is|biz|info|ws|eu|uk|us|ca|tw|hk|cn|la|mx|se)\b\s*-?\s*/gi, ' ').trim();
   // Find the year first (it's the strongest anchor), then keep only the text before it.
   const ym = t.match(/\b(19|20)\d{2}\b/);
   const year = ym ? ym[0] : '';
