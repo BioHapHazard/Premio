@@ -1297,7 +1297,7 @@ function AppContent() {
             return changed ? next : prev;
           });
           fetchGdriveFiles();
-          triggerToast(`Purged from disk, history & Google Drive: "${name.slice(0, 30)}..."`, 'success');
+          triggerToast(`Deleted from disk & history. Google Drive copy moved to Trash (recoverable): "${name.slice(0, 30)}..."`, 'success');
         } else {
           triggerToast(`Purged from disk & history: "${name.slice(0, 30)}..."`, 'success');
         }

@@ -1501,17 +1501,21 @@ const escapeDriveQueryValue = (s) => String(s).replace(/\\/g, '\\\\').replace(/'
 // into the googleapis file URL so a crafted id can't inject path/query segments.
 const isValidDriveFileId = (id) => typeof id === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(id);
 
-// Permanently deletes a single Drive file by id. Treats 404 (already gone) as
-// success since the end state — file not on Drive — is what the caller wants.
+// Moves a single Drive file or folder to the Trash (recoverable for ~30 days),
+// rather than permanently deleting it. We use files.update {trashed:true} — the
+// DELETE verb purges immediately and bypasses Trash, so an accidental "Delete Disk
+// & History" would be unrecoverable. Trashing a folder takes its contents with it.
+// Treats 404 (already gone) as success since the end state is what the caller wants.
 const deleteGdriveFile = async (accessToken, fileId) => {
   if (!isValidDriveFileId(fileId)) return false;
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${accessToken}` }
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id`, {
+    method: 'PATCH',
+    headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true })
   });
   if (!res.ok && res.status !== 404) {
     const errText = await res.text();
-    throw new Error(`Drive delete failed (HTTP ${res.status}): ${errText}`);
+    throw new Error(`Drive trash failed (HTTP ${res.status}): ${errText}`);
   }
   return true;
 };
@@ -1597,6 +1601,112 @@ const listGdriveFolderFiles = async (accessToken, folderId) => {
 const GDRIVE_VIDEO_EXTS = ['mp4', 'mkv', 'avi', 'ts', 'webm', 'mov', 'm4v'];
 const GDRIVE_SIDECAR_EXTS = ['srt', 'sub', 'idx', 'ass', 'ssa', 'vtt', 'nfo'];
 
+// --- Drive foldering: organize archived releases under Premio/<Category>/<Name> ---
+
+// Best-effort category for foldering, from the SAB category + release name. Mirrors
+// the frontend guessCategory closely enough to file releases sensibly.
+const guessGdriveCategory = (sabCategory, title = '') => {
+  const c = String(sabCategory || '').toLowerCase();
+  const t = String(title || '').toLowerCase();
+  if (c.includes('audiobook')) return 'Audiobooks';
+  if (c.includes('book') || c.includes('ebook') || /\.(epub|mobi|azw3?|pdf|cbz|cbr)\b/.test(t)) return 'Ebooks';
+  if (/\bs\d{1,2}e\d{1,2}\b|\bs\d{1,2}\b|\bseason\b|\bcomplete series\b|\b\d{1,2}x\d{2}\b/.test(t)) return 'TV';
+  if (c.includes('tv') || c.includes('show') || c.includes('series') || c.includes('sonarr') || c.includes('season')) return 'TV';
+  if (c.includes('movie') || c.includes('radarr') || c === 'film' || c === 'films') return 'Movies';
+  if (c.includes('music') || /\b(flac|mp3|album|discography|ost|soundtrack)\b/.test(t)) return 'Music';
+  if (c.includes('game') || c.includes('rom')) return 'Games';
+  if (/\b(yify|yts|x264|x265|hevc|h264|h265|1080p|720p|2160p|4k|bluray|webrip|web-dl|hdtv|remux)\b/.test(t)) return 'Movies';
+  return 'Other';
+};
+
+const GDRIVE_CATEGORY_FOLDER = { Movies: 'Movies', TV: 'TV Shows', Music: 'Music', Audiobooks: 'Audiobooks', Ebooks: 'Ebooks', Games: 'Games', Other: 'Other' };
+
+// Strip filesystem/Drive-reserved characters so a title is safe as a folder name.
+const sanitizeFolderName = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+// Extract the season number from a release name (S02E03, 2x03, "Season 2", S02).
+// Returns null when none is present (e.g. a complete-series pack or specials).
+const parseSeasonNumber = (name) => {
+  const t = String(name || '');
+  let m = t.match(/\bS(\d{1,2})E\d{1,2}\b/i); if (m) return parseInt(m[1], 10);
+  m = t.match(/\b(\d{1,2})x\d{2}\b/); if (m) return parseInt(m[1], 10);
+  m = t.match(/\bSeason[\s._-]*(\d{1,2})\b/i); if (m) return parseInt(m[1], 10);
+  m = t.match(/\bS(\d{1,2})\b/i); if (m) return parseInt(m[1], 10);
+  return null;
+};
+
+// Resolve the { categoryFolder, subFolders } a release is archived under, where
+// subFolders is the ordered nested path beneath the category folder:
+//   Movies → "Movies" / ["Title (Year)"]
+//   TV     → "TV Shows" / ["Show Name", "Season 0X"]  (season omitted if unknown)
+// so every episode of a season collects in one folder, every season under its
+// show, and deletion can remove empty leaves bottom-up without touching the
+// category folder.
+const resolveGdriveFolders = (sabCategory, releaseName) => {
+  const cat = guessGdriveCategory(sabCategory, releaseName);
+  const categoryFolder = GDRIVE_CATEGORY_FOLDER[cat] || 'Other';
+  const subFolders = [];
+  if (cat === 'TV') {
+    const parsed = parseReleaseTitle(releaseName, 'TV');
+    // Show name = everything before the first season/episode marker; also drop a
+    // trailing "complete"/"series" that leaks in for full-series packs.
+    let show = (parsed.showName || parsed.cleanTitle || releaseName)
+      .replace(/\bS\d{1,2}(?:E\d{1,2})?\b.*$/i, '')
+      .replace(/\b\d{1,2}x\d{2}\b.*$/i, '')
+      .replace(/\bSeason[\s._-]*\d{1,2}\b.*$/i, '')
+      .replace(/\b(?:complete series|complete|series)\b.*$/i, '')
+      .trim();
+    show = sanitizeFolderName(show) || sanitizeFolderName(parsed.showName || releaseName) || 'Unknown';
+    subFolders.push(show);
+    const season = parseSeasonNumber(releaseName);
+    if (season != null) subFolders.push(`Season ${String(season).padStart(2, '0')}`);
+  } else {
+    const parsed = parseReleaseTitle(releaseName, 'Movies');
+    const name = parsed.cleanTitle ? (parsed.cleanTitle + (parsed.year ? ` (${parsed.year})` : '')) : releaseName;
+    subFolders.push(sanitizeFolderName(name) || sanitizeFolderName(releaseName) || 'Unknown');
+  }
+  return { categoryFolder, subFolders };
+};
+
+// Recursively collect non-folder media files under a Drive folder (releases now
+// live in Premio/<Category>/<Name>, so a flat listing of the root would miss them).
+// Excludes folders and the profile-sync *.json files kept in the Premio root.
+const listGdriveFilesRecursive = async (accessToken, folderId, depth = 0) => {
+  if (depth > 6) return [];
+  const children = await listGdriveFolderFiles(accessToken, folderId);
+  let out = [];
+  for (const c of children) {
+    if (c.mimeType === 'application/vnd.google-apps.folder') {
+      out = out.concat(await listGdriveFilesRecursive(accessToken, c.id, depth + 1));
+    } else if (!/\.json$/i.test(c.name || '')) {
+      out.push(c);
+    }
+  }
+  return out;
+};
+
+// True if a local folder still holds a real video (≥100MB — ignores tiny sample
+// clips, subs, nfo). Used so deleting a release only removes its folder when no
+// real media remains, preserving a shared show/season folder with other episodes.
+const folderHasRealMedia = (dir) => {
+  const MIN_BYTES = 100 * 1024 * 1024;
+  let found = false;
+  const walk = (p, depth) => {
+    if (found || depth > 16) return;
+    let st; try { st = fs.lstatSync(p); } catch { return; }
+    if (st.isSymbolicLink()) return;
+    if (st.isDirectory()) {
+      let entries = []; try { entries = fs.readdirSync(p); } catch { return; }
+      for (const e of entries) walk(path.join(p, e), depth + 1);
+    } else if (st.isFile()) {
+      const ext = path.extname(p).toLowerCase().slice(1);
+      if (GDRIVE_VIDEO_EXTS.includes(ext) && st.size >= MIN_BYTES) found = true;
+    }
+  };
+  walk(dir, 0);
+  return found;
+};
+
 // Collect every video + sidecar file under a completed release path so a
 // multi-file release (e.g. a season pack with subtitles) is fully archived
 // before any local deletion. Recursive, skips symlinks, depth-capped.
@@ -1669,7 +1779,7 @@ const uploadSingleFileToGdrive = async (accessToken, filePath, filename, parentF
 // after every file uploads successfully (when autoArchive is on); a failure
 // leaves all local files intact. driveFileId points at the largest video so
 // playback resolution keeps working.
-const uploadReleaseToGdrive = async (accessToken, storagePath, parentFolderId, nzoId, autoArchive) => {
+const uploadReleaseToGdrive = async (accessToken, storagePath, parentFolderId, nzoId, autoArchive, folderMeta = {}) => {
   const rootStats = fs.statSync(storagePath);
   const files = rootStats.isDirectory()
     ? getUploadableReleaseFiles(storagePath)
@@ -1704,6 +1814,13 @@ const uploadReleaseToGdrive = async (accessToken, storagePath, parentFolderId, n
     totalFiles: files.length,
     completedFiles: driveFiles.length,
     driveFiles,
+    // Drive folders this release was archived into (Premio/<Category>/<...>), so
+    // deletion can remove now-empty leaf folders bottom-up (season → show) without
+    // touching the shared category folder. driveFolderChain is top→leaf.
+    driveFolderId: folderMeta.leafFolderId || parentFolderId || null,
+    driveFolderName: folderMeta.leafFolderName || null,
+    driveCategoryFolderId: folderMeta.categoryFolderId || null,
+    driveFolderChain: Array.isArray(folderMeta.folderChain) ? folderMeta.folderChain : null,
     error: null
   };
   saveActiveUploads();
@@ -1903,7 +2020,10 @@ app.get('/api/gdrive/files', async (req, res) => {
     const accessToken = await getGdriveAccessToken();
     const folderName = getGdriveFolderName();
     const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
-    const files = await listGdriveFolderFiles(accessToken, parentFolderId);
+    // Recursive: releases now live in Premio/<Category>/<Name>, so flat-listing the
+    // root would only return category folders. This returns the actual media files
+    // (excluding the profile-sync JSONs) so playback resolution + Settings scan work.
+    const files = await listGdriveFilesRecursive(accessToken, parentFolderId);
     return res.json({ status: 'success', files });
   } catch (err) {
     console.error('❌ Google Drive list files failed:', err.message);
@@ -2061,11 +2181,27 @@ app.post('/api/gdrive/upload', async (req, res) => {
     }
 
     const folderName = getGdriveFolderName();
-    const parentFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+    const rootFolderId = await findOrCreateGdriveFolder(accessToken, folderName);
+
+    // Organize under Premio/<Category>/<...> (e.g. Premio/Movies/Bring Her Back
+    // (2025), Premio/TV Shows/Severance/Season 02) so the archive stays tidy and
+    // per-release deletion can clean up empty leaf folders bottom-up.
+    const { categoryFolder, subFolders } = resolveGdriveFolders(slot.category, slot.name || path.basename(storage));
+    const categoryFolderId = await findOrCreateGdriveFolder(accessToken, categoryFolder, rootFolderId);
+    // Build the nested chain beneath the category folder, recording each level so
+    // deletion can remove now-empty folders without touching the category folder.
+    const folderChain = [];
+    let parentId = categoryFolderId;
+    for (const segment of subFolders) {
+      const id = await findOrCreateGdriveFolder(accessToken, segment, parentId);
+      folderChain.push({ id, name: segment });
+      parentId = id;
+    }
+    const leafFolderId = parentId;
 
     // Fire-and-forget: uploads ALL videos + sidecars and (if autoArchive) deletes
     // the local folder only after every file succeeds. Tracks progress via activeUploads[nzoId].
-    uploadReleaseToGdrive(accessToken, storage, parentFolderId, nzoId, autoArchive)
+    uploadReleaseToGdrive(accessToken, storage, leafFolderId, nzoId, autoArchive, { leafFolderId, leafFolderName: subFolders[subFolders.length - 1], categoryFolderId, folderChain })
       .catch((uploadErr) => {
         console.error(`❌ Background GDrive release upload failed for nzoId ${nzoId}:`, uploadErr.message);
       });
@@ -2479,55 +2615,42 @@ app.post('/api/sab/delete', async (req, res) => {
       }
     }
 
-    // Perform file deletion if requested and storage path is found
+    // Resolve allowed roots (for validating any filesystem deletion) and capture
+    // the release's job folder NOW, while its files still exist — so we can tell a
+    // single-file storage path (job folder = its parent) from a folder one.
+    let allowedDir = sabCompleteDir;
+    let tempDir = '';
+    let jobFolder = null;
     if (storagePath) {
-      let allowedDir = sabCompleteDir;
-      let tempDir = '';
-      
-      const configUrl = `${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`;
       try {
-        const configRes = await fetch(configUrl);
+        const configRes = await fetch(`${sabUrl}/api?mode=get_config&apikey=${sabKey}&output=json`);
         if (configRes.ok) {
           const configData = await configRes.json();
-          if (!allowedDir) {
-            allowedDir = configData?.config?.misc?.complete_dir || '';
-          }
+          if (!allowedDir) allowedDir = configData?.config?.misc?.complete_dir || '';
           tempDir = configData?.config?.misc?.download_dir || '';
         }
       } catch (e) {
         console.warn('⚠️ Failed to fetch SABnzbd config for directory validation:', e.message);
       }
-
-      let isPathAllowed = false;
-      const absoluteStoragePath = path.resolve(storagePath);
-
-      if (allowedDir) {
-        const resolvedAllowedDir = path.resolve(allowedDir);
-        if (absoluteStoragePath === resolvedAllowedDir || absoluteStoragePath.startsWith(resolvedAllowedDir + path.sep)) {
-          isPathAllowed = true;
-        }
-      }
-      if (!isPathAllowed && tempDir) {
-        const resolvedTempDir = path.resolve(tempDir);
-        if (absoluteStoragePath === resolvedTempDir || absoluteStoragePath.startsWith(resolvedTempDir + path.sep)) {
-          isPathAllowed = true;
-        }
-      }
-
-      if (isPathAllowed || (!allowedDir && !tempDir)) {
+      try {
         if (fs.existsSync(storagePath)) {
-          console.log(`🗑️ Deleting folder from disk: ${storagePath}`);
-          fs.rmSync(storagePath, { recursive: true, force: true });
+          jobFolder = fs.statSync(storagePath).isFile() ? path.dirname(storagePath) : storagePath;
         }
-      } else {
-        console.warn(`⚠️ Security warning: Deletion target ${storagePath} lies outside allowed directories. Skipping filesystem delete.`);
-      }
+      } catch { /* ignore */ }
     }
 
-    // If this release was archived to Google Drive, purge it there too so
-    // "delete disk & history" actually removes every copy. Best-effort: a
-    // missing/expired Drive connection or a single file's failure shouldn't
-    // block the local SABnzbd deletion below.
+    // Is `target` strictly inside an allowed root (deeper than it, never the root
+    // itself)? When no root is known we trust the SAB-reported path (not user input).
+    const isDeletableLocalPath = (target) => {
+      const abs = path.resolve(target);
+      const roots = [allowedDir, tempDir].filter(Boolean).map(d => path.resolve(d));
+      if (roots.length === 0) return true;
+      return roots.some(root => abs !== root && abs.startsWith(root + path.sep));
+    };
+
+    // --- Google Drive cleanup: trash the release's files (recoverable), then the
+    // leaf folder if it's now empty (so a movie folder vanishes but a show folder with other
+    // episodes survives). Best-effort — never blocks local/SAB deletion.
     const deletedDriveFiles = [];
     if (deleteFiles) {
       const uploadRecord = activeUploads[nzoId];
@@ -2543,6 +2666,25 @@ app.post('/api/sab/delete', async (req, res) => {
               console.warn(`⚠️ Failed to delete Drive file ${f.name} (${f.id}):`, fileErr.message);
             }
           }
+          // Remove now-empty folders bottom-up (e.g. Season 02 → its show), so a
+          // movie/season folder vanishes once emptied but a show/season still
+          // holding other episodes is preserved. Never the category folder.
+          const chain = Array.isArray(uploadRecord?.driveFolderChain) && uploadRecord.driveFolderChain.length
+            ? uploadRecord.driveFolderChain
+            : (uploadRecord?.driveFolderId ? [{ id: uploadRecord.driveFolderId, name: uploadRecord.driveFolderName }] : []);
+          for (let i = chain.length - 1; i >= 0; i--) {
+            const folder = chain[i];
+            if (!folder?.id || folder.id === uploadRecord?.driveCategoryFolderId) continue;
+            try {
+              const remaining = await listGdriveFolderFiles(accessToken, folder.id);
+              if (remaining.length > 0) break; // this level (and parents) still hold files — stop
+              await deleteGdriveFile(accessToken, folder.id);
+              console.log(`🗑️ Removed empty Drive folder "${folder.name || folder.id}".`);
+            } catch (folderErr) {
+              console.warn('⚠️ Drive folder cleanup skipped:', folderErr.message);
+              break;
+            }
+          }
         } catch (tokenErr) {
           console.warn('⚠️ Skipping Google Drive cleanup (not connected or token error):', tokenErr.message);
         }
@@ -2553,7 +2695,8 @@ app.post('/api/sab/delete', async (req, res) => {
       }
     }
 
-    // Call SABnzbd API to delete from history or queue
+    // Call SABnzbd API to delete from history or queue (del_files purges the job's
+    // tracked files on disk).
     const mode = fromQueue ? 'queue' : 'history';
     let delUrl = `${sabUrl}/api?mode=${mode}&name=delete&value=${encodeURIComponent(nzoId)}&apikey=${sabKey}&output=json`;
     if (deleteFiles) {
@@ -2566,6 +2709,27 @@ app.post('/api/sab/delete', async (req, res) => {
     }
 
     const data = await delRes.json();
+
+    // --- Local folder cleanup (after SAB removed the files). Remove the release's
+    // own folder so it doesn't linger. Only when no real video remains, so a shared
+    // show/season folder that still holds other episodes is preserved.
+    if (deleteFiles && jobFolder) {
+      try {
+        if (fs.existsSync(jobFolder)) {
+          if (!isDeletableLocalPath(jobFolder)) {
+            console.warn(`⚠️ Skipping local cleanup — "${jobFolder}" is outside allowed directories.`);
+          } else if (folderHasRealMedia(jobFolder)) {
+            console.log(`ℹ️ Keeping "${jobFolder}" — still holds other media (e.g. more episodes).`);
+          } else {
+            console.log(`🗑️ Removing leftover release folder: ${jobFolder}`);
+            fs.rmSync(jobFolder, { recursive: true, force: true });
+          }
+        }
+      } catch (localErr) {
+        console.warn('⚠️ Local folder cleanup failed:', localErr.message);
+      }
+    }
+
     return res.json({ status: 'success', data, deletedDriveFiles });
   } catch (err) {
     console.error('❌ SABnzbd delete history failed:', err.message);
