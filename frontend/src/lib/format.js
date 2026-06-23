@@ -23,6 +23,17 @@ export function cleanUrl(url) {
     const parsed = new URL(decoded);
     let pathname = parsed.pathname;
 
+    // Internal stream/transcode endpoints carry their unique id (fileId / nzoId) in
+    // the query string. Keep that id in the key — otherwise every Google Drive item
+    // collapses to "/api/gdrive/stream" (and every local one to "/api/sab/stream") and
+    // they overwrite each other in Continue Watching. Normalize /transcode → /stream so
+    // the same item played either way shares one entry.
+    if (pathname.startsWith('/api/')) {
+      const id = parsed.searchParams.get('fileId') || parsed.searchParams.get('nzoId') || '';
+      const base = pathname.replace('/transcode', '/stream');
+      return id ? `${base}?${id}` : pathname;
+    }
+
     // Premiumize directdl links have the format: /dl/IP_OR_GEO/TOKEN/Path/To/File
     // Stripping the first 3 segments makes the clean path edge-agnostic and token-independent
     if (pathname.startsWith('/dl/')) {

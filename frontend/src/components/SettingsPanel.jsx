@@ -72,7 +72,8 @@ export default function SettingsPanel({ handleToggleShowKeys, fetchAiModels, cle
         const data = await res.json();
         if (data.status === 'success') {
           setGdriveFiles(data.files || []);
-          triggerToast(`Scanned ${data.files?.length || 0} files in Google Drive target folder.`, 'success');
+          const n = data.files?.length || 0;
+          triggerToast(`Re-scanned Google Drive: ${n} file${n === 1 ? '' : 's'} found across the Premio folder & all subfolders and re-linked.`, 'success');
         } else {
           throw new Error(data.error || 'Failed to list files');
         }

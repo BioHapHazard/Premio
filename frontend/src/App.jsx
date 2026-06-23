@@ -293,6 +293,33 @@ function AppContent() {
     });
   };
 
+  // Rebuild the registry from a (recursive) Drive scan: map every found file's clean
+  // name → its current file id. Drive file ids are STABLE across moves, so re-scanning
+  // after you reorganize folders re-links playback for Transfers / Library / Continue
+  // Watching by name, wherever the file now lives under the Premio folder. Returns the
+  // number of entries (re)linked so the Scan button can report it.
+  const syncRegistryFromDriveFiles = (files) => {
+    if (!Array.isArray(files) || files.length === 0) return 0;
+    let linked = 0;
+    setGdriveRegistry(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const f of files) {
+        if (!f?.id || !f?.name) continue;
+        const key = cleanNameForMatch(f.name);
+        if (!key) continue;
+        linked++;
+        if (next[key]?.driveFileId !== f.id) {
+          next[key] = { driveFileId: f.id, name: f.name };
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem('premio_gdrive_registry', JSON.stringify(next));
+      return changed ? next : prev;
+    });
+    return linked;
+  };
+
   // --- Search domain --- (state in useSearchState via context). The kids-filtered
   // `results` memo + the `setResults` alias stay here since they derive from profiles.
   const results = useMemo(() => {
@@ -1421,6 +1448,14 @@ function AppContent() {
     };
     initGdrive();
   }, []);
+
+  // Whenever the Drive file list refreshes (startup, post-upload, or the Settings
+  // "Scan Google Drive" button), rebuild the registry so moved/reorganized files
+  // stay linked by name → current id. Drive ids survive moves, so this re-connects
+  // playback wherever a file now lives under the Premio folder.
+  useEffect(() => {
+    syncRegistryFromDriveFiles(gdriveFiles);
+  }, [gdriveFiles]);
 
   // --- Google Drive Auto-Archive ---
   // When auto-archive is enabled and GDrive is connected, automatically trigger
