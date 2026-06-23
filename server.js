@@ -1852,9 +1852,33 @@ const uploadReleaseToGdrive = async (accessToken, storagePath, parentFolderId, n
     console.log(`✅ Release upload complete for ${nzoId}: ${driveFiles.length} file(s).`);
 
     if (autoArchive) {
-      console.log(`🧹 Auto-Archive: all ${files.length} file(s) uploaded; deleting local folder for ${nzoId}.`);
+      // Permanently free the local copy now that every file is safely on Drive, so a
+      // queue larger than the disk keeps draining. fs.rmSync is a real unlink/rmdir —
+      // it does NOT go through the OS Trash, so space is reclaimed immediately.
+      // Crucially, remove the whole JOB FOLDER, not just storagePath: when storage
+      // points at a single file the parent folder would otherwise linger.
       try {
-        if (fs.existsSync(storagePath)) fs.rmSync(storagePath, { recursive: true, force: true });
+        const st = fs.existsSync(storagePath) ? fs.statSync(storagePath) : null;
+        if (st && st.isDirectory()) {
+          // storage is the job's own folder — remove it and everything in it.
+          fs.rmSync(storagePath, { recursive: true, force: true });
+          console.log(`🧹 Auto-Archive: removed local folder for ${nzoId} → ${storagePath}`);
+        } else if (st && st.isFile()) {
+          // storage is a single file (possibly sorted into a shared folder): remove
+          // the file, then the parent too unless it still holds other real media.
+          fs.rmSync(storagePath, { force: true });
+          const parent = path.dirname(storagePath);
+          if (fs.existsSync(parent) && !folderHasRealMedia(parent)) {
+            fs.rmSync(parent, { recursive: true, force: true });
+            console.log(`🧹 Auto-Archive: removed local file + folder for ${nzoId} → ${parent}`);
+          } else {
+            console.log(`🧹 Auto-Archive: removed local file for ${nzoId} (kept shared folder with other media) → ${storagePath}`);
+          }
+        }
+        // Verify nothing lingered; surface it loudly if it did.
+        if (fs.existsSync(storagePath)) {
+          console.warn(`⚠️ Auto-Archive: local path still exists after delete for ${nzoId} → ${storagePath}`);
+        }
       } catch (delErr) {
         console.error(`⚠️ Auto-Archive delete failed for ${nzoId}:`, delErr.message);
       }
