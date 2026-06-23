@@ -16,12 +16,14 @@ import VideoPlayerModal from './components/VideoPlayerModal';
 import DetailDrawer from './components/DetailDrawer';
 import SettingsPanel from './components/SettingsPanel';
 import CloudBrowserPanel from './components/CloudBrowserPanel';
+import GDriveBrowserPanel from './components/GDriveBrowserPanel';
 import SearchPanel from './components/SearchPanel';
 import LibraryPanel from './components/LibraryPanel';
 import WatchlistPanel from './components/WatchlistPanel';
 import ProgressPanel from './components/ProgressPanel';
 import TransfersPanel from './components/TransfersPanel';
 import PlaylistSelectorModal from './components/PlaylistSelectorModal';
+import EpisodePickerModal from './components/EpisodePickerModal';
 import LegalDisclaimerModal from './components/LegalDisclaimerModal';
 import OnboardingModal from './components/OnboardingModal';
 import PlaylistChoiceModal from './components/PlaylistChoiceModal';
@@ -223,6 +225,12 @@ function AppContent() {
     cloudFilter, setCloudFilter,
     cloudPlaylistLoading, setCloudPlaylistLoading,
     cloudPlaylistStatus, setCloudPlaylistStatus,
+    cloudProvider, setCloudProvider,
+    gdriveBrowse, setGdriveBrowse,
+    gdriveBrowseFolderId, setGdriveBrowseFolderId,
+    gdriveBrowseCrumbs, setGdriveBrowseCrumbs,
+    gdriveCloudRenameId, setGdriveCloudRenameId,
+    gdriveCloudRenameName, setGdriveCloudRenameName,
     // account / transfers
     accountInfo, setAccountInfo,
     transfers, setTransfers,
@@ -260,6 +268,9 @@ function AppContent() {
   const processingRetriesRef = useRef(new Set());
   const sabnzbdAutoFallbacksRef = useRef();
   sabnzbdAutoFallbacksRef.current = sabnzbdAutoFallbacks;
+
+  // Episode picker for a cloud "show" library item: { show, episodes, loading, error } or null.
+  const [episodePicker, setEpisodePicker] = useState(null);
   const processedNzoIdsRef = useRef(new Set());
   const [gdriveUploads, setGdriveUploads] = useState({});
 
@@ -1457,6 +1468,14 @@ function AppContent() {
     syncRegistryFromDriveFiles(gdriveFiles);
   }, [gdriveFiles]);
 
+  // Auto-load the Cloud-tab Drive browser when it's the active provider (e.g. the
+  // choice persisted from a prior session) and hasn't been fetched yet.
+  useEffect(() => {
+    if (activeTab === 'cloud' && cloudProvider === 'gdrive' && gdriveConnected && !gdriveBrowse.loaded && !gdriveBrowse.loading) {
+      fetchGdriveCloudFolder(null);
+    }
+  }, [activeTab, cloudProvider, gdriveConnected]);
+
   // --- Google Drive Auto-Archive ---
   // When auto-archive is enabled and GDrive is connected, automatically trigger
   // uploads for newly completed SABnzbd history items (once per item).
@@ -1949,6 +1968,77 @@ function AppContent() {
         link: file.link || file.stream_link,
         isCloudFile: true
       });
+    }
+  };
+
+  // --- Google Drive Cloud Browser (Cloud tab, when provider = 'gdrive') ---
+
+  // Navigate the Premio folder one level at a time. `crumbs` is the breadcrumb trail
+  // ({id,name}, root first); when omitted we're at the root and seed it.
+  const fetchGdriveCloudFolder = async (folderId = null, crumbs = null) => {
+    setGdriveBrowse(prev => ({ ...prev, loading: true, error: null }));
+    try {
+      const url = folderId ? `/api/gdrive/browse?folderId=${encodeURIComponent(folderId)}` : '/api/gdrive/browse';
+      const res = await fetch(url);
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+      const data = await res.json();
+      if (data.status !== 'success') throw new Error('Failed to browse Google Drive.');
+      setGdriveBrowse({ folders: data.folders || [], files: data.files || [], loading: false, error: null, loaded: true });
+      setGdriveBrowseFolderId(data.folderId);
+      setGdriveBrowseCrumbs(crumbs || [{ id: data.rootId, name: gdriveFolderName || 'Premio' }]);
+    } catch (err) {
+      setGdriveBrowse(prev => ({ ...prev, loading: false, error: err.message, loaded: true }));
+      triggerToast(`Google Drive error: ${err.message}`, 'error');
+    }
+  };
+
+  // Play a Drive file straight from its stable id (works regardless of subfolder).
+  // mkv/avi can be toggled to transcode inside the player.
+  const playGdriveCloudFile = (file) => {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const streamUrl = `${window.location.origin}/api/gdrive/stream?fileId=${encodeURIComponent(file.id)}`;
+    if (['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma', 'm4b'].includes(ext)) {
+      const audioFiles = (gdriveBrowse.files || [])
+        .filter(c => ['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma', 'm4b'].includes((c.name.split('.').pop() || '').toLowerCase()))
+        .map(c => ({ name: c.name, path: c.name, link: `${window.location.origin}/api/gdrive/stream?fileId=${encodeURIComponent(c.id)}`, size: c.size || 0 }));
+      const activeIdx = audioFiles.findIndex(c => c.name === file.name);
+      startAudioPlayer({ title: file.name, link: streamUrl, category: ext === 'm4b' ? 'Audiobooks' : 'Music', isCloudFile: true, files: audioFiles, activeIndex: activeIdx !== -1 ? activeIdx : 0 });
+    } else if (['epub', 'pdf'].includes(ext)) {
+      startEbookPlayer({ title: file.name, link: streamUrl, isCloudFile: true });
+    } else {
+      startStreaming({
+        title: file.name, name: file.name, link: streamUrl, size: file.size || 0,
+        category: 'Movies', isCloudFile: true, isGdriveResolved: true, gdriveFileId: file.id,
+        files: [{ name: file.name, link: streamUrl, size: file.size || 0, type: 'video', id: file.id }]
+      });
+    }
+  };
+
+  const renameGdriveCloudItem = async (fileId, newName) => {
+    if (!newName || !newName.trim()) return;
+    try {
+      const res = await fetchWithCredentials('/api/gdrive/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId, newName: newName.trim() }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setGdriveCloudRenameId(null);
+      triggerToast(`Renamed to "${newName.trim()}".`, 'success');
+      fetchGdriveCloudFolder(gdriveBrowseFolderId, gdriveBrowseCrumbs);
+      fetchGdriveFiles(); // refresh the recursive list → rebuilds the playback registry
+    } catch (err) {
+      triggerToast(`Rename failed: ${err.message}`, 'error');
+    }
+  };
+
+  const trashGdriveCloudItem = async (fileId, name, type) => {
+    try {
+      const res = await fetchWithCredentials('/api/gdrive/trash', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      triggerToast(`Moved ${type} "${name}" to Google Drive Trash (recoverable).`, 'success');
+      fetchGdriveCloudFolder(gdriveBrowseFolderId, gdriveBrowseCrumbs);
+      fetchGdriveFiles();
+    } catch (err) {
+      triggerToast(`Delete failed: ${err.message}`, 'error');
     }
   };
 
@@ -4034,6 +4124,9 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   // --- My Library logic ---
   // --- My Library logic ---
   const isItemInLibrary = (item) => {
+    // Cloud library entries (movies/shows added from the Cloud tab) carry a stable
+    // cloudKey (provider:kind:id) — dedup on that directly.
+    if (item.cloudKey) return libraryList.some(libItem => libItem.cloudKey === item.cloudKey);
     return libraryList.some(libItem => {
       if (item.nzbUrl && libItem.nzbUrl) {
         return libItem.nzbUrl === item.nzbUrl;
@@ -4055,6 +4148,20 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
   };
 
   const toggleLibraryItem = (torrent) => {
+    // Cloud entries (from the Cloud tab) toggle by their cloudKey; the entry passed
+    // in is already fully shaped, so add/remove it directly.
+    if (torrent.cloudKey) {
+      const exists = libraryList.some(it => it.cloudKey === torrent.cloudKey);
+      const updated = exists
+        ? libraryList.filter(it => it.cloudKey !== torrent.cloudKey)
+        : [torrent, ...libraryList];
+      setLibraryList(updated);
+      localStorage.setItem('premium_search_library', JSON.stringify(updated));
+      triggerToast(exists ? 'Removed from your Library.' : (torrent.isShow ? 'Show added to your Library!' : 'Added to your Library!'), 'success');
+      syncToCloud(updated, continueWatchingList);
+      return;
+    }
+
     const alreadyIn = isItemInLibrary(torrent);
 
     if (alreadyIn) {
@@ -4106,6 +4213,122 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
       triggerToast('Added to your Library!', 'success');
       syncToCloud(updated, continueWatchingList); // Sync to Premiumize Cloud
     }
+  };
+
+  // --- Cloud Library (movies/shows added from the Cloud tab, either provider) ---
+
+  const cloudLibKey = (provider, kind, id) => `${provider}:${kind}:${id}`;
+  const isCloudInLibrary = (provider, kind, id) => libraryList.some(it => it.cloudKey === cloudLibKey(provider, kind, id));
+
+  // Add/remove a cloud file (movie/episode) or folder (show) to the Library.
+  // `item` is a browser entry ({ id, name, size, link/stream_link }); provider is
+  // 'gdrive' or 'premiumize'; kind is 'file' or 'show'.
+  const toggleCloudLibrary = (item, kind, provider) => {
+    const cloudKey = cloudLibKey(provider, kind, item.id);
+    if (kind === 'show') {
+      toggleLibraryItem({
+        cloudKey, title: item.name, category: 'TV', timestamp: Date.now(),
+        isCloudLibrary: true, isShow: true, cloudProvider: provider,
+        cloudFolderId: item.id, cloudFolderName: item.name,
+      });
+      return;
+    }
+    const link = provider === 'gdrive'
+      ? `${window.location.origin}/api/gdrive/stream?fileId=${encodeURIComponent(item.id)}`
+      : (item.stream_link || item.link);
+    // A video file is a movie (or single episode) — force a TMDb-eligible category so
+    // the Library fetches its poster/details. guessCategory returns 'Other' for clean
+    // movie names (no quality tags), which the metadata batch would otherwise skip.
+    const ext = (item.name.split('.').pop() || '').toLowerCase();
+    const isVideo = ['mkv', 'mp4', 'avi', 'mov', 'webm', 'm4v', 'ts', 'wmv', 'flv'].includes(ext);
+    let category = guessCategory(null, item.name);
+    if (isVideo && !['Movies', 'TV'].includes(category)) {
+      category = /\bs\d{1,2}e\d{1,2}\b|\b\d{1,2}x\d{2}\b|\bseason\b/i.test(item.name) ? 'TV' : 'Movies';
+    }
+    toggleLibraryItem({
+      cloudKey, title: item.name, category, timestamp: Date.now(),
+      isCloudLibrary: true, isCloudFile: true, cloudProvider: provider,
+      isGdriveResolved: provider === 'gdrive',
+      gdriveFileId: provider === 'gdrive' ? item.id : null,
+      link, size: item.size || 0,
+      files: [{ name: item.name, link, size: item.size || 0, type: 'video', id: item.id }],
+    });
+  };
+
+  // Collect a cloud show's episodes (videos under its folder, recursive across
+  // seasons), sorted naturally. Drive uses the dedicated endpoint; Premiumize walks
+  // /api/cloud/list. Returns [{ name, link, size, id }].
+  const scanCloudShowEpisodes = async (libItem) => {
+    if (libItem.cloudProvider === 'gdrive') {
+      const res = await fetch(`/api/gdrive/folder-videos?folderId=${encodeURIComponent(libItem.cloudFolderId)}`);
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+      const data = await res.json();
+      return (data.videos || []).map(v => ({
+        name: v.name, size: v.size || 0, id: v.id,
+        link: `${window.location.origin}/api/gdrive/stream?fileId=${encodeURIComponent(v.id)}`,
+      }));
+    }
+    // Premiumize: recursive walk, files then subfolders, natural-sorted.
+    const out = [];
+    const walk = async (folderId) => {
+      const url = folderId ? `/api/cloud/list?id=${encodeURIComponent(folderId)}` : '/api/cloud/list';
+      const res = await fetchWithCredentials(url);
+      if (!res.ok) throw new Error(`Failed to read cloud folder (HTTP ${res.status})`);
+      const data = await res.json();
+      if (data.status !== 'success') throw new Error(data.message || 'Failed to list cloud folder.');
+      const contents = data.content || [];
+      contents.filter(c => c.type === 'file')
+        .filter(f => ['mkv', 'mp4', 'avi', 'mov', 'webm', 'm4v', 'ts'].includes((f.name.split('.').pop() || '').toLowerCase()))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+        .forEach(f => out.push({ name: f.name, link: f.stream_link || f.link, size: f.size || 0, id: f.id }));
+      const subs = contents.filter(c => c.type === 'folder')
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+      for (const sub of subs) await walk(sub.id);
+    };
+    await walk(libItem.cloudFolderId);
+    return out;
+  };
+
+  // Open the episode picker for a library show. One video → just play it.
+  const openShowEpisodePicker = async (libItem) => {
+    setEpisodePicker({ show: libItem, episodes: [], loading: true, error: null });
+    try {
+      const episodes = await scanCloudShowEpisodes(libItem);
+      if (episodes.length === 0) {
+        setEpisodePicker(null);
+        triggerToast('No playable episodes found in this show folder.', 'warning');
+        return;
+      }
+      if (episodes.length === 1) {
+        setEpisodePicker(null);
+        playCloudEpisode(episodes[0], episodes, libItem);
+        return;
+      }
+      setEpisodePicker({ show: libItem, episodes, loading: false, error: null });
+    } catch (err) {
+      setEpisodePicker(null);
+      triggerToast(`Couldn't load episodes: ${err.message}`, 'error');
+    }
+  };
+
+  // Play one episode, queueing the rest after it so the player auto-advances.
+  const playCloudEpisode = (episode, allEpisodes, libItem) => {
+    const startIdx = Math.max(0, allEpisodes.findIndex(e => e.id === episode.id));
+    const files = allEpisodes.map(e => ({ name: e.name, link: e.link, size: e.size || 0, type: 'video', id: e.id }));
+    const isGdrive = libItem?.cloudProvider === 'gdrive';
+    setEpisodePicker(null);
+    startStreaming({
+      title: libItem?.cloudFolderName || libItem?.title || episode.name,
+      name: episode.name,
+      category: 'TV',
+      isCloudFile: true,
+      isCloudPlaylist: true,
+      isGdriveResolved: isGdrive,
+      forceBrowser: false,
+      link: episode.link,
+      files,
+      activeIndex: startIdx,
+    });
   };
 
   // --- Custom Playlists Logic ---
@@ -5807,7 +6030,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {activeTab === 'search' && <SearchPanel processedResults={processedResults} results={results} cachedCount={cachedCount} handleSearch={handleSearch} handleAiSemanticSearch={handleAiSemanticSearch} handleDragOver={handleDragOver} handleDragLeave={handleDragLeave} handleDrop={handleDrop} handleImportFile={handleImportFile} handleImportMagnet={handleImportMagnet} deleteHistoryItem={deleteHistoryItem} getMetadata={getMetadata} isItemInLibrary={isItemInLibrary} isInWatchlist={isInWatchlist} toggleLibraryItem={toggleLibraryItem} toggleWatchlist={toggleWatchlist} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} triggerDownload={triggerDownload} triggerSabDownload={triggerSabDownload} buildSabStreamUrl={buildSabStreamUrl} />}
 
         {/* Tab: My Library Bookshelf */}
-        {activeTab === 'library' && <LibraryPanel filteredLibraryList={filteredLibraryList} getMetadata={getMetadata} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} toggleLibraryItem={toggleLibraryItem} playPlaylist={playPlaylist} deletePlaylist={deletePlaylist} removeTrackFromPlaylist={removeTrackFromPlaylist} />}
+        {activeTab === 'library' && <LibraryPanel filteredLibraryList={filteredLibraryList} getMetadata={getMetadata} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} startRetroPlayer={startRetroPlayer} triggerDirectDownload={triggerDirectDownload} toggleLibraryItem={toggleLibraryItem} playPlaylist={playPlaylist} deletePlaylist={deletePlaylist} removeTrackFromPlaylist={removeTrackFromPlaylist} openShowEpisodePicker={openShowEpisodePicker} />}
 
         {/* Tab: Watchlist */}
         {activeTab === 'watchlist' && <WatchlistPanel checkWatchlist={checkWatchlist} findWatchlistItem={findWatchlistItem} persistWatchlist={persistWatchlist} />}
@@ -5815,8 +6038,38 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
         {/* Tab: Continue... Dashboard */}
         {activeTab === 'progress' && <ProgressPanel getMetadata={getMetadata} removeFromContinueWatching={removeFromContinueWatching} startStreaming={startStreaming} startAudioPlayer={startAudioPlayer} startEbookPlayer={startEbookPlayer} />}
 
-        {/* Tab: Cloud Storage Manager */}
-        {activeTab === 'cloud' && <CloudBrowserPanel buildFolderPlaylist={buildFolderPlaylist} fetchAccountQuota={fetchAccountQuota} fetchCloudFolder={fetchCloudFolder} handleAICleanName={handleAICleanName} handleCloudDelete={handleCloudDelete} handleCloudRename={handleCloudRename} handleCloudStream={handleCloudStream} />}
+        {/* Tab: Cloud Storage Manager (Premiumize ⇄ Google Drive) */}
+        {activeTab === 'cloud' && (
+          <>
+            {gdriveConnected && (
+              <div className="cloud-provider-toggle" style={{ display: 'flex', gap: '8px', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="action-btn"
+                  style={{ fontSize: '0.85rem', padding: '6px 16px', borderRadius: '8px', opacity: cloudProvider === 'premiumize' ? 1 : 0.55 }}
+                  onClick={() => { setCloudProvider('premiumize'); localStorage.setItem('premio_cloud_provider', 'premiumize'); }}
+                >
+                  {cloudProvider === 'premiumize' ? '● ' : ''}Premiumize Cloud
+                </button>
+                <button
+                  type="button"
+                  className="action-btn"
+                  style={{ fontSize: '0.85rem', padding: '6px 16px', borderRadius: '8px', opacity: cloudProvider === 'gdrive' ? 1 : 0.55 }}
+                  onClick={() => {
+                    setCloudProvider('gdrive');
+                    localStorage.setItem('premio_cloud_provider', 'gdrive');
+                    if (!gdriveBrowse.loaded) fetchGdriveCloudFolder(null);
+                  }}
+                >
+                  {cloudProvider === 'gdrive' ? '● ' : ''}Google Drive
+                </button>
+              </div>
+            )}
+            {cloudProvider === 'gdrive' && gdriveConnected
+              ? <GDriveBrowserPanel fetchGdriveCloudFolder={fetchGdriveCloudFolder} playGdriveCloudFile={playGdriveCloudFile} renameGdriveCloudItem={renameGdriveCloudItem} trashGdriveCloudItem={trashGdriveCloudItem} isCloudInLibrary={isCloudInLibrary} toggleCloudLibrary={toggleCloudLibrary} />
+              : <CloudBrowserPanel buildFolderPlaylist={buildFolderPlaylist} fetchAccountQuota={fetchAccountQuota} fetchCloudFolder={fetchCloudFolder} handleAICleanName={handleAICleanName} handleCloudDelete={handleCloudDelete} handleCloudRename={handleCloudRename} handleCloudStream={handleCloudStream} isCloudInLibrary={isCloudInLibrary} toggleCloudLibrary={toggleCloudLibrary} />}
+          </>
+        )}
         {/* Tab: Active Downloads Transfer Manager */}
         {activeTab === 'transfers' && (
           <TransfersPanel 
@@ -5849,6 +6102,7 @@ Output ONLY the 3 bullet points (each starting with a bullet character "• "). 
 
         {/* Custom Playlist Selection Modal Overlay */}
         {playlistSelectionTrack && <PlaylistSelectorModal addTrackToPlaylist={addTrackToPlaylist} createPlaylistAndAdd={createPlaylistAndAdd} />}
+        {episodePicker && <EpisodePickerModal picker={episodePicker} onPlay={(ep) => playCloudEpisode(ep, episodePicker.episodes, episodePicker.show)} onClose={() => setEpisodePicker(null)} />}
         {/* Metadata Detail Drawer */}
         <DetailDrawer activeMeta={activeMeta} toggleReviews={toggleReviews} toggleLbReviews={toggleLbReviews} startRetroPlayer={startRetroPlayer} startEbookPlayer={startEbookPlayer} startAudioPlayer={startAudioPlayer} triggerDirectDownload={triggerDirectDownload} startStreaming={startStreaming} triggerDownload={triggerDownload} triggerSabDownload={triggerSabDownload} isItemInLibrary={isItemInLibrary} toggleLibraryItem={toggleLibraryItem} isInWatchlist={isInWatchlist} toggleWatchlist={toggleWatchlist} buildSabStreamUrl={buildSabStreamUrl} />
 

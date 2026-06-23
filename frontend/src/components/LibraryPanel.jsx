@@ -14,6 +14,7 @@ export default function LibraryPanel({
   startStreaming, startAudioPlayer, startEbookPlayer, startRetroPlayer, triggerDirectDownload,
   toggleLibraryItem,
   playPlaylist, deletePlaylist, removeTrackFromPlaylist,
+  openShowEpisodePicker,
 }) {
   const {
     libraryList, librarySubTab, setLibrarySubTab,
@@ -198,8 +199,18 @@ export default function LibraryPanel({
                   const hue = hashHue(item.title);
                   const playItem = (e) => {
                     e.stopPropagation();
+                    // Cloud items (added from the Cloud tab) play directly: a show opens
+                    // the episode picker; a movie/file plays by its type.
+                    if (item.isShow) { openShowEpisodePicker && openShowEpisodePicker(item); return; }
+                    if (item.isCloudLibrary) {
+                      const cExt = (item.title.split('.').pop() || '').toLowerCase();
+                      if (['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma', 'm4b'].includes(cExt)) startAudioPlayer(item);
+                      else if (['epub', 'pdf'].includes(cExt)) startEbookPlayer(item);
+                      else startStreaming(item);
+                      return;
+                    }
                     if (!item.cached && !item.isSabnzbd) { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); return; }
-                    
+
                     const hMatch = item.nzoId ? (sabHistory || []).find(h => h.nzoId === item.nzoId) : (sabHistory || []).find(h => h.name === item.title || h.name === item.name);
                     const resolvedVideo = item.resolvedVideoFile || hMatch?.resolvedVideoFile || '';
                     const hasVideoFile = (item.files && item.files.some(f => f.type === 'video')) || resolvedVideo;
@@ -217,7 +228,7 @@ export default function LibraryPanel({
                     else startStreaming(item);
                   };
                   return (
-                    <div key={idx} className="lib-tile" role="button" tabIndex={0} aria-label={`View details for ${meta?.title || item.title}`} onClick={() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } })} onKeyDown={keyActivate(() => setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }))} title={item.title}>
+                    <div key={idx} className="lib-tile" role="button" tabIndex={0} aria-label={item.isShow ? `Play ${meta?.title || item.title}` : `View details for ${meta?.title || item.title}`} onClick={(e) => { if (item.isShow) { playItem(e); } else { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); } }} onKeyDown={keyActivate(() => { if (item.isShow) { playItem({ stopPropagation() {} }); } else { setMetadataDrawerItem({ ...item, _metadata: meta || { title: item.title } }); } })} title={item.title}>
                       <div className="lib-poster" style={poster ? { backgroundImage: `url(${poster})` } : { background: `linear-gradient(150deg, hsl(${hue}, 42%, 26%), hsl(${(hue + 35) % 360}, 48%, 15%))` }}>
                         {!poster && <span className="lib-poster-icon"><Icon name={typeIcon} size={34} /></span>}
                         {meta?.voteAverage ? <span className="lib-rating"><Icon name="star" fill size={11} /> {meta.voteAverage.toFixed(1)}</span> : null}

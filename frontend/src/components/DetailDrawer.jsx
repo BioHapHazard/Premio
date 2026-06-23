@@ -295,7 +295,25 @@ export default function DetailDrawer({
               {meta.genre && <p className="metadata-genre-line"><Icon name="music" size={14} /> {meta.genre}</p>}
 
               <div className="metadata-actions">
-                {isUsenetItem && usenetHandler === 'sabnzbd' ? (() => {
+                {metadataDrawerItem.isCloudLibrary ? (() => {
+                  // Cloud-library item (movie/file added from the Cloud tab): play it
+                  // directly by type. (Shows open the episode picker from the Library
+                  // tile, not this drawer.)
+                  const it = metadataDrawerItem;
+                  const c = it.category || itemCat;
+                  const ext = (it.title.split('.').pop() || '').toLowerCase();
+                  const isBook = c === 'Ebooks' || ['epub', 'pdf'].includes(ext);
+                  const isAudio = c === 'Audiobooks' || c === 'Music' || ['mp3', 'flac', 'wav', 'm4a', 'ogg', 'wma', 'm4b'].includes(ext);
+                  const label = isBook ? 'Read' : isAudio ? 'Listen' : 'Play';
+                  const ic = isBook ? 'book' : isAudio ? 'headphones' : 'player-play';
+                  const onPlay = () => {
+                    setMetadataDrawerItem(null);
+                    if (isBook) startEbookPlayer(it);
+                    else if (isAudio) startAudioPlayer(it);
+                    else startStreaming(it);
+                  };
+                  return <button className="btn-primary hover-action" onClick={onPlay}><Icon name={ic} fill={ic === 'player-play'} size={16} /> {label}</button>;
+                })() : isUsenetItem && usenetHandler === 'sabnzbd' ? (() => {
                   const it = metadataDrawerItem;
                   const c = it.category || itemCat;
                   const isBook = c === 'Ebooks' || it.title.toLowerCase().endsWith('.epub') || it.title.toLowerCase().endsWith('.pdf');

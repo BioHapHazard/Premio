@@ -21,6 +21,15 @@ export function useCloudState() {
   const [cloudPlaylistLoading, setCloudPlaylistLoading] = useState(false);
   const [cloudPlaylistStatus, setCloudPlaylistStatus] = useState('');
 
+  // Which backend the Cloud tab browses: 'premiumize' (default) or 'gdrive'.
+  const [cloudProvider, setCloudProvider] = useState(() => localStorage.getItem('premio_cloud_provider') === 'gdrive' ? 'gdrive' : 'premiumize');
+  // Google Drive browser (one folder at a time within the Premio folder).
+  const [gdriveBrowse, setGdriveBrowse] = useState({ folders: [], files: [], loading: false, error: null, loaded: false });
+  const [gdriveBrowseFolderId, setGdriveBrowseFolderId] = useState(null);
+  const [gdriveBrowseCrumbs, setGdriveBrowseCrumbs] = useState([]); // trail of {id,name}, root first
+  const [gdriveCloudRenameId, setGdriveCloudRenameId] = useState(null);
+  const [gdriveCloudRenameName, setGdriveCloudRenameName] = useState('');
+
   return {
     cloudContents, setCloudContents,
     cloudFolderId, setCloudFolderId,
@@ -34,5 +43,11 @@ export function useCloudState() {
     cloudFilter, setCloudFilter,
     cloudPlaylistLoading, setCloudPlaylistLoading,
     cloudPlaylistStatus, setCloudPlaylistStatus,
+    cloudProvider, setCloudProvider,
+    gdriveBrowse, setGdriveBrowse,
+    gdriveBrowseFolderId, setGdriveBrowseFolderId,
+    gdriveBrowseCrumbs, setGdriveBrowseCrumbs,
+    gdriveCloudRenameId, setGdriveCloudRenameId,
+    gdriveCloudRenameName, setGdriveCloudRenameName,
   };
 }

@@ -1584,7 +1584,7 @@ const findOrCreateGdriveFolder = async (accessToken, folderName, parentId = null
 
 const listGdriveFolderFiles = async (accessToken, folderId) => {
   const query = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
-  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size)&pageSize=1000`;
+  const listUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size,createdTime)&pageSize=1000`;
   const res = await fetch(listUrl, {
     headers: { 'Authorization': `Bearer ${accessToken}` }
   });
@@ -2051,6 +2051,88 @@ app.get('/api/gdrive/files', async (req, res) => {
     return res.json({ status: 'success', files });
   } catch (err) {
     console.error('❌ Google Drive list files failed:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Navigable, one-folder-at-a-time listing for the Cloud-tab Google Drive browser.
+// Defaults to the Premio root; folders + files are returned separately and sorted.
+// Drilling into a subfolder is just another call with its folderId.
+app.get('/api/gdrive/browse', async (req, res) => {
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const rootId = await findOrCreateGdriveFolder(accessToken, getGdriveFolderName());
+    const folderId = isValidDriveFileId(req.query.folderId) ? req.query.folderId : rootId;
+    const children = await listGdriveFolderFiles(accessToken, folderId);
+    const folders = [];
+    const files = [];
+    for (const c of children) {
+      if (c.mimeType === 'application/vnd.google-apps.folder') {
+        folders.push({ id: c.id, name: c.name, type: 'folder', createdTime: c.createdTime || null });
+      } else if (!/\.json$/i.test(c.name || '')) {
+        // Hide the profile-sync JSONs kept in the Premio root.
+        files.push({ id: c.id, name: c.name, type: 'file', size: Number(c.size) || 0, mimeType: c.mimeType || '', createdTime: c.createdTime || null });
+      }
+    }
+    const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    folders.sort(byName);
+    files.sort(byName);
+    return res.json({ status: 'success', rootId, folderId, isRoot: folderId === rootId, folders, files });
+  } catch (err) {
+    console.error('❌ Google Drive browse failed:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Rename a Drive file/folder (files.update name). Id validated; opaque token only.
+app.post('/api/gdrive/rename', async (req, res) => {
+  const { fileId, newName } = req.body || {};
+  if (!isValidDriveFileId(fileId)) return res.status(400).json({ error: 'Invalid or missing fileId.' });
+  if (!newName || !String(newName).trim()) return res.status(400).json({ error: 'A new name is required.' });
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: String(newName).trim() })
+    });
+    if (!r.ok) throw new Error(`Drive rename failed (HTTP ${r.status}): ${await r.text()}`);
+    return res.json({ status: 'success', file: await r.json() });
+  } catch (err) {
+    console.error('❌ Google Drive rename failed:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Move a Drive file/folder to Trash (recoverable). Reuses deleteGdriveFile, which
+// trashes rather than permanently purging.
+app.post('/api/gdrive/trash', async (req, res) => {
+  const { fileId } = req.body || {};
+  if (!isValidDriveFileId(fileId)) return res.status(400).json({ error: 'Invalid or missing fileId.' });
+  try {
+    const accessToken = await getGdriveAccessToken();
+    await deleteGdriveFile(accessToken, fileId);
+    return res.json({ status: 'success' });
+  } catch (err) {
+    console.error('❌ Google Drive trash failed:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// All video files under a folder (recursive — across season subfolders), sorted
+// naturally by name. Powers the Library episode picker for a Drive-archived show.
+app.get('/api/gdrive/folder-videos', async (req, res) => {
+  if (!isValidDriveFileId(req.query.folderId)) return res.status(400).json({ error: 'Invalid or missing folderId.' });
+  try {
+    const accessToken = await getGdriveAccessToken();
+    const all = await listGdriveFilesRecursive(accessToken, req.query.folderId);
+    const videos = all
+      .filter(f => GDRIVE_VIDEO_EXTS.includes((f.name.split('.').pop() || '').toLowerCase()))
+      .map(f => ({ id: f.id, name: f.name, size: Number(f.size) || 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    return res.json({ status: 'success', videos });
+  } catch (err) {
+    console.error('❌ Google Drive folder-videos failed:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });

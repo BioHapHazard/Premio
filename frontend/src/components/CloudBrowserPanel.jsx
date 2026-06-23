@@ -16,6 +16,8 @@ export default function CloudBrowserPanel({
   handleCloudDelete,
   handleCloudRename,
   handleCloudStream,
+  isCloudInLibrary,
+  toggleCloudLibrary,
 }) {
   const {
     accountInfo,
@@ -284,6 +286,15 @@ export default function CloudBrowserPanel({
                                       <Icon name="player-play" size={13} fill /> Play All
                                     </button>
                                     <span className="cloud-act-spacer" />
+                                    {toggleCloudLibrary && (
+                                      <button
+                                        className={`cloud-act icon-only${isCloudInLibrary('premiumize', 'show', folder.id) ? ' active' : ''}`}
+                                        title={isCloudInLibrary('premiumize', 'show', folder.id) ? 'Remove show from Library' : 'Add show to Library'}
+                                        onClick={() => toggleCloudLibrary(folder, 'show', 'premiumize')}
+                                      >
+                                        <Icon name="star" size={15} fill={isCloudInLibrary('premiumize', 'show', folder.id)} />
+                                      </button>
+                                    )}
                                     <button
                                       className="cloud-act icon-only"
                                       title="Bookmark folder"
@@ -425,6 +436,15 @@ export default function CloudBrowserPanel({
                                       <Icon name={actionIcon} size={14} fill={actionIcon === 'player-play'} /> {actionLabel}
                                     </button>
                                     <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                      {toggleCloudLibrary && (
+                                        <button
+                                          className={`cloud-act icon-only${isCloudInLibrary('premiumize', 'file', file.id) ? ' active' : ''}`}
+                                          title={isCloudInLibrary('premiumize', 'file', file.id) ? 'Remove from Library' : 'Add to Library'}
+                                          onClick={() => toggleCloudLibrary(file, 'file', 'premiumize')}
+                                        >
+                                          <Icon name="star" size={15} fill={isCloudInLibrary('premiumize', 'file', file.id)} />
+                                        </button>
+                                      )}
                                       <button
                                         className="cloud-act icon-only"
                                         title="Bookmark file"
