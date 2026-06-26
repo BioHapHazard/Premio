@@ -1478,6 +1478,23 @@ const getGdriveAccessToken = async () => {
 
   if (!res.ok) {
     const errText = await res.text();
+    // A revoked/expired refresh token (Google: invalid_grant) will NEVER recover by
+    // retrying — most commonly because the OAuth app is still in "Testing" mode, where
+    // Google expires refresh tokens after 7 days. Clear the dead auth (keep clientId/
+    // secret/folder so reconnecting is one click) so /api/gdrive/status reports
+    // disconnected and the UI prompts a reconnect, instead of every Drive call
+    // hammering Google with the same failure.
+    if (errText.includes('invalid_grant')) {
+      try {
+        delete creds.accessToken;
+        delete creds.refreshToken;
+        delete creds.expiresAt;
+        fs.writeFileSync('gdrive_credentials.json', JSON.stringify(creds, null, 2), 'utf8');
+      } catch (clearErr) {
+        console.error('Failed to clear revoked Google Drive token:', clearErr.message);
+      }
+      throw new Error('Google Drive authorization expired or was revoked — please reconnect in Settings. (Tip: publish your OAuth app to stop the 7-day testing-mode token expiry.)');
+    }
     throw new Error(`Failed to refresh Google Drive token: ${errText}`);
   }
 
